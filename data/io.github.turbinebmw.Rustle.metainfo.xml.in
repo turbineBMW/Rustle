@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.turbinebmw.Rustle</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Rustle</name>
+  <summary>A fast email client for GNOME</summary>
+  <description>
+    <p>
+      Rustle is a native GTK 4 / libadwaita email client written in Rust. Three panes —
+      folders, conversations, reader — with a unified inbox across every account and
+      nothing to configure beyond your account details.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Multiple IMAP/SMTP accounts, with TLS or STARTTLS, or imported from GNOME Online Accounts</li>
+      <li>A unified inbox across all accounts</li>
+      <li>Conversations grouped into threads, nested folders shown as a tree</li>
+      <li>Instant full-text search across your mail</li>
+      <li>A rich-text composer with attachments, and one-click unsubscribe</li>
+      <li>Follows the system accent colour and dark style</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.turbinebmw.Rustle.desktop</launchable>
+  <developer id="io.github.turbinebmw">
+    <name>Brandon Williams</name>
+  </developer>
+  <url type="homepage">https://github.com/turbinebmw/Rustle</url>
+  <url type="vcs-browser">https://github.com/turbinebmw/Rustle</url>
+  <url type="bugtracker">https://github.com/turbinebmw/Rustle/issues</url>
+  <translation type="gettext">rustle</translation>
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-26">
+      <description>
+        <p>First release: a Rust rewrite of Postcard with a unified inbox and accent-colour support.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/rustle-core", "crates/rustle"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/turbinebmw/Rustle"
+
+[workspace.dependencies]
+log = "0.4"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+regex = "1"
+gio = { version = "0.22", features = ["v2_80"] }
+glib = { version = "0.22", features = ["v2_80"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

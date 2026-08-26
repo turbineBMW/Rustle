@@ -1,0 +1,66 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $RustlePreferencesDialog: Adw.PreferencesDialog {
+  title: _("Preferences");
+
+  Adw.PreferencesPage {
+    Adw.PreferencesGroup {
+      title: _("General");
+
+      Adw.SwitchRow notifications_row {
+        title: _("New Mail Notifications");
+        subtitle: _("Show a notification when new mail arrives");
+      }
+
+      Adw.SwitchRow images_row {
+        title: _("Load Remote Images");
+        subtitle: _("Load images from the internet without asking");
+      }
+
+      Adw.SwitchRow avatars_row {
+        title: _("Load Sender Avatars");
+        subtitle: _("Fetch sender pictures from Gravatar, which tells them who emails you");
+      }
+
+      Adw.SwitchRow background_row {
+        title: _("Run in Background");
+        subtitle: _("Keep checking for mail after the window is closed");
+      }
+
+      Adw.SwitchRow autostart_row {
+        title: _("Start at Login");
+        subtitle: _("Start hidden when you log in and keep checking for mail");
+      }
+
+      Adw.ComboRow interval_row {
+        title: _("Check for Mail");
+        subtitle: _("How often to look for new mail");
+      }
+    }
+
+    Adw.PreferencesGroup {
+      title: _("Signature");
+
+      Adw.SwitchRow signature_enabled_row {
+        title: _("Append Signature");
+        subtitle: _("Add a signature to messages you send");
+      }
+
+      Gtk.ScrolledWindow {
+        height-request: 120;
+        margin-top: 12;
+
+        styles ["card"]
+
+        child: Gtk.TextView signature_view {
+          top-margin: 8;
+          bottom-margin: 8;
+          left-margin: 8;
+          right-margin: 8;
+          wrap-mode: word_char;
+        };
+      }
+    }
+  }
+}

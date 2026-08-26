@@ -1,0 +1,32 @@
+[package]
+name = "rustle-core"
+description = "UI-agnostic mail logic for Rustle: models, storage, IMAP/SMTP, MIME"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+regex.workspace = true
+gio.workspace = true
+glib.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+imap = "3.0.0-alpha.15"
+imap-proto = "0.16"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder", "hostname", "pool"] }
+native-tls = "0.2"
+mail-parser = "0.11"
+base64 = "0.22"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
+html-escape = "0.2"
+sha2 = "0.10"
+hex = "0.4"
+percent-encoding = "2"
+uuid = { version = "1", features = ["v4"] }
+gethostname = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Rustle
+GenericName=Mail Client
+Comment=Read and send your email
+Exec=rustle %u
+Icon=io.github.turbinebmw.Rustle
+Terminal=false
+Type=Application
+Categories=Network;Email;
+Keywords=GTK;Email;E-mail;Mail;IMAP;SMTP;Inbox;
+MimeType=x-scheme-handler/mailto;
+StartupNotify=true
+DBusActivatable=true

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="rustle">
+	<schema id="io.github.turbinebmw.Rustle" path="/io/github/turbinebmw/Rustle/">
+		<key name="notifications" type="b">
+			<default>true</default>
+			<summary>Notify about new mail</summary>
+			<description>Show a desktop notification when new mail arrives.</description>
+		</key>
+		<key name="load-remote-images" type="b">
+			<default>false</default>
+			<summary>Load remote images</summary>
+			<description>Load remote images in messages by default instead of asking.</description>
+		</key>
+		<key name="load-sender-avatars" type="b">
+			<default>false</default>
+			<summary>Load sender avatars</summary>
+			<description>Fetch sender pictures from Gravatar, falling back to the sender's website icon. This tells those services who emails you.</description>
+		</key>
+		<key name="run-in-background" type="b">
+			<default>false</default>
+			<summary>Keep running in the background</summary>
+			<description>Keep checking for new mail after the window is closed.</description>
+		</key>
+		<key name="start-at-login" type="b">
+			<default>false</default>
+			<summary>Start Rustle at login</summary>
+			<description>Whether the desktop portal has been asked to start Rustle hidden at login. The portal owns the autostart entry; this only records its answer.</description>
+		</key>
+		<key name="background-notice-shown" type="b">
+			<default>false</default>
+			<summary>Background notice already shown</summary>
+			<description>Whether the notice about the app still checking for mail after the window is closed has been shown. It is only shown once.</description>
+		</key>
+		<key name="sync-interval-minutes" type="i">
+			<range min="0" max="1440"/>
+			<default>15</default>
+			<summary>Sync interval in minutes</summary>
+			<description>How often to check for new mail. Set to 0 to check manually only.</description>
+		</key>
+		<key name="signature-enabled" type="b">
+			<default>false</default>
+			<summary>Append a signature</summary>
+			<description>Add a signature to the bottom of outgoing messages.</description>
+		</key>
+		<key name="signature-text" type="s">
+			<default>''</default>
+			<summary>Signature text</summary>
+			<description>The signature appended to outgoing messages.</description>
+		</key>
+		<key name="window-width" type="i">
+			<default>1600</default>
+			<summary>Main window width</summary>
+		</key>
+		<key name="window-height" type="i">
+			<default>900</default>
+			<summary>Main window height</summary>
+		</key>
+		<key name="window-maximized" type="b">
+			<default>false</default>
+			<summary>Main window maximized</summary>
+		</key>
+		<key name="folder-sidebar-width" type="i">
+			<range min="180" max="500"/>
+			<default>280</default>
+			<summary>Folder sidebar width</summary>
+		</key>
+		<key name="conversation-sidebar-width" type="i">
+			<range min="220" max="600"/>
+			<default>380</default>
+			<summary>Conversation list width</summary>
+		</key>
+	</schema>
+</schemalist>
