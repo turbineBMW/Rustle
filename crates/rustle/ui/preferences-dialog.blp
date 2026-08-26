@@ -38,29 +38,5 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         subtitle: _("How often to look for new mail");
       }
     }
-
-    Adw.PreferencesGroup {
-      title: _("Signature");
-
-      Adw.SwitchRow signature_enabled_row {
-        title: _("Append Signature");
-        subtitle: _("Add a signature to messages you send");
-      }
-
-      Gtk.ScrolledWindow {
-        height-request: 120;
-        margin-top: 12;
-
-        styles ["card"]
-
-        child: Gtk.TextView signature_view {
-          top-margin: 8;
-          bottom-margin: 8;
-          left-margin: 8;
-          right-margin: 8;
-          wrap-mode: word_char;
-        };
-      }
-    }
   }
 }

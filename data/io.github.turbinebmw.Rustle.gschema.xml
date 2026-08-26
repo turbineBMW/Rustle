@@ -16,6 +16,12 @@
 			<summary>Load sender avatars</summary>
 			<description>Fetch sender pictures from Gravatar, falling back to the sender's website icon. This tells those services who emails you.</description>
 		</key>
+		<key name="bridge-photo-port" type="i">
+			<range min="1" max="65535"/>
+			<default>1180</default>
+			<summary>graphmail-bridge photo port</summary>
+			<description>The loopback port where a local graphmail-bridge serves Outlook profile pictures (its server.photo_port). Accounts whose IMAP server is a plain loopback connection ask it for sender avatars before Gravatar.</description>
+		</key>
 		<key name="run-in-background" type="b">
 			<default>false</default>
 			<summary>Keep running in the background</summary>
@@ -36,16 +42,6 @@
 			<default>15</default>
 			<summary>Sync interval in minutes</summary>
 			<description>How often to check for new mail. Set to 0 to check manually only.</description>
-		</key>
-		<key name="signature-enabled" type="b">
-			<default>false</default>
-			<summary>Append a signature</summary>
-			<description>Add a signature to the bottom of outgoing messages.</description>
-		</key>
-		<key name="signature-text" type="s">
-			<default>''</default>
-			<summary>Signature text</summary>
-			<description>The signature appended to outgoing messages.</description>
 		</key>
 		<key name="window-width" type="i">
 			<default>1600</default>

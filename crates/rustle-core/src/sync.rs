@@ -149,7 +149,7 @@ pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
         date: dates::to_iso(&fetched.date),
         is_unread: !fetched.is_seen,
         is_starred: fetched.is_flagged,
-        preview: String::new(),
+        preview: fetched.preview,
         message_id: fetched.message_id,
         in_reply_to: fetched.in_reply_to,
         references: fetched.references,

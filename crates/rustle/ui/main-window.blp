@@ -153,12 +153,23 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                   content: Gtk.Stack conversation_stack {
                     StackPage {
                       name: "list";
-                      child: Gtk.ScrolledWindow conversation_scroller {
-                        hscrollbar-policy: never;
+                      child: Gtk.Box {
+                        orientation: vertical;
 
-                        child: Gtk.ListView conversation_list {
-                          styles ["navigation-sidebar"]
-                        };
+                        Gtk.Label sticky_day {
+                          xalign: 0;
+                          visible: false;
+                          styles ["conversation-day-header", "sticky-day"]
+                        }
+
+                        Gtk.ScrolledWindow conversation_scroller {
+                          hscrollbar-policy: never;
+                          vexpand: true;
+
+                          child: Gtk.ListView conversation_list {
+                            styles ["navigation-sidebar", "conversation-list"]
+                          };
+                        }
                       };
                     }
 

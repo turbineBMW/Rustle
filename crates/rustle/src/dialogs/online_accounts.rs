@@ -213,7 +213,7 @@ impl OnlineAccountsDialog {
         ]);
         let parameters = glib::Variant::tuple_from_iter([
             "launch-panel".to_variant(),
-            glib::Variant::array_from_iter::<glib::Variant>([panel]),
+            glib::Variant::array_from_iter::<glib::Variant>([panel.to_variant()]),
             glib::VariantDict::new(None).end(),
         ]);
         let this = self.downgrade();

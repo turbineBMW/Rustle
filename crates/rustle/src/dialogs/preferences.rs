@@ -46,10 +46,6 @@ mod imp {
         pub autostart_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub interval_row: TemplateChild<adw::ComboRow>,
-        #[template_child]
-        pub signature_enabled_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
-        pub signature_view: TemplateChild<gtk::TextView>,
         pub settings: RefCell<Option<gio::Settings>>,
         pub autostart_subscription: Cell<Option<gio::SignalSubscriptionId>>,
         pub is_settling: Cell<bool>,
@@ -100,17 +96,6 @@ impl PreferencesDialog {
         settings
             .bind(keys::RUN_IN_BACKGROUND, &*imp.background_row, "active")
             .build();
-        settings
-            .bind(
-                keys::SIGNATURE_ENABLED,
-                &*imp.signature_enabled_row,
-                "active",
-            )
-            .build();
-        settings
-            .bind(keys::SIGNATURE_ENABLED, &*imp.signature_view, "sensitive")
-            .flags(gio::SettingsBindFlags::GET)
-            .build();
 
         let intervals = sync_intervals();
         let labels: Vec<&str> = intervals.iter().map(|(_, label)| label.as_str()).collect();
@@ -137,20 +122,6 @@ impl PreferencesDialog {
             #[weak]
             dialog,
             move |row| dialog.on_autostart_toggled(row.is_active())
-        ));
-
-        let buffer = imp.signature_view.buffer();
-        buffer.set_text(&settings.string(keys::SIGNATURE_TEXT));
-        buffer.connect_changed(glib::clone!(
-            #[weak]
-            dialog,
-            move |buffer| {
-                let (start, end) = buffer.bounds();
-                if let Some(settings) = dialog.imp().settings.borrow().as_ref() {
-                    let _ = settings
-                        .set_string(keys::SIGNATURE_TEXT, &buffer.text(&start, &end, false));
-                }
-            }
         ));
         dialog
     }

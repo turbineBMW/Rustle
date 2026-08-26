@@ -167,14 +167,7 @@ impl RustleApplication {
             self.activate();
             return;
         };
-        ComposerWindow::for_mailto(
-            Some(self.upcast_ref()),
-            self.db(),
-            account,
-            &self.settings(),
-            uri,
-        )
-        .present();
+        ComposerWindow::for_mailto(Some(self.upcast_ref()), self.db(), account, uri).present();
     }
 
     fn load_css(&self) {
@@ -188,6 +181,7 @@ impl RustleApplication {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+        crate::accent::install_fallback(&display);
     }
 
     fn setup_actions(&self) {

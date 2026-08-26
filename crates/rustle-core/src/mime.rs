@@ -1,8 +1,8 @@
 //! Reading a stored message: bodies, attachments, the headers the reader
 //! shows, and the sandbox the HTML body is rendered in.
 
-use crate::dates;
 use crate::models::Attachment;
+use crate::{dates, html};
 use mail_parser::{MessageParser, MimeHeaders, PartType};
 
 /// Where a mailing list says it will accept an unsubscribe request.
@@ -30,6 +30,67 @@ pub struct ParsedMessage {
     /// The Date header formatted for the Details section.
     pub date: String,
     pub unsubscribe: Option<Unsubscribe>,
+}
+
+/// The most characters a conversation-list preview keeps. Two lines of a
+/// narrow sidebar never show more; the rest would only bloat the database.
+pub const PREVIEW_CHARS: usize = 240;
+
+/// A one-paragraph snippet of a message body for the conversation list: the
+/// plain-text part when there is one, otherwise the HTML flattened, with all
+/// whitespace collapsed to single spaces.
+pub fn preview(parsed: &ParsedMessage) -> String {
+    let text = match (&parsed.text_body, &parsed.html_body) {
+        (Some(text), _) if !text.trim().is_empty() => text.clone(),
+        (_, Some(html)) => html::html_to_text(html),
+        (Some(text), None) => text.clone(),
+        (None, None) => String::new(),
+    };
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = undo_truncated_base64(&collapsed);
+    collapsed.chars().take(PREVIEW_CHARS).collect()
+}
+
+/// A base64 part cut off by a partial fetch fails to decode, and mail-parser
+/// then hands back the raw encoding. Decode what is there ourselves.
+fn undo_truncated_base64(text: &str) -> String {
+    use base64::Engine;
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let looks_encoded = compact.len() >= 32
+        && compact
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=');
+    if !looks_encoded {
+        return text.to_string();
+    }
+    let usable = compact.trim_end_matches('=');
+    let usable = &usable[..usable.len() - usable.len() % 4];
+    match base64::engine::general_purpose::STANDARD_NO_PAD.decode(usable) {
+        Ok(bytes) => {
+            let decoded = String::from_utf8_lossy(&bytes);
+            let decoded = if decoded.trim_start().starts_with('<') {
+                html::html_to_text(&decoded)
+            } else {
+                decoded.into_owned()
+            };
+            decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        Err(_) => text.to_string(),
+    }
+}
+
+/// Build a preview from a header block and the first bytes of the body, as
+/// fetched in one IMAP round trip. `text` may stop mid-part: mail-parser is
+/// lenient about a missing closing boundary or a truncated encoding, and a
+/// snippet cut short is still a snippet.
+pub fn preview_from_slices(headers: &[u8], text: &[u8]) -> String {
+    let mut raw = Vec::with_capacity(headers.len() + text.len() + 4);
+    raw.extend_from_slice(headers);
+    if !raw.ends_with(b"\r\n\r\n") && !raw.ends_with(b"\n\n") {
+        raw.extend_from_slice(b"\r\n");
+    }
+    raw.extend_from_slice(text);
+    preview(&parse_message(&raw))
 }
 
 pub fn parse_message(raw: &[u8]) -> ParsedMessage {
@@ -184,6 +245,37 @@ pub fn sandbox_html(html: &str, are_remote_images_allowed: bool, style: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_prefers_text_and_collapses_whitespace() {
+        let raw = b"Subject: hi\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nHello\n  there\r\n\r\nworld\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>Hello</p>\r\n--b--\r\n";
+        assert_eq!(preview(&parse_message(raw)), "Hello there world");
+        let html =
+            b"Content-Type: text/html\r\n\r\n<style>p{}</style><p>One</p><p>Two &amp; three</p>";
+        assert_eq!(preview(&parse_message(html)), "One Two & three");
+    }
+
+    #[test]
+    fn preview_from_partial_fetch() {
+        let headers = b"Content-Type: multipart/alternative; boundary=b\r\nContent-Transfer-Encoding: 7bit\r\n\r\n";
+        // Cut off before the closing boundary, as a `<0.N>` fetch would.
+        let text = b"--b\r\nContent-Type: text/plain\r\n\r\nStart of the body";
+        assert_eq!(preview_from_slices(headers, text), "Start of the body");
+        assert_eq!(
+            preview_from_slices(b"Subject: x\r\n", b"plain body"),
+            "plain body"
+        );
+        assert_eq!(preview_from_slices(b"", b""), "");
+        // A base64 part cut mid-stream still reads as text.
+        let headers = b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n";
+        assert_eq!(
+            preview_from_slices(
+                headers,
+                b"KipCdW1waW5nIHRoaXMgdG8gdGhlIHRvcCoq\r\nIGFuZCBtb3JlIHRleH"
+            ),
+            "**Bumping this to the top** and more te"
+        );
+    }
 
     const RAW: &[u8] = b"From: Ada Lovelace <ada@example.com>\r\nTo: Bob <bob@example.org>, carol@example.net\r\nCc: dan@example.net\r\nDate: Wed, 16 Jul 2026 10:00:00 +0000\r\nSubject: Hello\r\nList-Unsubscribe: <mailto:leave@list.example>, <https://list.example/u?\r\n token=abc>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n--a\r\nContent-Type: text/plain\r\n\r\nplain body\r\n--a\r\nContent-Type: text/html\r\n\r\n<p>html body</p>\r\n--a--\r\n--b\r\nContent-Type: application/pdf; name=\"doc.pdf\"\r\nContent-Disposition: attachment; filename=\"doc.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--b--\r\n";
 

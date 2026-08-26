@@ -42,7 +42,8 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   folders.rs   FolderRole classification by name, display names, modified UTF-7
   threader.rs  union-find threading; address.rs, dates.rs, providers.rs, html.rs
   secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
-  avatars.rs   Gravatar/favicon fetch (ureq, native-tls) with an on-disk cache
+  avatars.rs   sender pictures: local graphmail-bridge photo endpoint (loopback+plain IMAP
+               accounts, port from `bridge-photo-port`), then Gravatar/favicon; on-disk cache
 crates/rustle/             the GTK layer
   build.rs     blueprint-compiler ui/*.blp -> gresource; glib-compile-schemas -> OUT_DIR
   ui/*.blp     Blueprint templates; the Rust attribute names must match the ids

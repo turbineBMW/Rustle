@@ -167,6 +167,7 @@ impl MainWindow {
         let avatars = self.avatars();
         let emails: Vec<Email> = conversation.with(|c| c.emails.iter().rev().cloned().collect());
         let mut views = Vec::with_capacity(emails.len());
+        let is_unified = self.is_unified_view();
         for (index, email) in emails.into_iter().enumerate() {
             let is_newest = index == 0;
             let on_rendered: Option<RenderedCallback> = if is_newest {
@@ -179,6 +180,12 @@ impl MainWindow {
             } else {
                 None
             };
+            let account = if is_unified {
+                self.account_for_folder(email.folder_id)
+                    .map(|(account, _)| account)
+            } else {
+                None
+            };
             let view = MessageView::new(
                 email,
                 handlers.clone(),
@@ -186,6 +193,7 @@ impl MainWindow {
                 is_newest,
                 should_load_remote_images,
                 &avatars,
+                account.as_ref(),
             );
             imp.thread_box.append(view.widget());
             views.push(view);

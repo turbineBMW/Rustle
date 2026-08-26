@@ -16,10 +16,64 @@
   color: var(--accent-color);
 }
 
-/* Which account a thread belongs to, shown only in the unified inbox. */
-.conversation-account {
-  color: var(--accent-color);
-  opacity: 0.8;
+/* A line of body: smaller than the subject, and dimmed to match the date
+   (both carry libadwaita's dim-label). */
+.conversation-preview {
+  font-size: 0.9em;
+}
+
+/* A hairline between conversations, as in Mail.app. Rows are squared off
+   and run edge to edge so the line is straight rather than following the
+   sidebar's rounded corners; the shadow costs no layout and is dropped under
+   the selected row. */
+.conversation-list > row {
+  border-radius: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.conversation-list > row:not(:last-child):not(:selected) {
+  box-shadow: inset 0 -1px var(--border-color);
+}
+
+/* Sticky day headers (Today / Yesterday / Wednesday, August 26th): opaque so
+   rows scroll under them, with the same hairline as the rows. */
+.conversation-list > header {
+  background: var(--view-bg-color);
+  box-shadow: inset 0 -1px var(--border-color);
+  padding: 4px 12px;
+}
+
+.sticky-day {
+  background: var(--view-bg-color);
+  box-shadow: inset 0 -1px var(--border-color);
+  padding: 4px 12px;
+}
+
+.conversation-day-header {
+  font-size: 0.85em;
+  font-weight: bold;
+  color: var(--dim-label-color, alpha(currentColor, 0.55));
+}
+
+/* Which account a thread belongs to, shown only in the unified inbox: a dot
+   in the account's colour before the sender. `--account-color` is set per
+   account by the provider in account_colors.rs through the `account-<id>`
+   class. */
+.account-dot {
+  background: var(--account-color, var(--accent-color));
+  border-radius: 50%;
+}
+
+/* The reader names the account above the date, in the same colour. */
+.account-name {
+  color: var(--account-color, var(--accent-color));
+  font-weight: bold;
+}
+
+/* The account heading in the sidebar wears the same colour. */
+.account-icon {
+  color: var(--account-color, var(--accent-color));
 }
 
 /* Reader: the subject sits in its own block over a plain body, so the thread

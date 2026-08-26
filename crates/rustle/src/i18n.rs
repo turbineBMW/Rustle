@@ -3,7 +3,7 @@
 use crate::config::GETTEXT_DOMAIN;
 pub use gettextrs::gettext;
 use gettextrs::{bindtextdomain, ngettext, setlocale, textdomain, LocaleCategory};
-use rustle_core::dates::RelativeLabel;
+use rustle_core::dates::{DayLabel, RelativeLabel};
 use rustle_core::net::errors::Failure;
 
 pub fn init() {
@@ -60,7 +60,59 @@ pub fn failure_message(failure: &Failure) -> String {
     }
 }
 
-/// Render a stored timestamp as the short label the list and reader show.
+/// The clock time a list row shows; its day is on the section header above.
+pub fn time_label(value: &str) -> String {
+    rustle_core::dates::time_label(value)
+}
+
+/// The sticky header over a day's conversations: "Today", "Yesterday", then
+/// "Wednesday, August 26th", with the year appended once it isn't this one.
+pub fn day_label(value: &str) -> String {
+    match rustle_core::dates::day_label(value) {
+        DayLabel::Today => gettext("Today"),
+        DayLabel::Yesterday => gettext("Yesterday"),
+        DayLabel::Date {
+            weekday,
+            month,
+            day,
+            year,
+        } => {
+            let day = format(
+                &gettext("{day}{ordinal}"),
+                &[("day", &day.to_string()), ("ordinal", ordinal_suffix(day))],
+            );
+            match year {
+                None => format(
+                    &gettext("{weekday}, {month} {day}"),
+                    &[("weekday", &weekday), ("month", &month), ("day", &day)],
+                ),
+                Some(year) => format(
+                    &gettext("{weekday}, {month} {day}, {year}"),
+                    &[
+                        ("weekday", &weekday),
+                        ("month", &month),
+                        ("day", &day),
+                        ("year", &year.to_string()),
+                    ],
+                ),
+            }
+        }
+        DayLabel::Raw(value) => value,
+    }
+}
+
+/// "st"/"nd"/"rd"/"th" for a day of the month.
+fn ordinal_suffix(day: u32) -> &'static str {
+    match (day % 10, day % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    }
+}
+
+/// Render a stored timestamp as the short label the reader shows.
 pub fn date_label(value: &str) -> String {
     match rustle_core::dates::relative_label(value) {
         RelativeLabel::Today(time) => format(&gettext("Today {time}"), &[("time", &time)]),

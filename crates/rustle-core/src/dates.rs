@@ -58,6 +58,69 @@ fn relative_label_on(value: &str, today: NaiveDate) -> RelativeLabel {
     }
 }
 
+/// The clock time of a stored timestamp, "16:02", the only part a list row
+/// shows once the day is carried by a section header. Unreadable: verbatim.
+pub fn time_label(value: &str) -> String {
+    match parse(value) {
+        Some(moment) => moment.format("%H:%M").to_string(),
+        None => value.to_string(),
+    }
+}
+
+/// Seconds since the epoch, for ordering rows by when they were sent rather
+/// than by the text of the header (whose zone offsets don't sort). Unreadable
+/// dates sort oldest.
+pub fn sort_key(value: &str) -> i64 {
+    parse(value)
+        .map(|moment| moment.timestamp())
+        .unwrap_or(i64::MIN)
+}
+
+/// The calendar day a stored timestamp falls on, in local time; rows that
+/// share one sit under the same section header. Unreadable dates share
+/// `None`.
+pub fn day_of(value: &str) -> Option<NaiveDate> {
+    parse(value).map(|moment| moment.date_naive())
+}
+
+/// How a day's section header reads. The GTK layer translates it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DayLabel {
+    Today,
+    Yesterday,
+    /// Any other day: "Wednesday", "August", 26, and the year only when it
+    /// isn't the current one.
+    Date {
+        weekday: String,
+        month: String,
+        day: u32,
+        year: Option<i32>,
+    },
+    /// A date we can't read, shown verbatim.
+    Raw(String),
+}
+
+pub fn day_label(value: &str) -> DayLabel {
+    day_label_on(value, Local::now().date_naive())
+}
+
+fn day_label_on(value: &str, today: NaiveDate) -> DayLabel {
+    let Some(moment) = parse(value) else {
+        return DayLabel::Raw(value.to_string());
+    };
+    let day = moment.date_naive();
+    match today.signed_duration_since(day).num_days() {
+        0 => DayLabel::Today,
+        1 => DayLabel::Yesterday,
+        _ => DayLabel::Date {
+            weekday: moment.format("%A").to_string(),
+            month: moment.format("%B").to_string(),
+            day: day.day(),
+            year: (day.year() != today.year()).then_some(day.year()),
+        },
+    }
+}
+
 /// Parses either our own ISO form or an RFC 2822 header, in local time.
 fn parse(value: &str) -> Option<DateTime<Local>> {
     if let Ok(moment) = DateTime::parse_from_rfc3339(value) {
@@ -84,6 +147,52 @@ mod tests {
             "2026-07-16T10:00:00Z"
         );
         assert_eq!(to_iso("not a date"), "not a date");
+    }
+
+    #[test]
+    fn day_labels() {
+        use chrono::TimeZone;
+        let today = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+        let stamp = |y: i32, m: u32, d: u32| {
+            Local
+                .with_ymd_and_hms(y, m, d, 10, 5, 0)
+                .unwrap()
+                .to_rfc3339()
+        };
+        assert_eq!(day_label_on(&stamp(2026, 8, 26), today), DayLabel::Today);
+        assert_eq!(
+            day_label_on(&stamp(2026, 8, 25), today),
+            DayLabel::Yesterday
+        );
+        assert_eq!(
+            day_label_on(&stamp(2026, 8, 19), today),
+            DayLabel::Date {
+                weekday: "Wednesday".into(),
+                month: "August".into(),
+                day: 19,
+                year: None,
+            }
+        );
+        assert_eq!(
+            day_label_on(&stamp(2025, 12, 31), today),
+            DayLabel::Date {
+                weekday: "Wednesday".into(),
+                month: "December".into(),
+                day: 31,
+                year: Some(2025),
+            }
+        );
+        assert_eq!(
+            day_label_on("garbage", today),
+            DayLabel::Raw("garbage".into())
+        );
+        assert_eq!(time_label(&stamp(2026, 8, 26)), "10:05");
+        assert_eq!(time_label("garbage"), "garbage");
+        assert_eq!(
+            day_of(&stamp(2026, 8, 19)),
+            NaiveDate::from_ymd_opt(2026, 8, 19)
+        );
+        assert_eq!(day_of("garbage"), None);
     }
 
     #[test]

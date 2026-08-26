@@ -1,12 +1,14 @@
 //! The conversation list: contents, search, and paging.
 
 use super::{MainWindow, PAGE_EMPTY, PAGE_LIST, PAGE_LOADING, SEARCH_DEBOUNCE_MS};
+use crate::i18n;
 use crate::objects::ConversationObject;
 use crate::widgets::conversation_row::ConversationRow;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::gdk;
 use gtk::glib;
+use gtk::{gdk, gio};
+use rustle_core::dates;
 use rustle_core::folders;
 use rustle_core::models::Conversation;
 use std::time::Duration;
@@ -66,13 +68,12 @@ impl MainWindow {
     /// restored by identity afterwards.
     fn replace_conversations(&self, matches: Vec<Conversation>, keep_id: Option<i64>) {
         let target = keep_id.and_then(|id| matches.iter().position(|c| c.id() == id));
-        let objects: Vec<ConversationObject> =
-            matches.into_iter().map(ConversationObject::new).collect();
-        let store = self.conversation_store();
+        let sections = day_sections(matches);
+        let store = self.conversation_sections();
         let selection = self.selection();
         self.state_mut().is_selection_update_in_progress = true;
         selection.unselect_all();
-        store.splice(0, store.n_items(), &objects);
+        store.splice(0, store.n_items(), &sections);
         match target {
             Some(index) => selection.select_item(index as u32, true),
             None => selection.unselect_all(),
@@ -81,7 +82,7 @@ impl MainWindow {
     }
 
     pub(super) fn show_list_or_placeholder(&self) {
-        let page = if self.conversation_store().n_items() > 0 {
+        let page = if self.conversation_model().n_items() > 0 {
             PAGE_LIST
         } else if self.is_current_account_syncing() {
             PAGE_LOADING
@@ -89,6 +90,29 @@ impl MainWindow {
             PAGE_EMPTY
         };
         self.imp().conversation_stack.set_visible_child_name(page);
+    }
+
+    /// Pins the day of the topmost visible row above the list, so the date
+    /// stays readable however far down a long day you've scrolled. Hidden
+    /// when a section's own header is at the top edge, so it isn't doubled,
+    /// and when the list is empty.
+    pub(super) fn update_sticky_day(&self) {
+        let imp = self.imp();
+        let scroller = &imp.conversation_scroller;
+        // Just inside the top edge, past the header's own hairline.
+        let hit = scroller.pick(scroller.width() as f64 / 2.0, 1.0, gtk::PickFlags::DEFAULT);
+        let row = hit.and_then(|widget| {
+            widget
+                .ancestor(ConversationRow::static_type())
+                .and_downcast::<ConversationRow>()
+        });
+        match row {
+            Some(row) if scroller.vadjustment().value() > 0.0 => {
+                imp.sticky_day.set_label(&row.day_label());
+                imp.sticky_day.set_visible(true);
+            }
+            _ => imp.sticky_day.set_visible(false),
+        }
     }
 
     /// Debounce keystrokes: query the database ~200ms after typing stops.
@@ -167,17 +191,44 @@ impl MainWindow {
                 let is_outgoing = window
                     .current_folder()
                     .is_some_and(|folder| folders::is_outgoing_folder(&folder.name));
-                let account_label = if window.is_unified_view() {
+                let account = if window.is_unified_view() {
                     window
                         .account_for_folder(conversation.with(|c| c.folder_id()))
-                        .map(|(account, _)| account.email)
+                        .map(|(account, _)| account)
                 } else {
                     None
                 };
-                conversation.with(|c| row.bind(c, is_outgoing, account_label.as_deref()));
+                conversation.with(|c| row.bind(c, is_outgoing, account.as_ref()));
             }
         ));
         imp.conversation_list.set_factory(Some(&factory));
+
+        // Sections are days (see `day_sections`); each gets a sticky header
+        // labelled from its first conversation.
+        let headers = gtk::SignalListItemFactory::new();
+        headers.connect_setup(|_, item| {
+            let Some(header) = item.downcast_ref::<gtk::ListHeader>() else {
+                return;
+            };
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .css_classes(["conversation-day-header"])
+                .build();
+            header.set_child(Some(&label));
+        });
+        headers.connect_bind(|_, item| {
+            let Some(header) = item.downcast_ref::<gtk::ListHeader>() else {
+                return;
+            };
+            let (Some(label), Some(conversation)) = (
+                header.child().and_downcast::<gtk::Label>(),
+                header.item().and_downcast::<ConversationObject>(),
+            ) else {
+                return;
+            };
+            label.set_label(&conversation.with(|c| i18n::day_label(c.date())));
+        });
+        imp.conversation_list.set_header_factory(Some(&headers));
     }
 
     /// Scrolling to the bottom pulls the next-older page for the open folder,
@@ -222,6 +273,25 @@ impl MainWindow {
 
 /// Put the scroll position back after the store was replaced. Deferred to an
 /// idle callback because the new contents have not been laid out yet.
+/// Split the (date-ordered) matches into one store per calendar day, in the
+/// order they arrive. Unreadable dates all fall into a single run.
+fn day_sections(matches: Vec<Conversation>) -> Vec<gio::ListStore> {
+    let mut sections: Vec<gio::ListStore> = Vec::new();
+    let mut current_day = None;
+    for conversation in matches {
+        let day = dates::day_of(conversation.date());
+        if sections.is_empty() || current_day != Some(day) {
+            sections.push(gio::ListStore::new::<ConversationObject>());
+            current_day = Some(day);
+        }
+        sections
+            .last()
+            .expect("pushed above")
+            .append(&ConversationObject::new(conversation));
+    }
+    sections
+}
+
 fn restore_scroll(vadjustment: &gtk::Adjustment, position: f64) {
     if position <= 0.0 {
         return;

@@ -49,6 +49,8 @@ pub struct FetchedHeader {
     pub references: String,
     pub is_seen: bool,
     pub is_flagged: bool,
+    /// A snippet of the body, already decoded; empty when the server sent none.
+    pub preview: String,
 }
 
 struct Xoauth2<'a>(&'a Credential);
@@ -254,7 +256,9 @@ impl ImapSession {
         let fetches = self.require()?.fetch(
             format!("{start}:{end}"),
             // BODY.PEEK[...] = look at the header WITHOUT marking it \Seen.
-            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES)])",
+            // The first 4 KiB of the body ride along for the preview line;
+            // Content-Type and the transfer encoding are what decode them.
+            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)",
         )?;
         Ok(fetches
             .iter()
@@ -262,12 +266,15 @@ impl ImapSession {
                 let uid = fetch.uid?;
                 let header_bytes = fetch.header().unwrap_or(&[]);
                 let flags = fetch.flags();
-                Some(parse_header(
+                let mut header = parse_header(
                     uid.to_string(),
                     header_bytes,
                     flags.contains(&Flag::Seen),
                     flags.contains(&Flag::Flagged),
-                ))
+                );
+                header.preview =
+                    crate::mime::preview_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
+                Some(header)
             })
             .collect())
     }
@@ -401,6 +408,7 @@ pub fn parse_header(
         references: header("References"),
         is_seen,
         is_flagged,
+        preview: String::new(),
     }
 }
 

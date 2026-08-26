@@ -121,11 +121,11 @@ impl MainWindow {
             return Vec::new();
         }
         let selection = self.selection();
-        let store = self.conversation_store();
+        let model = self.conversation_model();
         let positions = selection.selection();
         (0..positions.size())
             .filter_map(|index| {
-                store
+                model
                     .item(positions.nth(index as u32))
                     .and_downcast::<ConversationObject>()
             })
@@ -344,7 +344,7 @@ impl MainWindow {
             self.update_reader();
         }
         let Some(conversation) = self
-            .conversation_store()
+            .conversation_model()
             .item(position)
             .and_downcast::<ConversationObject>()
         else {

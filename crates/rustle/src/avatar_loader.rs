@@ -1,6 +1,7 @@
 //! Address to texture, fetched in the background and cached in memory. A
 //! cached None means nobody had a picture, so a sender without one costs a
-//! single request per session.
+//! single request per session. Accounts served by a local graphmail-bridge
+//! contribute its photo endpoint, asked before the public lookups.
 
 use crate::settings;
 use crate::workers;
@@ -9,6 +10,8 @@ use gtk::gdk_pixbuf::Pixbuf;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use rustle_core::avatars::{self, Bridge};
+use rustle_core::models::{Account, Security};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -23,6 +26,8 @@ type Callback = Box<dyn Fn(&gdk::Texture)>;
 struct State {
     cache: HashMap<String, Option<gdk::Texture>>,
     waiting: HashMap<String, Vec<Callback>>,
+    /// Accounts whose IMAP server is a local bridge; see [`AvatarLoader::set_accounts`].
+    bridge_accounts: Vec<Account>,
 }
 
 #[derive(Clone)]
@@ -37,6 +42,22 @@ impl AvatarLoader {
             settings,
             state: Rc::default(),
         }
+    }
+
+    /// Tell the loader which accounts exist, so those that talk to a local
+    /// graphmail-bridge can have it asked for pictures. Called whenever the
+    /// account list is (re)loaded; pictures already resolved stay as they are.
+    pub fn set_accounts(&self, accounts: &[Account]) {
+        let bridge_accounts: Vec<Account> = accounts
+            .iter()
+            .filter(|account| {
+                !account.is_online_account()
+                    && account.imap_security == Security::None
+                    && avatars::bridge_url(&account.imap_host, 1).is_some()
+            })
+            .cloned()
+            .collect();
+        self.state.borrow_mut().bridge_accounts = bridge_accounts;
     }
 
     pub fn load(&self, address: &str, on_ready: impl Fn(&gdk::Texture) + 'static) {
@@ -58,13 +79,34 @@ impl AvatarLoader {
         state
             .waiting
             .insert(address.clone(), vec![Box::new(on_ready)]);
+        let bridge_accounts = state.bridge_accounts.clone();
         drop(state);
 
+        let photo_port = self
+            .settings
+            .int(settings::BRIDGE_PHOTO_PORT)
+            .clamp(1, 65535) as u16;
         let cache_dir = glib::user_cache_dir().join("rustle");
         let loader = self.clone();
         let key = address.clone();
         workers::run(
-            move || rustle_core::avatars::fetch(&address, &cache_dir, &decode_width),
+            move || {
+                // Credentials come from the keyring, which blocks on D-Bus,
+                // so they are resolved here on the worker rather than up front.
+                let bridges: Vec<Bridge> = bridge_accounts
+                    .iter()
+                    .filter_map(|account| {
+                        let url = avatars::bridge_url(&account.imap_host, photo_port)?;
+                        let credential = rustle_core::secrets::credential_for(account)?;
+                        Some(Bridge {
+                            url,
+                            user: credential.user,
+                            password: credential.secret,
+                        })
+                    })
+                    .collect();
+                avatars::fetch(&address, &bridges, &cache_dir, &decode_width)
+            },
             move |bytes| loader.deliver(&key, bytes),
         );
     }

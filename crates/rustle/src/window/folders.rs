@@ -35,9 +35,17 @@ impl MainWindow {
         let _ = imp.folder_tree_model.set(tree_model);
         let _ = imp.folder_selection.set(folder_selection);
 
-        let conversation_store = gio::ListStore::new::<crate::objects::ConversationObject>();
-        let selection = gtk::MultiSelection::new(Some(conversation_store.clone()));
-        let _ = imp.conversation_store.set(conversation_store);
+        let conversation_sections = gio::ListStore::new::<gio::ListStore>();
+        let conversation_model = gtk::FlattenListModel::new(Some(conversation_sections.clone()));
+        let selection = gtk::MultiSelection::new(Some(conversation_model.clone()));
+        // The sticky day label follows the model as well as the scroll.
+        conversation_model.connect_items_changed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _, _, _| window.update_sticky_day()
+        ));
+        let _ = imp.conversation_sections.set(conversation_sections);
+        let _ = imp.conversation_model.set(conversation_model);
         let _ = imp.selection.set(selection);
 
         self.setup_folder_sidebar();
@@ -304,6 +312,8 @@ impl MainWindow {
                 .map(|f| (f.id, f.parent_id))
                 .collect::<Vec<_>>(),
         );
+        crate::account_colors::apply(&accounts);
+        self.avatars().set_accounts(&accounts);
         let needs_rebuild = {
             let mut state = self.state_mut();
             state.accounts = accounts.iter().map(|a| (a.id, a.clone())).collect();

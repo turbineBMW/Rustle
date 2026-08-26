@@ -18,6 +18,24 @@ pub fn escape(text: &str) -> String {
 }
 
 /// Strip tags, drop scripts and styles, and collapse blank lines.
+/// Remove every `<script>…</script>` block, case-insensitively. Editor
+/// pages once leaked their own bootstrap script into saved signatures.
+pub fn strip_scripts(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0;
+    while let Some(start) = lower[pos..].find("<script") {
+        let start = pos + start;
+        out.push_str(&html[pos..start]);
+        match lower[start..].find("</script>") {
+            Some(end) => pos = start + end + "</script>".len(),
+            None => return out,
+        }
+    }
+    out.push_str(&html[pos..]);
+    out
+}
+
 pub fn html_to_text(html: &str) -> String {
     let mut parts = String::with_capacity(html.len());
     let mut rest = html;
@@ -96,5 +114,13 @@ mod tests {
     #[test]
     fn escapes() {
         assert_eq!(to_html("a<b>\n\"c\""), "a&lt;b&gt;<br>&quot;c&quot;");
+    }
+
+    #[test]
+    fn strip_scripts_removes_script_blocks_and_keeps_the_rest() {
+        let html = "Name<SCRIPT>var x = '</b>';</script><div>Title</div><script>a()</script>";
+        assert_eq!(strip_scripts(html), "Name<div>Title</div>");
+        assert_eq!(strip_scripts("<b>plain</b>"), "<b>plain</b>");
+        assert_eq!(strip_scripts("x<script>unterminated"), "x");
     }
 }

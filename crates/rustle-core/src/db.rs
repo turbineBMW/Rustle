@@ -2,7 +2,9 @@
 //! do network and hand results back here.
 
 use crate::folders;
-use crate::models::{Account, Conversation, Email, Folder, MessageHeader, NewAccount, Security};
+use crate::models::{
+    is_hex_color, Account, Conversation, Email, Folder, MessageHeader, NewAccount, Security,
+};
 use crate::threader;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::{HashMap, HashSet};
@@ -30,6 +32,9 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE emails ADD COLUMN recipient_address TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE accounts ADD COLUMN goa_id TEXT NOT NULL DEFAULT ''",
     "INSERT INTO emails_fts(emails_fts) VALUES ('rebuild')",
+    "ALTER TABLE accounts ADD COLUMN color TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE accounts ADD COLUMN signature TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE accounts ADD COLUMN label TEXT NOT NULL DEFAULT ''",
 ];
 
 /// Turn free text into a safe FTS5 query: each word matched as a prefix.
@@ -118,6 +123,13 @@ impl Database {
             CREATE TRIGGER IF NOT EXISTS emails_fts_delete AFTER DELETE ON emails BEGIN
                 INSERT INTO emails_fts(emails_fts, rowid, sender, subject, preview)
                 VALUES ('delete', old.id, old.sender, old.subject, old.preview);
+            END;
+            CREATE TRIGGER IF NOT EXISTS emails_fts_update AFTER UPDATE OF sender, subject, preview
+            ON emails BEGIN
+                INSERT INTO emails_fts(emails_fts, rowid, sender, subject, preview)
+                VALUES ('delete', old.id, old.sender, old.subject, old.preview);
+                INSERT INTO emails_fts(rowid, sender, subject, preview)
+                VALUES (new.id, new.sender, new.subject, new.preview);
             END;",
         )
     }
@@ -149,6 +161,9 @@ impl Database {
             smtp_port: row.get::<_, i64>("smtp_port")? as u16,
             smtp_security: Security::parse(&row.get::<_, String>("smtp_security")?),
             goa_id: row.get("goa_id")?,
+            color: row.get("color")?,
+            signature: row.get("signature")?,
+            label: row.get("label")?,
         })
     }
 
@@ -186,6 +201,33 @@ impl Database {
         )?;
         let id = self.conn.last_insert_rowid();
         Ok(self.account(id)?.expect("the row was just inserted"))
+    }
+
+    /// Stores the colour that marks this account's mail; anything that isn't
+    /// `#rrggbb` clears it back to the palette default.
+    pub fn set_account_color(&self, account_id: i64, color: &str) -> Result<()> {
+        let color = if is_hex_color(color) { color } else { "" };
+        self.conn.execute(
+            "UPDATE accounts SET color = ?1 WHERE id = ?2",
+            params![color, account_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_account_signature(&self, account_id: i64, signature: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET signature = ?1 WHERE id = ?2",
+            params![signature, account_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_account_label(&self, account_id: i64, label: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET label = ?1 WHERE id = ?2",
+            params![label.trim(), account_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_account(&mut self, account_id: i64) -> Result<()> {
@@ -439,7 +481,7 @@ impl Database {
 
     /// Threads across several folders at once -- the unified inbox. Threads
     /// never span folders (grouping is per folder), so this is a union sorted
-    /// by date, which is comparable across accounts where UIDs are not.
+    /// by date.
     pub fn conversations_in_folders(&self, folder_ids: &[i64]) -> Result<Vec<Conversation>> {
         if folder_ids.is_empty() {
             return Ok(Vec::new());
@@ -450,10 +492,7 @@ impl Database {
         let rows =
             statement.query_map(rusqlite::params_from_iter(folder_ids), Self::email_from_row)?;
         let emails = rows.collect::<Result<Vec<_>>>()?;
-        Ok(Self::conversations_from_emails(
-            emails,
-            folder_ids.len() > 1,
-        ))
+        Ok(Self::conversations_from_emails(emails))
     }
 
     /// Full-text search; return each matching conversation whole. The subquery
@@ -492,13 +531,10 @@ impl Database {
         values.push(rusqlite::types::Value::from(matcher));
         let rows = statement.query_map(rusqlite::params_from_iter(values), Self::email_from_row)?;
         let emails = rows.collect::<Result<Vec<_>>>()?;
-        Ok(Self::conversations_from_emails(
-            emails,
-            folder_ids.len() > 1,
-        ))
+        Ok(Self::conversations_from_emails(emails))
     }
 
-    fn conversations_from_emails(emails: Vec<Email>, is_cross_folder: bool) -> Vec<Conversation> {
+    fn conversations_from_emails(emails: Vec<Email>) -> Vec<Conversation> {
         let mut groups: HashMap<(i64, i64), Vec<Email>> = HashMap::new();
         let mut order: Vec<(i64, i64)> = Vec::new();
         for email in emails {
@@ -517,11 +553,11 @@ impl Database {
                 Conversation::new(mails)
             })
             .collect();
-        if is_cross_folder {
-            conversations.sort_by(|a, b| b.date().cmp(a.date()));
-        } else {
-            conversations.sort_by_key(|c| std::cmp::Reverse(c.latest().arrival_key()));
-        }
+        // Newest first by sent time (comparable across accounts, and what
+        // the list's day sections assume); arrival order only breaks ties.
+        conversations.sort_by_key(|c| {
+            std::cmp::Reverse((crate::dates::sort_key(c.date()), c.latest().arrival_key()))
+        });
         conversations
     }
 
@@ -606,10 +642,15 @@ impl Database {
             .map(Option::flatten)
     }
 
+    /// Cache a downloaded message. A row synced before previews existed gets
+    /// its preview filled in from the body at the same time.
     pub fn save_raw_message(&self, email_id: i64, raw: &[u8]) -> Result<()> {
+        let preview = crate::mime::preview(&crate::mime::parse_message(raw));
         self.conn.execute(
-            "UPDATE emails SET raw_message = ?1 WHERE id = ?2",
-            params![raw, email_id],
+            "UPDATE emails SET raw_message = ?1,
+                preview = CASE WHEN preview = '' THEN ?3 ELSE preview END
+             WHERE id = ?2",
+            params![raw, email_id, preview],
         )?;
         Ok(())
     }
@@ -666,7 +707,8 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
                 unread = excluded.unread, starred = excluded.starred,
-                recipient = excluded.recipient, recipient_address = excluded.recipient_address",
+                recipient = excluded.recipient, recipient_address = excluded.recipient_address,
+                preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END",
             params![
                 folder_id,
                 header.uid,
@@ -782,6 +824,32 @@ mod tests {
         let mut db = Database::open_in_memory().unwrap();
         let saved = db.save_account(&account()).unwrap();
         assert_eq!(db.accounts().unwrap(), vec![saved.clone()]);
+        assert_eq!(saved.color, "");
+        assert_eq!(saved.color_hex(), "#3584e4");
+        db.set_account_color(saved.id, "#e62d42").unwrap();
+        assert_eq!(
+            db.account(saved.id).unwrap().unwrap().color_hex(),
+            "#e62d42"
+        );
+        db.set_account_color(saved.id, "red").unwrap();
+        assert_eq!(db.account(saved.id).unwrap().unwrap().color, "");
+        assert_eq!(saved.signature_html(), "");
+        db.set_account_signature(saved.id, "Cheers,\nMe\n").unwrap();
+        assert_eq!(
+            db.account(saved.id).unwrap().unwrap().signature_html(),
+            "Cheers,<br>Me"
+        );
+        db.set_account_signature(saved.id, "<div><b>Me</b></div>")
+            .unwrap();
+        assert_eq!(
+            db.account(saved.id).unwrap().unwrap().signature_html(),
+            "<div><b>Me</b></div>"
+        );
+        assert_eq!(saved.name(), saved.email);
+        db.set_account_label(saved.id, "  Work ").unwrap();
+        let labelled = db.account(saved.id).unwrap().unwrap();
+        assert_eq!(labelled.name(), "Work");
+        assert_eq!(labelled.short_label(), "Work");
         let inbox = db
             .get_or_create_folder(saved.id, "INBOX", "mail-unread-symbolic")
             .unwrap();

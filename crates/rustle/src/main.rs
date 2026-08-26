@@ -1,11 +1,13 @@
 //! Rustle: a GTK 4 / libadwaita mail client.
 
 mod accent;
+mod account_colors;
 mod application;
 mod avatar_loader;
 mod composer;
 mod config;
 mod dialogs;
+mod editor;
 mod i18n;
 mod objects;
 mod settings;

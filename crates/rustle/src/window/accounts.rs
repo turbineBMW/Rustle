@@ -5,7 +5,6 @@ use crate::composer::{ComposerWindow, Draft};
 use crate::dialogs::account::AccountDialog;
 use crate::dialogs::accounts::AccountsDialog;
 use crate::dialogs::online_accounts::OnlineAccountsDialog;
-use crate::settings;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -103,10 +102,6 @@ impl MainWindow {
         }
     }
 
-    fn signature_text(&self) -> String {
-        settings::signature_text(&self.settings())
-    }
-
     /// The account a new message is written from: the one owning the
     /// selected conversation, else the open folder's, else the first.
     fn compose_account(&self) -> Option<Account> {
@@ -128,16 +123,22 @@ impl MainWindow {
     }
 
     pub(super) fn on_compose_clicked(&self) {
-        let signature = self.signature_text();
+        let Some(account) = self.compose_account() else {
+            return;
+        };
+        let signature = account.signature_html();
         let body_html = if signature.is_empty() {
             String::new()
         } else {
             compose::signature_block(&signature)
         };
-        self.open_composer(Draft {
-            body_html,
-            ..Draft::default()
-        });
+        self.open_composer(
+            &account,
+            Draft {
+                body_html,
+                ..Draft::default()
+            },
+        );
     }
 
     pub(super) fn open_reply(&self, should_reply_all: bool) {
@@ -159,7 +160,7 @@ impl MainWindow {
             &parsed.from_header,
             &parsed.date_header,
             &original_text(Some(&parsed)),
-            &self.signature_text(),
+            &account.signature_html(),
         );
         let cc = if should_reply_all {
             compose::reply_all_cc(
@@ -171,17 +172,23 @@ impl MainWindow {
         } else {
             String::new()
         };
-        self.open_composer(Draft {
-            to,
-            cc,
-            subject: compose::reply_subject(&parsed.subject),
-            body_html,
-            ..Draft::default()
-        });
+        self.open_composer(
+            &account,
+            Draft {
+                to,
+                cc,
+                subject: compose::reply_subject(&parsed.subject),
+                body_html,
+                ..Draft::default()
+            },
+        );
     }
 
     pub(super) fn open_forward(&self) {
         let Some((_, parsed)) = self.active_parsed() else {
+            return;
+        };
+        let Some(account) = self.compose_account() else {
             return;
         };
         let body_html = compose::forward_body(
@@ -189,13 +196,16 @@ impl MainWindow {
             &parsed.date_header,
             &parsed.subject,
             &original_text(Some(&parsed)),
-            &self.signature_text(),
+            &account.signature_html(),
         );
-        self.open_composer(Draft {
-            subject: compose::forward_subject(&parsed.subject),
-            body_html,
-            ..Draft::default()
-        });
+        self.open_composer(
+            &account,
+            Draft {
+                subject: compose::forward_subject(&parsed.subject),
+                body_html,
+                ..Draft::default()
+            },
+        );
     }
 
     /// The rendered newest message of the one selected conversation, if it
@@ -214,13 +224,8 @@ impl MainWindow {
         let Some(account) = self.compose_account() else {
             return;
         };
-        let composer = ComposerWindow::for_mailto(
-            self.application().as_ref(),
-            self.db(),
-            &account,
-            &self.settings(),
-            uri,
-        );
+        let composer =
+            ComposerWindow::for_mailto(self.application().as_ref(), self.db(), &account, uri);
         composer.connect_finished(glib::clone!(
             #[weak(rename_to = window)]
             self,
@@ -229,11 +234,8 @@ impl MainWindow {
         composer.present();
     }
 
-    fn open_composer(&self, draft: Draft) {
-        let Some(account) = self.compose_account() else {
-            return;
-        };
-        let composer = ComposerWindow::new(self.application().as_ref(), self.db(), &account, draft);
+    fn open_composer(&self, account: &Account, draft: Draft) {
+        let composer = ComposerWindow::new(self.application().as_ref(), self.db(), account, draft);
         composer.connect_finished(glib::clone!(
             #[weak(rename_to = window)]
             self,

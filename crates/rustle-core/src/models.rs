@@ -94,6 +94,79 @@ pub struct Account {
     /// Set when the account came from GNOME Online Accounts, which is then
     /// where its credentials live instead of the keyring.
     pub goa_id: String,
+    /// The colour that marks this account's mail, as a CSS hex string
+    /// (`#rrggbb`). Empty until the user picks one; see [`Account::color_hex`].
+    pub color: String,
+    /// The signature appended to mail sent from this account; empty for none.
+    /// HTML as saved by the signature editor; older rows hold plain text,
+    /// which [`Account::signature_html`] converts.
+    pub signature: String,
+    /// What the user calls this account ("Work"), shown wherever the app
+    /// names it instead of the address. Empty means the address.
+    pub label: String,
+}
+
+/// The GNOME accent palette, handed out to accounts that haven't chosen a
+/// colour so that two accounts never start out looking alike.
+pub const ACCOUNT_PALETTE: [&str; 9] = [
+    "#3584e4", "#2190a4", "#3a944a", "#c88800", "#ed5b00", "#e62d42", "#d56199", "#9141ac",
+    "#6f8396",
+];
+
+impl Account {
+    /// The chosen colour, or a palette default keyed by the account id so it
+    /// is stable across launches without being stored.
+    pub fn color_hex(&self) -> &str {
+        if is_hex_color(&self.color) {
+            &self.color
+        } else {
+            ACCOUNT_PALETTE[(self.id.max(1) as usize - 1) % ACCOUNT_PALETTE.len()]
+        }
+    }
+
+    /// The signature to append to outgoing mail as an HTML fragment, or ""
+    /// when there is none. Plain text saved before the editor could format
+    /// is escaped on the way out. The editor may save a bare text node ahead
+    /// of the first tag ("Name<div>Title</div>"), so HTML is recognised by
+    /// containing markup, not by its first character.
+    pub fn signature_html(&self) -> String {
+        let signature = self.signature.trim();
+        if looks_like_html(signature) {
+            crate::html::strip_scripts(signature)
+        } else {
+            crate::html::to_html(signature)
+        }
+    }
+
+    /// How the app names this account: the user's label, or the address.
+    pub fn name(&self) -> &str {
+        let label = self.label.trim();
+        if label.is_empty() {
+            &self.email
+        } else {
+            label
+        }
+    }
+
+    /// The short name the unified inbox tags this account's mail with: the
+    /// user's label, then the display name, then the part of the address
+    /// before the `@`.
+    pub fn short_label(&self) -> &str {
+        let label = self.label.trim();
+        let name = self.display_name.trim();
+        if !label.is_empty() {
+            label
+        } else if !name.is_empty() {
+            name
+        } else {
+            self.email.split('@').next().unwrap_or(&self.email)
+        }
+    }
+}
+
+/// `#rrggbb`, and nothing else: this is interpolated into CSS.
+pub fn is_hex_color(text: &str) -> bool {
+    text.len() == 7 && text.starts_with('#') && text[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl Account {
@@ -280,9 +353,24 @@ pub struct MessageHeader {
     pub addresses: Vec<(String, String)>,
 }
 
+/// A closing tag or a `<br>` is markup; a lone `<` in "Me <me@example.com>"
+/// is not.
+fn looks_like_html(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("</") || lower.contains("<br")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_markup_is_recognised_after_a_leading_text_node() {
+        assert!(looks_like_html("Brandon<div><b>Title</b></div>"));
+        assert!(looks_like_html("Line one<BR>Line two"));
+        assert!(!looks_like_html("Me <me@example.com>\nCheers"));
+        assert!(!looks_like_html("Brandon"));
+    }
 
     #[test]
     fn ports_are_validated() {

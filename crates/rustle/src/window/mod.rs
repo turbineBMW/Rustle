@@ -123,6 +123,8 @@ mod imp {
         #[template_child]
         pub conversation_scroller: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
+        pub sticky_day: TemplateChild<gtk::Label>,
+        #[template_child]
         pub conversation_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub reader_stack: TemplateChild<gtk::Stack>,
@@ -181,10 +183,13 @@ mod imp {
         pub folder_root_store: OnceCell<gio::ListStore>,
         pub folder_tree_model: OnceCell<gtk::TreeListModel>,
         pub folder_selection: OnceCell<gtk::SingleSelection>,
-        // One persistent store, mutated in place via splice() on every
-        // refresh: swapping in a new store makes GtkListView reset its scroll
-        // to the top, which fights load-on-scroll.
-        pub conversation_store: OnceCell<gio::ListStore>,
+        // One persistent outer store of per-day sections, each a ListStore
+        // of ConversationObject, spliced in place on every refresh: swapping
+        // in a new model makes GtkListView reset its scroll to the top, which
+        // fights load-on-scroll. The flattened view is what the selection
+        // and the list see; its sections drive the sticky day headers.
+        pub conversation_sections: OnceCell<gio::ListStore>,
+        pub conversation_model: OnceCell<gtk::FlattenListModel>,
         pub selection: OnceCell<gtk::MultiSelection>,
         pub avatars: OnceCell<AvatarLoader>,
         pub network: OnceCell<gio::NetworkMonitor>,
@@ -357,9 +362,18 @@ impl MainWindow {
             .clone()
     }
 
-    pub(super) fn conversation_store(&self) -> gio::ListStore {
+    pub(super) fn conversation_sections(&self) -> gio::ListStore {
         self.imp()
-            .conversation_store
+            .conversation_sections
+            .get()
+            .expect("built at construction")
+            .clone()
+    }
+
+    /// Every listed conversation in display order, sections flattened.
+    pub(super) fn conversation_model(&self) -> gtk::FlattenListModel {
+        self.imp()
+            .conversation_model
             .get()
             .expect("built at construction")
             .clone()
@@ -512,6 +526,14 @@ impl MainWindow {
             self,
             move |_, position| window.on_list_edge_reached(position)
         ));
+        // The sticky day label tracks whichever row is at the top edge.
+        imp.conversation_scroller
+            .vadjustment()
+            .connect_value_changed(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_| window.update_sticky_day()
+            ));
         // Presenting the window again after close released the reading pane
         // re-renders whatever is still selected.
         self.connect_map(|window| window.update_reader());
@@ -654,9 +676,9 @@ impl MainWindow {
             return;
         }
         self.select_folder_by_id(folder_id);
-        let store = self.conversation_store();
-        for index in 0..store.n_items() {
-            let Some(conversation) = store.item(index).and_downcast::<ConversationObject>() else {
+        let model = self.conversation_model();
+        for index in 0..model.n_items() {
+            let Some(conversation) = model.item(index).and_downcast::<ConversationObject>() else {
                 continue;
             };
             let holds_uid = conversation.with(|c| {

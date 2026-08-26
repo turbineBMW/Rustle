@@ -49,9 +49,11 @@ pub fn reply_all_cc(to_header: &str, cc_header: &str, own_email: &str, to_addr: 
     unique.join(", ")
 }
 
-/// The "-- " delimiter is the RFC 3676 convention for a signature.
-pub fn signature_block(text: &str) -> String {
-    format!("<div class=\"signature\">-- <br>{}</div>", to_html(text))
+/// Wraps a signature (an HTML fragment, see `Account::signature_html`) in
+/// the block the composer swaps per account. The "-- " delimiter is the RFC
+/// 3676 convention for a signature.
+pub fn signature_block(html: &str) -> String {
+    format!("<div class=\"signature\">-- <br>{html}</div>")
 }
 
 fn signature_or_empty(signature: &str) -> String {

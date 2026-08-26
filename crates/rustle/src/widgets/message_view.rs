@@ -2,6 +2,7 @@
 //! rendered in a sandboxed WebKit view when it is HTML.
 
 use crate::accent;
+use crate::account_colors;
 use crate::avatar_loader::AvatarLoader;
 use crate::i18n::{self, gettext};
 use adw::prelude::*;
@@ -9,7 +10,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::pango;
 use rustle_core::mime::{self, ParsedMessage, Unsubscribe};
-use rustle_core::models::{Attachment, Email};
+use rustle_core::models::{Account, Attachment, Email};
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit::prelude::*;
@@ -117,6 +118,7 @@ impl MessageView {
         is_expanded: bool,
         should_load_remote_images: bool,
         avatars: &AvatarLoader,
+        account: Option<&Account>,
     ) -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -162,13 +164,34 @@ impl MessageView {
             names.append(&address);
         }
         header.append(&names);
+        // Read from the unified inbox, the message names its account above
+        // the date, in that account's colour.
+        let meta = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .build();
+        if let Some(account) = account {
+            let name = gtk::Label::builder()
+                .label(account.short_label())
+                .tooltip_text(&account.email)
+                .xalign(1.0)
+                .ellipsize(pango::EllipsizeMode::End)
+                .max_width_chars(24)
+                .css_classes([
+                    "caption",
+                    "account-name",
+                    &account_colors::css_class(account.id),
+                ])
+                .build();
+            meta.append(&name);
+        }
         let date = gtk::Label::builder()
             .label(i18n::date_label(&email.date))
             .xalign(1.0)
-            .valign(gtk::Align::Center)
             .css_classes(["dim-label", "caption"])
             .build();
-        header.append(&date);
+        meta.append(&date);
+        header.append(&meta);
 
         let toggle = gtk::Button::builder()
             .child(&header)

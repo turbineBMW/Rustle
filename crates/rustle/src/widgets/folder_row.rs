@@ -99,6 +99,7 @@ impl FolderRow {
     pub fn bind_folder(&self, folder: &Folder, unread_count: i64) {
         let imp = self.imp();
         imp.icon.set_icon_name(Some(&folder.icon_name));
+        crate::account_colors::tag(&imp.icon, None);
         imp.name.set_label(&folders::display_name_for_folder(
             &folder.name,
             folder.display_delimiter(),
@@ -112,6 +113,7 @@ impl FolderRow {
     pub fn bind_unified_inbox(&self, unread_count: i64) {
         let imp = self.imp();
         imp.icon.set_icon_name(Some("mail-inbox-symbolic"));
+        crate::account_colors::tag(&imp.icon, None);
         imp.name.set_label(&gettext("All Inboxes"));
         imp.name.remove_css_class("heading");
         imp.expandable.replace(None);
@@ -123,7 +125,10 @@ impl FolderRow {
         let imp = self.imp();
         imp.expandable.replace(Some(tree_row.clone()));
         imp.icon.set_icon_name(Some("avatar-default-symbolic"));
-        imp.name.set_label(&account.email);
+        crate::account_colors::tag(&imp.icon, Some(account.id));
+        imp.icon.add_css_class("account-icon");
+        imp.name.set_label(account.name());
+        imp.name.set_tooltip_text(Some(&account.email));
         imp.name.add_css_class("heading");
         self.set_syncing(is_syncing);
         imp.badge.set_visible(false);
