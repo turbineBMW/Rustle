@@ -1,6 +1,7 @@
 //! Syncing, the Outbox, and the connection banner.
 
 use super::{MainWindow, PAGE_EMPTY, PAGE_LOADING};
+use crate::config::APP_ID;
 use crate::i18n::{self, gettext};
 use crate::settings as keys;
 use crate::sound;
@@ -369,6 +370,12 @@ impl MainWindow {
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
     }
 
+    /// The app icon, set explicitly so notification daemons that don't
+    /// resolve the desktop file's icon still show the envelope.
+    fn app_icon() -> gio::ThemedIcon {
+        gio::ThemedIcon::new(APP_ID)
+    }
+
     /// Only nag about new mail when the user isn't already looking.
     fn notify_arrivals(
         &self,
@@ -462,6 +469,7 @@ impl MainWindow {
                 .join(", "),
         ));
         notification.set_default_action("app.focus-mail");
+        notification.set_icon(&Self::app_icon());
         // Notification ids carry the account: every account syncs on the
         // same tick, and a repeated id replaces the one already on screen.
         app.send_notification(
@@ -503,6 +511,7 @@ impl MainWindow {
             notification.set_default_action("app.focus-mail");
             notification
         };
+        notification.set_icon(&Self::app_icon());
         app.send_notification(Some(&format!("new-mail-{account_id}")), &notification);
     }
 
@@ -576,6 +585,7 @@ impl MainWindow {
             "It will keep checking for new mail. Quit to stop.",
         )));
         notification.set_default_action("app.focus-mail");
+        notification.set_icon(&Self::app_icon());
         app.send_notification(Some("running-background"), &notification);
     }
 
