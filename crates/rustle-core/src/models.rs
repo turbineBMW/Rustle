@@ -104,6 +104,9 @@ pub struct Account {
     /// What the user calls this account ("Work"), shown wherever the app
     /// names it instead of the address. Empty means the address.
     pub label: String,
+    /// The new-mail sound, in the form `sounds::NotificationSound` stores;
+    /// empty means the app-wide default.
+    pub notification_sound: String,
 }
 
 /// The GNOME accent palette, handed out to accounts that haven't chosen a

@@ -9,6 +9,7 @@ use adw::prelude::*;
 use gtk::gdk;
 use gtk::glib;
 use gtk::pango;
+use rustle_core::darkmode;
 use rustle_core::mime::{self, ParsedMessage, Unsubscribe};
 use rustle_core::models::{Account, Attachment, Email};
 use std::cell::RefCell;
@@ -432,7 +433,11 @@ impl MessageView {
         // Clearing the accelerated surface avoids a black frame before WebKit
         // paints; the CSS class supplies the white canvas email HTML expects.
         webview.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
-        webview.add_css_class("message-html");
+        webview.add_css_class(if is_dark() {
+            "message-html-dark"
+        } else {
+            "message-html"
+        });
         webview.load_html(&self.sandboxed_html(), None);
         self.inner.borrow_mut().webview = Some(webview.clone());
         self.body.append(&webview);
@@ -442,12 +447,22 @@ impl MessageView {
         let inner = self.inner.borrow();
         // Links take the system accent, the one place the message's own
         // styling is overridden -- and only where it set none itself.
-        let style = format!("a:not([style]) {{ color: {}; }}", accent::accent_hex());
-        mime::sandbox_html(
-            inner.html.as_deref().unwrap_or(""),
-            inner.should_load_remote_images,
-            &style,
-        )
+        let mut style = format!("a:not([style]) {{ color: {}; }}", accent::accent_hex());
+        let html = inner.html.as_deref().unwrap_or("");
+        // In dark mode the body is rewritten the way Outlook does it: light
+        // canvases go dark, dark ink goes light, hues stay. The defaults an
+        // unstyled message inherits follow suit.
+        let html = if is_dark() {
+            style.push_str(&format!(
+                " :root {{ color-scheme: dark; }} body {{ background-color: {}; color: {}; }}",
+                darkmode::CANVAS,
+                darkmode::TEXT
+            ));
+            std::borrow::Cow::Owned(darkmode::adapt(html))
+        } else {
+            std::borrow::Cow::Borrowed(html)
+        };
+        mime::sandbox_html(&html, inner.should_load_remote_images, &style)
     }
 
     fn on_show_images(&self) {
@@ -560,4 +575,8 @@ fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
     let window = root.root().and_downcast::<gtk::Window>();
     gtk::UriLauncher::new(&uri).launch(window.as_ref(), gtk::gio::Cancellable::NONE, |_| {});
     true
+}
+
+fn is_dark() -> bool {
+    adw::StyleManager::default().is_dark()
 }

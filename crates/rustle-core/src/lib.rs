@@ -9,6 +9,7 @@
 pub mod address;
 pub mod avatars;
 pub mod compose;
+pub mod darkmode;
 pub mod dates;
 pub mod db;
 pub mod folders;
@@ -19,5 +20,6 @@ pub mod models;
 pub mod net;
 pub mod providers;
 pub mod secrets;
+pub mod sounds;
 pub mod sync;
 pub mod threader;

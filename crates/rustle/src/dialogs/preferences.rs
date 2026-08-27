@@ -3,6 +3,8 @@
 
 use crate::i18n::gettext;
 use crate::settings as keys;
+use crate::sound;
+use crate::widgets::sound_row;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gio;
@@ -36,6 +38,8 @@ mod imp {
     pub struct PreferencesDialog {
         #[template_child]
         pub notifications_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub sound_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub images_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -87,6 +91,20 @@ impl PreferencesDialog {
         settings
             .bind(keys::NOTIFICATIONS, &*imp.notifications_row, "active")
             .build();
+        sound_row::setup(
+            &imp.sound_row,
+            sound::default_sound(settings),
+            None,
+            glib::clone!(
+                #[weak]
+                dialog,
+                move |choice| {
+                    if let Some(settings) = dialog.imp().settings.borrow().as_ref() {
+                        let _ = settings.set_string(keys::NOTIFICATION_SOUND, &choice.as_setting());
+                    }
+                }
+            ),
+        );
         settings
             .bind(keys::LOAD_REMOTE_IMAGES, &*imp.images_row, "active")
             .build();

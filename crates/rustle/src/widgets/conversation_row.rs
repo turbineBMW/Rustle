@@ -20,7 +20,6 @@ mod imp {
         pub date: gtk::Label,
         pub subject: gtk::Label,
         pub preview: gtk::Label,
-        pub unread_dot: gtk::Image,
         pub account: gtk::Box,
         pub address: RefCell<String>,
         pub date_value: RefCell<String>,
@@ -49,12 +48,6 @@ mod imp {
                     .build(),
                 subject: label(&["conversation-subject"]),
                 preview: label(&["conversation-preview", "dim-label"]),
-                unread_dot: gtk::Image::builder()
-                    .icon_name("media-record-symbolic")
-                    .pixel_size(10)
-                    .valign(gtk::Align::Center)
-                    .css_classes(["unread-dot"])
-                    .build(),
                 account: gtk::Box::builder()
                     .width_request(10)
                     .height_request(10)
@@ -82,10 +75,9 @@ mod imp {
             let row = self.obj().clone();
             row.set_orientation(gtk::Orientation::Horizontal);
             row.set_spacing(12);
-            row.set_margin_top(8);
-            row.set_margin_bottom(8);
-            row.set_margin_start(12);
-            row.set_margin_end(12);
+            // Padding rather than margins, so an unread row's tint runs
+            // edge to edge (see .conversation-row in style.css).
+            row.add_css_class("conversation-row");
             row.append(&self.avatar);
 
             let text = gtk::Box::builder()
@@ -104,11 +96,7 @@ mod imp {
             text.append(&top);
             text.append(&self.subject);
 
-            let bottom = gtk::Box::builder().spacing(6).build();
-            self.preview.set_hexpand(true);
-            bottom.append(&self.preview);
-            bottom.append(&self.unread_dot);
-            text.append(&bottom);
+            text.append(&self.preview);
         }
     }
     impl WidgetImpl for ConversationRow {}
@@ -162,7 +150,6 @@ impl ConversationRow {
         imp.date_value.replace(conversation.date().to_string());
         imp.subject.set_label(&subject);
         imp.preview.set_label(conversation.preview());
-        imp.unread_dot.set_visible(conversation.is_unread());
         match account {
             Some(account) => {
                 imp.account.set_tooltip_text(Some(&account.email));
@@ -171,6 +158,8 @@ impl ConversationRow {
             }
             None => imp.account.set_visible(false),
         }
+        // The list's own row widget wraps this box; tag it too so the
+        // highlight covers the full row, edge to edge.
         if conversation.is_unread() {
             self.add_css_class("unread");
         } else {

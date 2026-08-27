@@ -26,7 +26,7 @@ fn original_text(parsed: Option<&ParsedMessage>) -> String {
 
 impl MainWindow {
     pub(super) fn on_manage_accounts(&self) {
-        let dialog = AccountsDialog::new(self.db());
+        let dialog = AccountsDialog::new(self.db(), &self.settings());
         dialog.connect_closed(glib::clone!(
             #[weak(rename_to = window)]
             self,

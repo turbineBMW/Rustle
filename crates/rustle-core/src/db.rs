@@ -35,6 +35,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE accounts ADD COLUMN color TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN signature TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN label TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE accounts ADD COLUMN notification_sound TEXT NOT NULL DEFAULT ''",
 ];
 
 /// Turn free text into a safe FTS5 query: each word matched as a prefix.
@@ -164,6 +165,7 @@ impl Database {
             color: row.get("color")?,
             signature: row.get("signature")?,
             label: row.get("label")?,
+            notification_sound: row.get("notification_sound")?,
         })
     }
 
@@ -226,6 +228,16 @@ impl Database {
         self.conn.execute(
             "UPDATE accounts SET label = ?1 WHERE id = ?2",
             params![label.trim(), account_id],
+        )?;
+        Ok(())
+    }
+
+    /// Stores the new-mail sound choice in its setting form (see
+    /// `sounds::NotificationSound::as_setting`); "" inherits the app default.
+    pub fn set_account_notification_sound(&self, account_id: i64, sound: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET notification_sound = ?1 WHERE id = ?2",
+            params![sound.trim(), account_id],
         )?;
         Ok(())
     }
@@ -838,6 +850,12 @@ mod tests {
         assert_eq!(
             db.account(saved.id).unwrap().unwrap().signature_html(),
             "Cheers,<br>Me"
+        );
+        assert_eq!(saved.notification_sound, "");
+        db.set_account_notification_sound(saved.id, "none").unwrap();
+        assert_eq!(
+            db.account(saved.id).unwrap().unwrap().notification_sound,
+            "none"
         );
         db.set_account_signature(saved.id, "<div><b>Me</b></div>")
             .unwrap();

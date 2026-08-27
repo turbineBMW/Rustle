@@ -3,6 +3,7 @@
 use super::{MainWindow, PAGE_EMPTY, PAGE_LOADING};
 use crate::i18n::{self, gettext};
 use crate::settings as keys;
+use crate::sound;
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -14,6 +15,7 @@ use rustle_core::folders;
 use rustle_core::models::{Account, MessageHeader};
 use rustle_core::net::errors::{classify, linkify, Failure};
 use rustle_core::secrets;
+use rustle_core::sounds::NotificationSound;
 use rustle_core::sync::{self, SyncResult, RECENT_LIMIT};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -375,7 +377,10 @@ impl MainWindow {
         folder_id: i64,
         arrived_elsewhere: &HashMap<String, u32>,
     ) {
-        if self.is_active() {
+        if self.is_active() || !self.settings().boolean(keys::NOTIFICATIONS) {
+            return;
+        }
+        if messages.is_empty() && arrived_elsewhere.is_empty() {
             return;
         }
         if !messages.is_empty() {
@@ -384,6 +389,22 @@ impl MainWindow {
         if !arrived_elsewhere.is_empty() {
             self.notify_unread_elsewhere(account_id, arrived_elsewhere);
         }
+        self.play_new_mail_sound(account_id);
+    }
+
+    /// The account's sound, or the app default when it hasn't picked one.
+    /// One note per account per sync, alongside its notifications.
+    fn play_new_mail_sound(&self, account_id: i64) {
+        let account_choice = self
+            .db()
+            .borrow()
+            .account(account_id)
+            .ok()
+            .flatten()
+            .map(|account| NotificationSound::parse(&account.notification_sound))
+            .unwrap_or(NotificationSound::Inherit);
+        let default = sound::default_sound(&self.settings());
+        sound::play(&NotificationSound::resolve(&account_choice, &default));
     }
 
     /// Store the server's unread counts; return how many arrived per folder.

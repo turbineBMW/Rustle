@@ -2096,6 +2096,7 @@ dependencies = [
  "rustle-core",
  "serde",
  "serde_json",
+ "tempfile",
  "url",
  "webkit6",
 ]

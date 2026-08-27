@@ -5,6 +5,7 @@ use gtk::gio;
 
 pub const SYNC_INTERVAL: &str = "sync-interval-minutes";
 pub const NOTIFICATIONS: &str = "notifications";
+pub const NOTIFICATION_SOUND: &str = "notification-sound";
 pub const LOAD_REMOTE_IMAGES: &str = "load-remote-images";
 pub const LOAD_SENDER_AVATARS: &str = "load-sender-avatars";
 pub const BRIDGE_PHOTO_PORT: &str = "bridge-photo-port";

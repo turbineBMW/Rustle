@@ -6,6 +6,11 @@
 			<summary>Notify about new mail</summary>
 			<description>Show a desktop notification when new mail arrives.</description>
 		</key>
+		<key name="notification-sound" type="s">
+			<default>"system"</default>
+			<summary>New mail sound</summary>
+			<description>What plays with a new-mail notification unless an account overrides it: "system" for the desktop sound theme's new-mail sound, "none" for silence, or the path of an audio file.</description>
+		</key>
 		<key name="load-remote-images" type="b">
 			<default>false</default>
 			<summary>Load remote images</summary>

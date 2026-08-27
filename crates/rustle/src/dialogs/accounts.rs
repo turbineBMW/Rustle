@@ -5,13 +5,15 @@ use super::online_accounts::OnlineAccountsDialog;
 use super::signature::SignatureDialog;
 use crate::account_colors;
 use crate::i18n::gettext;
+use crate::widgets::sound_row;
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 use rustle_core::db::Database;
 use rustle_core::models::Account;
 use rustle_core::secrets;
+use rustle_core::sounds::NotificationSound;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -28,6 +30,7 @@ mod imp {
         #[template_child]
         pub online_accounts_button: TemplateChild<gtk::Button>,
         pub db: RefCell<Option<Rc<RefCell<Database>>>>,
+        pub settings: RefCell<Option<gio::Settings>>,
         pub rows: RefCell<Vec<adw::ExpanderRow>>,
     }
 
@@ -73,9 +76,10 @@ glib::wrapper! {
 }
 
 impl AccountsDialog {
-    pub fn new(db: Rc<RefCell<Database>>) -> Self {
+    pub fn new(db: Rc<RefCell<Database>>, settings: &gio::Settings) -> Self {
         let dialog: Self = glib::Object::new();
         dialog.imp().db.replace(Some(db));
+        dialog.imp().settings.replace(Some(settings.clone()));
         dialog.reload();
         dialog
     }
@@ -102,6 +106,7 @@ impl AccountsDialog {
                 .build();
             row.add_row(&self.name_row(&account));
             row.add_row(&self.signature_row(&account));
+            row.add_row(&self.sound_row(&account));
             let color_button = gtk::ColorDialogButton::builder()
                 .dialog(
                     &gtk::ColorDialog::builder()
@@ -182,6 +187,36 @@ impl AccountsDialog {
             move |_| dialog.on_edit_signature(&account)
         ));
         row.upcast()
+    }
+
+    /// Which sound this account's new mail plays; "App Default" follows
+    /// Preferences.
+    fn sound_row(&self, account: &Account) -> gtk::Widget {
+        let row = adw::ComboRow::builder()
+            .title(gettext("Notification Sound"))
+            .build();
+        let account_id = account.id;
+        sound_row::setup(
+            &row,
+            NotificationSound::parse(&account.notification_sound),
+            self.imp().settings.borrow().clone(),
+            glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |choice| dialog.on_sound_changed(account_id, choice)
+            ),
+        );
+        row.upcast()
+    }
+
+    fn on_sound_changed(&self, account_id: i64, sound: &NotificationSound) {
+        if let Err(error) = self
+            .db()
+            .borrow()
+            .set_account_notification_sound(account_id, &sound.as_setting())
+        {
+            log::error!("could not save the notification sound of account {account_id}: {error}");
+        }
     }
 
     fn on_edit_signature(&self, account: &Account) {

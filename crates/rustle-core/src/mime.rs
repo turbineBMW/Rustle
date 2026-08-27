@@ -116,6 +116,10 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
     };
     result.unsubscribe = unsubscribe(&message);
 
+    // Inline parts that the HTML references by Content-ID (`<img src="cid:…">`,
+    // the shape Outlook and most rich composers produce) are folded into the
+    // body as data: URIs and kept out of the attachment list.
+    let mut inline: Vec<(String, Attachment)> = Vec::new();
     for part in &message.parts {
         let is_attachment = part
             .content_disposition()
@@ -131,11 +135,72 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
             PartType::Message(_) => continue,
             // Anything else (an inline image, an unrecognised type) is offered
             // as an attachment rather than silently dropped.
-            _ => result.attachments.push(as_attachment(part)),
+            _ => match part.content_id().filter(|_| !is_attachment) {
+                Some(cid) => inline.push((
+                    cid.trim_matches(|c| c == '<' || c == '>').to_string(),
+                    as_attachment(part),
+                )),
+                None => result.attachments.push(as_attachment(part)),
+            },
         }
     }
 
+    if let Some(html) = result.html_body.take() {
+        let (html, unused) = embed_inline_parts(&html, inline);
+        result.html_body = Some(html);
+        result.attachments.extend(unused);
+    } else {
+        result
+            .attachments
+            .extend(inline.into_iter().map(|(_, a)| a));
+    }
+
     result
+}
+
+/// Replace every `cid:` reference in `html` with a data: URI of the matching
+/// part. Parts nothing refers to are handed back so they can still be offered
+/// as attachments.
+fn embed_inline_parts(html: &str, parts: Vec<(String, Attachment)>) -> (String, Vec<Attachment>) {
+    use base64::Engine;
+    if parts.is_empty() || !html.contains("cid:") {
+        return (
+            html.to_string(),
+            parts.into_iter().map(|(_, a)| a).collect(),
+        );
+    }
+    let mut html = html.to_string();
+    let mut unused = Vec::new();
+    for (cid, part) in parts {
+        // Attribute values and CSS url() both carry the reference; the id may
+        // be percent-encoded or bare. Match the URL body up to its delimiter.
+        let pattern = format!(
+            r#"cid:(?:{}|{})(["'\s)>])"#,
+            regex::escape(&cid),
+            regex::escape(&urlencoding_lite(&cid))
+        );
+        let re = regex::Regex::new(&pattern).expect("escaped cid pattern is valid");
+        if !re.is_match(&html) {
+            unused.push(part);
+            continue;
+        }
+        let data = format!(
+            "data:{};base64,{}",
+            part.mime_type,
+            base64::engine::general_purpose::STANDARD.encode(&part.content)
+        );
+        let replacement = format!("{data}$1");
+        html = re.replace_all(&html, replacement.as_str()).into_owned();
+    }
+    (html, unused)
+}
+
+/// Percent-encode the few characters that appear in Content-IDs and that a
+/// composer might encode when writing them into a URL.
+fn urlencoding_lite(cid: &str) -> String {
+    cid.replace('%', "%25")
+        .replace('@', "%40")
+        .replace(' ', "%20")
 }
 
 fn raw_header(message: &mail_parser::Message, name: &str) -> String {
@@ -245,6 +310,24 @@ pub fn sandbox_html(html: &str, are_remote_images_allowed: bool, style: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_cid_images_are_embedded_and_not_listed_as_attachments() {
+        let raw = b"Subject: logo\r\nContent-Type: multipart/related; boundary=r\r\n\r\n--r\r\nContent-Type: text/html\r\n\r\n<p>hi</p><img src=\"cid:logo@x\"><img src='cid:missing@x'>\r\n--r\r\nContent-Type: image/png; name=\"logo.png\"\r\nContent-ID: <logo@x>\r\nContent-Disposition: inline; filename=\"logo.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\nAQID\r\n--r\r\nContent-Type: image/png; name=\"other.png\"\r\nContent-ID: <other@x>\r\nContent-Transfer-Encoding: base64\r\n\r\nAQID\r\n--r--\r\n";
+        let parsed = parse_message(raw);
+        let html = parsed.html_body.unwrap();
+        assert!(
+            html.contains("<img src=\"data:image/png;base64,AQID\">"),
+            "{html}"
+        );
+        assert!(html.contains("cid:missing@x"));
+        let names: Vec<_> = parsed
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        assert_eq!(names, ["other.png"]);
+    }
 
     #[test]
     fn preview_prefers_text_and_collapses_whitespace() {

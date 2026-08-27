@@ -11,6 +11,7 @@ mod editor;
 mod i18n;
 mod objects;
 mod settings;
+mod sound;
 mod widgets;
 mod window;
 mod workers;

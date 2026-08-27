@@ -1,6 +1,23 @@
-/* The accent follows the GNOME setting through libadwaita's CSS variables. */
-.unread-dot {
-  color: var(--accent-color);
+/* The accent follows the GNOME setting through libadwaita's CSS variables.
+   Unread conversations tint the whole row and carry an accent bar on the
+   left edge, so they read at a glance without an indicator to hunt for.
+   The selected row keeps libadwaita's highlight and only the bar remains. */
+.conversation-row {
+  padding: 8px 12px;
+}
+
+.conversation-row.unread {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 14%, transparent);
+  box-shadow: inset 4px 0 var(--accent-bg-color);
+}
+
+.conversation-list > row:hover .conversation-row.unread {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 22%, transparent);
+}
+
+.conversation-list > row:selected .conversation-row.unread {
+  background-color: transparent;
+  box-shadow: inset 4px 0 var(--accent-fg-color);
 }
 
 .conversation-sender {
@@ -13,7 +30,6 @@
 
 .unread .conversation-subject {
   font-weight: bold;
-  color: var(--accent-color);
 }
 
 /* A line of body: smaller than the subject, and dimmed to match the date
@@ -104,4 +120,8 @@
 
 .message-html {
   background-color: #ffffff;
+}
+
+.message-html-dark {
+  background-color: #1a1a1a;
 }

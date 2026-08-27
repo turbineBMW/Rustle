@@ -13,6 +13,10 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         subtitle: _("Show a notification when new mail arrives");
       }
 
+      Adw.ComboRow sound_row {
+        title: _("Notification Sound");
+      }
+
       Adw.SwitchRow images_row {
         title: _("Load Remote Images");
         subtitle: _("Load images from the internet without asking");
