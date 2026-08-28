@@ -59,6 +59,15 @@ pub fn role_for_folder(name: &str) -> FolderRole {
         .unwrap_or(FolderRole::Other)
 }
 
+/// Whether new mail landing in this folder deserves a notification. Junk
+/// and Trash fill up on their own, and Sent/Drafts hold the user's own mail.
+pub fn notifies_on_arrival(name: &str) -> bool {
+    !matches!(
+        role_for_folder(name),
+        FolderRole::Junk | FolderRole::Trash | FolderRole::Sent | FolderRole::Drafts
+    )
+}
+
 /// Whether a folder holds mail this account sent, so the list shows the
 /// recipient instead of the sender. Outbox is local-only and unknown to
 /// `role_for_folder`, which classifies what the server offers.
@@ -166,6 +175,23 @@ pub fn decode_mailbox_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn junk_and_trash_are_quiet() {
+        for name in [
+            "Junk",
+            "Spam",
+            "Junk Mail",
+            "[Gmail]/Spam",
+            "Trash",
+            "Deleted Items",
+        ] {
+            assert!(!super::notifies_on_arrival(name), "{name}");
+        }
+        for name in ["INBOX", "Work", "Archive", "Newsletters"] {
+            assert!(super::notifies_on_arrival(name), "{name}");
+        }
+    }
+
     use super::*;
 
     #[test]

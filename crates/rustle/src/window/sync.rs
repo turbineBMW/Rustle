@@ -294,6 +294,7 @@ impl MainWindow {
                 }
             };
             target_id = target.id;
+            let notify_folder = folders::notifies_on_arrival(&target.name);
             let tombstoned: HashSet<String> = {
                 let state = self.state();
                 state
@@ -308,7 +309,9 @@ impl MainWindow {
                     continue;
                 }
                 match db.save_incoming_email(target.id, message) {
-                    Ok(true) if message.is_unread => new_messages.push(message.clone()),
+                    Ok(true) if message.is_unread && notify_folder => {
+                        new_messages.push(message.clone())
+                    }
                     Ok(_) => {}
                     Err(error) => log::error!(
                         "could not store message {} in {}: {error}",
@@ -431,7 +434,7 @@ impl MainWindow {
                 continue;
             };
             if let Some(previous) = state.remote_unread_counts.get(&folder.id) {
-                if count > previous {
+                if count > previous && folders::notifies_on_arrival(name) {
                     arrived.insert(
                         folders::display_name_for_folder(name, None),
                         count - previous,
