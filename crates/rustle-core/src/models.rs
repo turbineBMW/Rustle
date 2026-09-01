@@ -228,6 +228,8 @@ pub struct Email {
     pub date: String,
     pub is_unread: bool,
     pub is_starred: bool,
+    /// Outlook's pin-to-top; pinned threads sort above the day sections.
+    pub is_pinned: bool,
     pub message_id: String,
     pub in_reply_to: String,
     pub references: String,
@@ -300,6 +302,10 @@ impl Conversation {
         self.emails.iter().any(|mail| mail.is_starred)
     }
 
+    pub fn is_pinned(&self) -> bool {
+        self.emails.iter().any(|mail| mail.is_pinned)
+    }
+
     /// Every distinct sender, in first-seen order.
     pub fn participants(&self) -> String {
         let mut seen: Vec<&str> = Vec::new();
@@ -348,6 +354,7 @@ pub struct MessageHeader {
     pub date: String,
     pub is_unread: bool,
     pub is_starred: bool,
+    pub is_pinned: bool,
     pub preview: String,
     pub message_id: String,
     pub in_reply_to: String,
@@ -408,6 +415,7 @@ mod tests {
             date: String::new(),
             is_unread: id % 2 == 0,
             is_starred: false,
+            is_pinned: false,
             message_id: String::new(),
             in_reply_to: String::new(),
             references: String::new(),

@@ -15,7 +15,7 @@ pub type Result<T> = std::result::Result<T, rusqlite::Error>;
 /// Every column `email_from_row` reads.
 const EMAIL_COLUMNS: &str = "id, folder_id, server_id, sender, sender_address, recipient, \
     recipient_address, subject, preview, date, unread, starred, message_id, in_reply_to, \
-    reference_ids, conversation_id";
+    reference_ids, conversation_id, pinned";
 
 /// Schema changes since the first release, applied in order. How many have run
 /// is stored in PRAGMA user_version. Only ever append -- editing or reordering
@@ -36,6 +36,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE accounts ADD COLUMN signature TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN label TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN notification_sound TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE emails ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// Turn free text into a safe FTS5 query: each word matched as a prefix.
@@ -411,6 +412,7 @@ impl Database {
             date: row.get("date")?,
             is_unread: row.get::<_, i64>("unread")? != 0,
             is_starred: row.get::<_, i64>("starred")? != 0,
+            is_pinned: row.get::<_, i64>("pinned")? != 0,
             message_id: row
                 .get::<_, Option<String>>("message_id")?
                 .unwrap_or_default(),
@@ -565,10 +567,15 @@ impl Database {
                 Conversation::new(mails)
             })
             .collect();
-        // Newest first by sent time (comparable across accounts, and what
-        // the list's day sections assume); arrival order only breaks ties.
+        // Pinned threads first, as Outlook shows them. Then newest first by
+        // sent time (comparable across accounts, and what the list's day
+        // sections assume); arrival order only breaks ties.
         conversations.sort_by_key(|c| {
-            std::cmp::Reverse((crate::dates::sort_key(c.date()), c.latest().arrival_key()))
+            std::cmp::Reverse((
+                c.is_pinned(),
+                crate::dates::sort_key(c.date()),
+                c.latest().arrival_key(),
+            ))
         });
         conversations
     }
@@ -593,6 +600,14 @@ impl Database {
         self.conn.execute(
             "UPDATE emails SET starred = ?1 WHERE id = ?2",
             params![is_starred as i64, email_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_email_pinned(&self, email_id: i64, is_pinned: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE emails SET pinned = ?1 WHERE id = ?2",
+            params![is_pinned as i64, email_id],
         )?;
         Ok(())
     }
@@ -715,10 +730,11 @@ impl Database {
         }
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread, starred,
-                message_id, in_reply_to, reference_ids, sender_address, recipient, recipient_address)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                message_id, in_reply_to, reference_ids, sender_address, recipient, recipient_address,
+                pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
-                unread = excluded.unread, starred = excluded.starred,
+                unread = excluded.unread, starred = excluded.starred, pinned = excluded.pinned,
                 recipient = excluded.recipient, recipient_address = excluded.recipient_address,
                 preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END",
             params![
@@ -736,6 +752,7 @@ impl Database {
                 header.sender_address,
                 header.recipient,
                 header.recipient_address,
+                header.is_pinned as i64,
             ],
         )?;
         Ok(is_new)
@@ -881,6 +898,33 @@ mod tests {
         assert!(db.folders_for_account(saved.id).unwrap().is_empty());
         db.delete_account(saved.id).unwrap();
         assert!(db.accounts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pinned_conversations_sort_first() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let mut old = header("1", "Old", "2026-01-01T00:00:00Z", "Ada");
+        old.is_pinned = true;
+        db.save_incoming_email(inbox.id, &old).unwrap();
+        db.save_incoming_email(inbox.id, &header("2", "New", "2026-02-01T00:00:00Z", "Bob"))
+            .unwrap();
+        let subjects = |db: &Database| -> Vec<String> {
+            db.conversations_in_folder(inbox.id)
+                .unwrap()
+                .iter()
+                .map(|c| c.subject().to_string())
+                .collect()
+        };
+        assert_eq!(subjects(&db), vec!["Old", "New"]);
+        // Outlook unpinned it: the next sync's header carries no keyword.
+        old.is_pinned = false;
+        db.save_incoming_email(inbox.id, &old).unwrap();
+        assert_eq!(subjects(&db), vec!["New", "Old"]);
+        let id = db.conversations_in_folder(inbox.id).unwrap()[1].latest().id;
+        db.set_email_pinned(id, true).unwrap();
+        assert_eq!(subjects(&db), vec!["Old", "New"]);
     }
 
     #[test]

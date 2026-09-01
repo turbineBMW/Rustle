@@ -8,7 +8,7 @@ use gtk::glib;
 use gtk::pango;
 use gtk::subclass::prelude::*;
 use rustle_core::models::{Account, Conversation};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 mod imp {
     use super::*;
@@ -17,12 +17,14 @@ mod imp {
         pub avatar: adw::Avatar,
         pub sender: gtk::Label,
         pub star: gtk::Image,
+        pub pin: gtk::Image,
         pub date: gtk::Label,
         pub subject: gtk::Label,
         pub preview: gtk::Label,
         pub account: gtk::Box,
         pub address: RefCell<String>,
         pub date_value: RefCell<String>,
+        pub pinned: Cell<bool>,
         pub avatars: RefCell<Option<AvatarLoader>>,
     }
 
@@ -42,6 +44,11 @@ mod imp {
                     .icon_name("starred-symbolic")
                     .pixel_size(12)
                     .build(),
+                pin: gtk::Image::builder()
+                    .icon_name("view-pin-symbolic")
+                    .pixel_size(12)
+                    .css_classes(["conversation-pin"])
+                    .build(),
                 date: gtk::Label::builder()
                     .xalign(1.0)
                     .css_classes(["dim-label"])
@@ -57,6 +64,7 @@ mod imp {
                     .build(),
                 address: RefCell::new(String::new()),
                 date_value: RefCell::new(String::new()),
+                pinned: Cell::new(false),
                 avatars: RefCell::new(None),
             }
         }
@@ -92,6 +100,7 @@ mod imp {
             top.append(&self.account);
             top.append(&self.sender);
             top.append(&self.star);
+            top.append(&self.pin);
             top.append(&self.date);
             text.append(&top);
             text.append(&self.subject);
@@ -146,6 +155,8 @@ impl ConversationRow {
         self.load_avatar(&address);
         imp.sender.set_label(&participants);
         imp.star.set_visible(conversation.is_starred());
+        imp.pin.set_visible(conversation.is_pinned());
+        imp.pinned.set(conversation.is_pinned());
         imp.date.set_label(&i18n::time_label(conversation.date()));
         imp.date_value.replace(conversation.date().to_string());
         imp.subject.set_label(&subject);
@@ -167,9 +178,10 @@ impl ConversationRow {
         }
     }
 
-    /// The day header this row belongs under, for the sticky label.
+    /// The section header this row belongs under, for the sticky label.
     pub fn day_label(&self) -> String {
-        i18n::day_label(&self.imp().date_value.borrow())
+        let imp = self.imp();
+        i18n::section_label(imp.pinned.get(), &imp.date_value.borrow())
     }
 
     fn load_avatar(&self, address: &str) {

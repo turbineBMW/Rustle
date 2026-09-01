@@ -138,6 +138,13 @@ impl MainWindow {
             imp.star_button.set_icon_name("non-starred-symbolic");
             imp.star_button.set_tooltip_text(Some(&gettext("Star")));
         }
+        if selected.iter().any(|c| c.with(|c| c.is_pinned())) {
+            imp.pin_button.set_tooltip_text(Some(&gettext("Unpin")));
+            imp.pin_button.add_css_class("pinned");
+        } else {
+            imp.pin_button.set_tooltip_text(Some(&gettext("Pin")));
+            imp.pin_button.remove_css_class("pinned");
+        }
     }
 
     /// Empty the reading pane, releasing each view's WebView as it goes.

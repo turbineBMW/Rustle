@@ -143,6 +143,7 @@ mod tests {
             date: String::new(),
             is_unread: false,
             is_starred: false,
+            is_pinned: false,
             message_id: message_id.into(),
             in_reply_to: in_reply_to.into(),
             references: references.into(),

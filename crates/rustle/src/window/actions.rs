@@ -11,7 +11,7 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::models::Account;
 use rustle_core::net::errors::classify;
-use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_SEEN};
+use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
 use rustle_core::{secrets, sync};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -23,6 +23,7 @@ type ActionHandler = fn(&MainWindow);
 enum FlagField {
     Unread,
     Starred,
+    Pinned,
 }
 
 /// One IMAP flag edit to apply to a set of messages in one mailbox. A frozen
@@ -49,9 +50,10 @@ fn register(
 
 impl MainWindow {
     pub(super) fn setup_actions(&self) {
-        let plain: [(&str, ActionHandler); 13] = [
+        let plain: [(&str, ActionHandler); 14] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
+            ("toggle-pin", |w| w.on_toggle_pin()),
             ("archive", |w| w.on_archive()),
             ("trash", |w| w.on_trash()),
             ("compose", |w| w.on_compose_clicked()),
@@ -155,6 +157,13 @@ impl MainWindow {
         }
     }
 
+    fn on_toggle_pin(&self) {
+        let conversations = self.selected_conversations();
+        if !conversations.is_empty() {
+            self.toggle_flag(&conversations, FlagField::Pinned);
+        }
+    }
+
     /// Clear the unread flag for a whole conversation: locally, in the
     /// badges and list, and on the server. Guarded so an already-read thread
     /// isn't flipped back to unread.
@@ -171,6 +180,7 @@ impl MainWindow {
         let read = |mail: &rustle_core::models::Email| match field {
             FlagField::Unread => mail.is_unread,
             FlagField::Starred => mail.is_starred,
+            FlagField::Pinned => mail.is_pinned,
         };
         let mut originals: HashMap<i64, bool> = HashMap::new();
         let mut any_set = false;
@@ -205,6 +215,10 @@ impl MainWindow {
                             FlagField::Starred => {
                                 mail.is_starred = new_value;
                                 db.set_email_starred(mail.id, new_value)
+                            }
+                            FlagField::Pinned => {
+                                mail.is_pinned = new_value;
+                                db.set_email_pinned(mail.id, new_value)
                             }
                         };
                         if let Err(error) = saved {
@@ -243,6 +257,7 @@ impl MainWindow {
         let (flag, should_add) = match field {
             FlagField::Unread => (FLAG_SEEN, !value),
             FlagField::Starred => (FLAG_FLAGGED, value),
+            FlagField::Pinned => (FLAG_PINNED, value),
         };
         for (folder_id, uids) in by_folder {
             let Some((account, folder)) = self.account_for_folder(folder_id) else {
@@ -371,9 +386,10 @@ impl MainWindow {
     /// The subset of the window's actions the row context menu offers.
     fn context_actions(&self) -> gio::SimpleActionGroup {
         let group = gio::SimpleActionGroup::new();
-        let handlers: [(&str, ActionHandler); 4] = [
+        let handlers: [(&str, ActionHandler); 5] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
+            ("toggle-pin", |w| w.on_toggle_pin()),
             ("archive", |w| w.on_archive()),
             ("trash", |w| w.on_trash()),
         ];
@@ -409,6 +425,7 @@ impl MainWindow {
         }
         let any_unread = selected.iter().any(|c| c.with(|c| c.is_unread()));
         let any_starred = selected.iter().any(|c| c.with(|c| c.is_starred()));
+        let any_pinned = selected.iter().any(|c| c.with(|c| c.is_pinned()));
 
         let flags = gio::Menu::new();
         flags.append(
@@ -426,6 +443,14 @@ impl MainWindow {
                 gettext("Star")
             }),
             Some("context.toggle-star"),
+        );
+        flags.append(
+            Some(&if any_pinned {
+                gettext("Unpin")
+            } else {
+                gettext("Pin")
+            }),
+            Some("context.toggle-pin"),
         );
         menu.append_section(None, &flags);
 

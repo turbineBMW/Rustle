@@ -65,6 +65,16 @@ pub fn time_label(value: &str) -> String {
     rustle_core::dates::time_label(value)
 }
 
+/// The header over a run of the conversation list: pinned threads share one
+/// section above the days.
+pub fn section_label(is_pinned: bool, date: &str) -> String {
+    if is_pinned {
+        gettext("Pinned")
+    } else {
+        day_label(date)
+    }
+}
+
 /// The sticky header over a day's conversations: "Today", "Yesterday", then
 /// "Wednesday, August 26th", with the year appended once it isn't this one.
 pub fn day_label(value: &str) -> String {

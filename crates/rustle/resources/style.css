@@ -72,6 +72,13 @@
   color: var(--dim-label-color, alpha(currentColor, 0.55));
 }
 
+/* The pin glyph on a row, and the toolbar button while the selection is
+   pinned, take the accent so a pin reads as a state, not a decoration. */
+.conversation-pin,
+button.pinned {
+  color: var(--accent-color);
+}
+
 /* Which account a thread belongs to, shown only in the unified inbox: a dot
    in the account's colour before the sender. `--account-color` is set per
    account by the provider in account_colors.rs through the `account-<id>`

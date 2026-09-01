@@ -236,6 +236,7 @@ impl RustleApplication {
             // Flag actions are Ctrl-modified so they don't fire while typing in search.
             ("win.toggle-read", &["<control>i"]),
             ("win.toggle-star", &["<control>s"]),
+            ("win.toggle-pin", &["<control>p"]),
             ("win.archive", &["<control>e"]),
             ("win.trash", &["<control>Delete"]),
             ("win.compose", &["<control>n"]),

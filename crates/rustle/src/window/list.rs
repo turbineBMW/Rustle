@@ -226,7 +226,7 @@ impl MainWindow {
             ) else {
                 return;
             };
-            label.set_label(&conversation.with(|c| i18n::day_label(c.date())));
+            label.set_label(&conversation.with(|c| i18n::section_label(c.is_pinned(), c.date())));
         });
         imp.conversation_list.set_header_factory(Some(&headers));
     }
@@ -273,13 +273,18 @@ impl MainWindow {
 
 /// Put the scroll position back after the store was replaced. Deferred to an
 /// idle callback because the new contents have not been laid out yet.
-/// Split the (date-ordered) matches into one store per calendar day, in the
+/// Split the (pinned-then-date-ordered) matches into one store per section:
+/// every pinned thread in a first run, then one per calendar day, in the
 /// order they arrive. Unreadable dates all fall into a single run.
 fn day_sections(matches: Vec<Conversation>) -> Vec<gio::ListStore> {
     let mut sections: Vec<gio::ListStore> = Vec::new();
     let mut current_day = None;
     for conversation in matches {
-        let day = dates::day_of(conversation.date());
+        let day = if conversation.is_pinned() {
+            (true, None)
+        } else {
+            (false, dates::day_of(conversation.date()))
+        };
         if sections.is_empty() || current_day != Some(day) {
             sections.push(gio::ListStore::new::<ConversationObject>());
             current_day = Some(day);

@@ -245,6 +245,13 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                       sensitive: false;
                     }
 
+                    Gtk.Button pin_button {
+                      icon-name: "view-pin-symbolic";
+                      tooltip-text: _("Pin");
+                      action-name: "win.toggle-pin";
+                      sensitive: false;
+                    }
+
                     Gtk.MenuButton move_button {
                       icon-name: "folder-symbolic";
                       tooltip-text: _("Move to Folder");

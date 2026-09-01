@@ -30,7 +30,14 @@ use std::time::Instant;
 pub use moves::PendingMove;
 
 /// Window action names, grouped by what enables and disables them together.
-const MAIL_ACTIONS: [&str; 5] = ["toggle-read", "toggle-star", "archive", "trash", "move"];
+const MAIL_ACTIONS: [&str; 6] = [
+    "toggle-read",
+    "toggle-star",
+    "toggle-pin",
+    "archive",
+    "trash",
+    "move",
+];
 const REPLY_FORWARD_ACTIONS: [&str; 3] = ["reply", "reply-all", "forward"];
 
 /// How long an archive/trash/move stays undoable before the real IMAP MOVE
@@ -158,6 +165,8 @@ mod imp {
         pub mark_read_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub star_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub pin_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub archive_button: TemplateChild<gtk::Button>,
         #[template_child]

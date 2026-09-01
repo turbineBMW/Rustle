@@ -19,6 +19,9 @@ pub type Result<T> = std::result::Result<T, NetError>;
 /// FETCH reply and sent back by `store_flags`.
 pub const FLAG_SEEN: &str = "\\Seen";
 pub const FLAG_FLAGGED: &str = "\\Flagged";
+/// Outlook's pin-to-top, as the graphmail-bridge exposes it. Any server that
+/// permits keywords (`\*` in PERMANENTFLAGS) stores it too, just for us.
+pub const FLAG_PINNED: &str = "$Pinned";
 
 /// Gmail files its own copy of everything sent through it. This capability is
 /// how it identifies itself, so we don't append a second copy on top.
@@ -49,6 +52,7 @@ pub struct FetchedHeader {
     pub references: String,
     pub is_seen: bool,
     pub is_flagged: bool,
+    pub is_pinned: bool,
     /// A snippet of the body, already decoded; empty when the server sent none.
     pub preview: String,
 }
@@ -271,6 +275,7 @@ impl ImapSession {
                     header_bytes,
                     flags.contains(&Flag::Seen),
                     flags.contains(&Flag::Flagged),
+                    flags.iter().any(is_pinned_flag),
                 );
                 header.preview =
                     crate::mime::preview_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
@@ -381,6 +386,11 @@ pub fn destination_uid(text: &str) -> Option<String> {
     CODE.captures(text).map(|captures| captures[1].to_string())
 }
 
+/// Keywords are atoms the server echoes back however the client cased them.
+fn is_pinned_flag(flag: &Flag) -> bool {
+    matches!(flag, Flag::Custom(name) if name.eq_ignore_ascii_case(FLAG_PINNED))
+}
+
 /// Let mail-parser decode the header block: it handles line folding and the
 /// =?utf-8?...?= encoding you'd otherwise see as gibberish.
 pub fn parse_header(
@@ -388,6 +398,7 @@ pub fn parse_header(
     header_bytes: &[u8],
     is_seen: bool,
     is_flagged: bool,
+    is_pinned: bool,
 ) -> FetchedHeader {
     let parsed = mail_parser::MessageParser::default().parse_headers(header_bytes);
     let header = |name: &str| -> String {
@@ -408,6 +419,7 @@ pub fn parse_header(
         references: header("References"),
         is_seen,
         is_flagged,
+        is_pinned,
         preview: String::new(),
     }
 }
@@ -472,7 +484,8 @@ mod tests {
     #[test]
     fn parses_fetched_headers() {
         let raw = b"From: =?utf-8?q?Ada_Lovelace?= <ada@example.com>\r\nTo: Bob <bob@x.y>, c@x.y\r\nSubject: =?utf-8?q?Gr=C3=BC=C3=9Fe?=\r\nDate: Wed, 16 Jul 2026 10:00:00 +0000\r\nMessage-ID: <m1@x>\r\nReferences: <a@x>\r\n <b@x>\r\n\r\n";
-        let header = parse_header("9".into(), raw, true, false);
+        let header = parse_header("9".into(), raw, true, false, true);
+        assert!(header.is_pinned);
         assert_eq!(header.from_header, "\"Ada Lovelace\" <ada@example.com>");
         assert_eq!(header.to_header, "\"Bob\" <bob@x.y>, c@x.y");
         assert_eq!(header.subject, "Grüße");
