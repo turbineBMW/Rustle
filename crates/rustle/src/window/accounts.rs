@@ -50,6 +50,7 @@ impl MainWindow {
                 state.accounts.clear();
                 state.view = None;
             }
+            self.sync_inbox_watchers();
             self.imp()
                 .main_stack
                 .set_visible_child_name(PAGE_NO_ACCOUNT);

@@ -4,7 +4,8 @@ use super::auth::{Credential, Mechanism};
 use super::errors::NetError;
 use super::{is_loopback, NET_TIMEOUT};
 use crate::models::Security;
-use ::imap::types::Flag;
+use ::imap::extensions::idle::WaitOutcome;
+use ::imap::types::{Flag, UnsolicitedResponse};
 use ::imap::Session;
 use imap_proto::{Capability, NameAttribute};
 use log::debug;
@@ -12,6 +13,7 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 pub type Result<T> = std::result::Result<T, NetError>;
 
@@ -73,6 +75,9 @@ pub struct ImapSession {
     session: Option<Session<::imap::Connection>>,
     client: Option<::imap::Client<::imap::Connection>>,
     capabilities: HashSet<String>,
+    /// A second handle on the socket under the TLS layer, so a wait can be
+    /// cut short from another thread and the read timeout put back.
+    socket: Option<TcpStream>,
 }
 
 impl ImapSession {
@@ -84,6 +89,7 @@ impl ImapSession {
             session: None,
             client: None,
             capabilities: HashSet::new(),
+            socket: None,
         }
     }
 
@@ -93,6 +99,7 @@ impl ImapSession {
     /// thread forever.
     pub fn connect(&mut self) -> Result<()> {
         let tcp = connect_tcp(&self.host, self.port)?;
+        self.socket = tcp.try_clone().ok();
         let mut client: ::imap::Client<::imap::Connection> = match self.security {
             Security::None => {
                 let mut client = ::imap::Client::new(Box::new(tcp) as ::imap::Connection);
@@ -172,6 +179,54 @@ impl ImapSession {
 
     pub fn has_capability(&self, name: &str) -> bool {
         self.capabilities.contains(&name.to_uppercase())
+    }
+
+    /// Another handle on the connection's socket. Shutting it down from any
+    /// thread makes a blocked read on the session return at once, which is
+    /// how a long `idle` wait is cancelled.
+    pub fn socket(&self) -> Option<TcpStream> {
+        self.socket
+            .as_ref()
+            .and_then(|socket| socket.try_clone().ok())
+    }
+
+    /// Sit in IDLE (RFC 2177) until the selected mailbox changes or
+    /// `timeout` passes. True when it changed: a message arrived, went, or
+    /// had its flags touched. Servers may drop a client idle for 30 minutes,
+    /// so callers re-issue this inside that.
+    pub fn idle(&mut self, timeout: Duration) -> Result<bool> {
+        let socket = self.socket();
+        let session = self.require()?;
+        let mut server_left = false;
+        let outcome = {
+            let mut handle = session.idle();
+            handle.timeout(timeout).keepalive(false);
+            let outcome = handle.wait_while(|response| match response {
+                UnsolicitedResponse::Bye { .. } => {
+                    server_left = true;
+                    false
+                }
+                UnsolicitedResponse::Exists(_)
+                | UnsolicitedResponse::Expunge(_)
+                | UnsolicitedResponse::Recent(_)
+                | UnsolicitedResponse::Fetch { .. } => false,
+                _ => true,
+            });
+            // The crate clears the read timeout once the wait ends, and the
+            // DONE it sends on drop reads a reply: put the timeout back first
+            // or a server that went quiet holds the thread forever.
+            if let Some(socket) = &socket {
+                let _ = socket.set_read_timeout(Some(NET_TIMEOUT));
+            }
+            outcome
+        };
+        if server_left {
+            return Err(NetError::Protocol(format!(
+                "{} closed the connection",
+                self.host
+            )));
+        }
+        Ok(outcome? == WaitOutcome::MailboxChanged)
     }
 
     /// Every listed mailbox, containers included so the caller can rebuild

@@ -50,7 +50,7 @@ pub struct MoveResult {
     pub error: Option<String>,
 }
 
-fn open_imap(account: &Account, credential: &Credential) -> Result<ImapSession> {
+pub(crate) fn open_imap(account: &Account, credential: &Credential) -> Result<ImapSession> {
     let mut session =
         ImapSession::new(&account.imap_host, account.imap_port, account.imap_security);
     session.connect()?;

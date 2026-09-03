@@ -562,6 +562,7 @@ impl MainWindow {
             return;
         }
         self.state_mut().is_online = is_available;
+        self.sync_inbox_watchers();
         if !is_available {
             self.show_offline_banner();
             return;
@@ -609,6 +610,9 @@ impl MainWindow {
             row.set_syncing(is_syncing);
         }
         self.imp().refresh_button.set_sensitive(!any_syncing);
+        if !is_syncing && self.state_mut().inbox_resync_pending.remove(&account_id) {
+            self.sync_inbox(account_id);
+        }
     }
 
     /// Each account row spins on its own, but the conversation list only

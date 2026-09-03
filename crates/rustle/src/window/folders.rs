@@ -393,6 +393,7 @@ impl MainWindow {
         if let Some(row) = unified_row {
             row.bind_unified_inbox(self.unified_badge());
         }
+        self.sync_inbox_watchers();
     }
 
     fn rebuild_folder_tree(&self, accounts: &[Account]) {

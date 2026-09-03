@@ -9,6 +9,7 @@ mod list;
 mod moves;
 mod reader;
 mod sync;
+mod watch;
 
 use crate::avatar_loader::AvatarLoader;
 use crate::objects::{ConversationObject, SidebarItem};
@@ -25,6 +26,7 @@ use rustle_core::models::{Account, Folder};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub use moves::PendingMove;
@@ -113,6 +115,13 @@ pub struct State {
     /// syncs on the same tick.
     pub syncing_account_ids: HashSet<i64>,
     pub sync_timer: Option<glib::SourceId>,
+    /// The IDLE thread per account, with the account it was started for so
+    /// a changed server or address restarts it.
+    pub inbox_watchers: HashMap<i64, (Account, Arc<rustle_core::watch::InboxWatch>)>,
+    /// A change report waiting out its settle delay, per account.
+    pub inbox_settle: HashMap<i64, glib::SourceId>,
+    /// Accounts whose inbox changed while a sync was already running.
+    pub inbox_resync_pending: HashSet<i64>,
     pub is_online: bool,
     pub message_handlers: Option<Rc<Handlers>>,
 }
@@ -668,6 +677,7 @@ impl MainWindow {
         }
 
         imp.is_closing.set(true);
+        self.stop_inbox_watchers();
         if let Some(timer) = self.state_mut().sync_timer.take() {
             timer.remove();
         }

@@ -41,6 +41,7 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   compose.rs   reply/forward bodies, MIME building (lettre), mailto:, address helpers
   folders.rs   FolderRole classification by name, display names, modified UTF-7
   threader.rs  union-find threading; address.rs, dates.rs, providers.rs, html.rs
+  watch.rs     IMAP IDLE: one cancellable long-lived session per account on its inbox
   secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
   avatars.rs   sender pictures: local graphmail-bridge photo endpoint (loopback+plain IMAP
                accounts, port from `bridge-photo-port`), then Gravatar/favicon; on-disk cache
@@ -48,7 +49,7 @@ crates/rustle/             the GTK layer
   build.rs     blueprint-compiler ui/*.blp -> gresource; glib-compile-schemas -> OUT_DIR
   ui/*.blp     Blueprint templates; the Rust attribute names must match the ids
   src/window/  one MainWindow, one impl block per concern: accounts, actions, folders,
-               list, moves, reader, sync
+               list, moves, reader, sync, watch (the IDLE threads)
   src/widgets/ FolderRow, ConversationRow (gtk::Box subclasses), MessageView (plain struct)
   src/dialogs/ account, accounts, online_accounts, preferences;  src/composer.rs
   src/workers.rs  the threading model (below);  src/accent.rs  accent colour helpers
@@ -62,6 +63,10 @@ data/                      gschema, desktop file, metainfo, D-Bus service, icons
   resolves credentials itself (keyring/GOA block on IPC); `on_done` runs on the main loop
   and is the only place that touches the database or widgets. Never log a `Credential`'s
   secret — its `Debug` hides it; don't `{:?}` a struct that embeds the raw token.
+  The one long-lived thread is the inbox watcher (`window/watch.rs`): it reports back
+  through a `SendWeakRef` on the window via `MainContext::invoke`, and is cancelled through
+  its `InboxWatch` handle, which shuts the socket so a blocked read returns at once.
+  `sync_inbox_watchers` reconciles the threads against `State::accounts` and is idempotent.
 - **Window state** is one `RefCell<State>` behind `state()`/`state_mut()`. Never hold a
   `Ref` across a call that may need `state_mut()`. Bind to a local before an
   `if let`/`match`: a temporary in the scrutinee lives for the whole block. This crashed
