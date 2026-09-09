@@ -3,7 +3,7 @@
 
 use super::{MainWindow, MOVE_UNDO_MS};
 use crate::i18n::{self, gettext};
-use crate::objects::ConversationObject;
+use crate::objects::EmailObject;
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -75,50 +75,46 @@ impl MainWindow {
     }
 
     /// Move the selection to a folder picked from the menu, by folder id.
-    /// Only conversations of that folder's account can go there.
+    /// Only emails of that folder's account can go there.
     pub(super) fn on_move(&self, folder_id: i64) {
         let Some((account, dest)) = self.account_for_folder(folder_id) else {
             return;
         };
-        let conversations: Vec<ConversationObject> = self
-            .selected_conversations()
+        let emails: Vec<EmailObject> = self
+            .selected_emails()
             .into_iter()
             .filter(|c| {
-                self.account_for_folder(c.with(|c| c.folder_id()))
+                self.account_for_folder(c.with(|c| c.folder_id))
                     .is_some_and(|(a, _)| a.id == account.id)
             })
             .collect();
-        if conversations.is_empty() {
+        if emails.is_empty() {
             return;
         }
-        let count = conversations.len();
+        let count = emails.len();
         let name = folders::display_name_for_folder(&dest.name, dest.display_delimiter());
         let title = i18n::plural(
             "Moved to {name}",
-            "Moved {n} conversations to {name}",
+            "Moved {n} emails to {name}",
             count as u64,
             &[("name", &name)],
         );
-        let groups = self.group_moves(conversations, |_, _| Some(dest.clone()));
+        let groups = self.group_moves(emails, |_, _| Some(dest.clone()));
         self.start_move(groups, &title);
     }
 
     fn start_move_by_role(&self, role: FolderRole) {
-        let conversations = self.selected_conversations();
-        if conversations.is_empty() {
+        let emails = self.selected_emails();
+        if emails.is_empty() {
             return;
         }
-        let count = conversations.len() as u64;
+        let count = emails.len() as u64;
         let title = match role {
-            FolderRole::Archive => {
-                i18n::plural("Archived", "Archived {n} conversations", count, &[])
-            }
-            FolderRole::Inbox => {
-                i18n::plural("Unarchived", "Unarchived {n} conversations", count, &[])
-            }
-            _ => i18n::plural("Deleted", "Deleted {n} conversations", count, &[]),
+            FolderRole::Archive => i18n::plural("Archived", "Archived {n} emails", count, &[]),
+            FolderRole::Inbox => i18n::plural("Unarchived", "Unarchived {n} emails", count, &[]),
+            _ => i18n::plural("Deleted", "Deleted {n} emails", count, &[]),
         };
-        let groups = self.group_moves(conversations, |account_id, source| {
+        let groups = self.group_moves(emails, |account_id, source| {
             self.folder_with_role(account_id, role, source.id)
         });
         if groups.is_empty() {
@@ -136,15 +132,15 @@ impl MainWindow {
     /// and each has its own Archive and Trash.
     fn group_moves(
         &self,
-        conversations: Vec<ConversationObject>,
+        emails: Vec<EmailObject>,
         dest_for: impl Fn(i64, &Folder) -> Option<Folder>,
-    ) -> Vec<(Account, Folder, Folder, Vec<ConversationObject>)> {
-        let mut by_source: HashMap<i64, Vec<ConversationObject>> = HashMap::new();
-        for conversation in conversations {
+    ) -> Vec<(Account, Folder, Folder, Vec<EmailObject>)> {
+        let mut by_source: HashMap<i64, Vec<EmailObject>> = HashMap::new();
+        for email in emails {
             by_source
-                .entry(conversation.with(|c| c.folder_id()))
+                .entry(email.with(|c| c.folder_id))
                 .or_default()
-                .push(conversation);
+                .push(email);
         }
         let mut groups = Vec::new();
         for (folder_id, group) in by_source {
@@ -192,28 +188,22 @@ impl MainWindow {
         matches.into_iter().next()
     }
 
-    /// Move conversations optimistically: update the DB and drop them from
+    /// Move emails optimistically: update the DB and drop them from
     /// the list now, then run the real IMAP MOVE after the undo window.
-    fn start_move(
-        &self,
-        groups: Vec<(Account, Folder, Folder, Vec<ConversationObject>)>,
-        verb: &str,
-    ) {
+    fn start_move(&self, groups: Vec<(Account, Folder, Folder, Vec<EmailObject>)>, verb: &str) {
         self.commit_pending_moves();
         let mut pending_moves = Vec::new();
-        for (account, source, dest, conversations) in groups {
+        for (account, source, dest, emails) in groups {
             // Pair each mail with its UID in one pass so the "has a UID"
             // narrowing survives into the index-aligned vectors. A locally
             // saved copy has no UID yet.
             let mut email_ids = Vec::new();
             let mut uids = Vec::new();
-            for conversation in &conversations {
-                conversation.with(|c| {
-                    for mail in &c.emails {
-                        if let Some(uid) = &mail.server_id {
-                            email_ids.push(mail.id);
-                            uids.push(uid.clone());
-                        }
+            for email in &emails {
+                email.with(|mail| {
+                    if let Some(uid) = &mail.server_id {
+                        email_ids.push(mail.id);
+                        uids.push(uid.clone());
                     }
                 });
             }
@@ -259,7 +249,7 @@ impl MainWindow {
         }
 
         self.reload_folders();
-        self.refresh_conversations(None);
+        self.refresh_emails(None);
 
         let toast = adw::Toast::builder()
             .title(verb)
@@ -340,7 +330,7 @@ impl MainWindow {
         }
         self.clear_move_tombstones(pending, 0);
         self.reload_folders();
-        self.refresh_conversations(None);
+        self.refresh_emails(None);
     }
 
     fn clear_move_tombstones(&self, pending: &PendingMove, start: usize) {
@@ -473,7 +463,7 @@ impl MainWindow {
             }
         }
         self.reload_folders();
-        self.refresh_conversations(None);
+        self.refresh_emails(None);
         if let Some(error) = result.error {
             log::warn!(
                 "move stopped after {completed} of {} message(s) from {} to {}: {error}",
@@ -494,9 +484,9 @@ impl MainWindow {
     /// move it to.
     pub(super) fn build_move_menu(&self, action_prefix: &str) -> gio::Menu {
         let menu = gio::Menu::new();
-        let selected = self.selected_conversations();
+        let selected = self.selected_emails();
         let source_ids: std::collections::HashSet<i64> =
-            selected.iter().map(|c| c.with(|c| c.folder_id())).collect();
+            selected.iter().map(|c| c.with(|c| c.folder_id)).collect();
         let account_id = match self.current_folder() {
             Some(folder) => Some(folder.account_id),
             None => {

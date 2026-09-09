@@ -1,4 +1,4 @@
-//! One message in the reading pane: a header row that expands to the body,
+//! One message in the reading pane: its header and body,
 //! rendered in a sandboxed WebKit view when it is HTML.
 
 use crate::accent;
@@ -23,8 +23,8 @@ pub type LoadCallback = Box<dyn FnOnce(Option<Vec<u8>>, Option<String>)>;
 pub type LoadHandler = Rc<dyn Fn(&Email, LoadCallback)>;
 /// Offers an unsubscribe target; the second argument hides the banner once done.
 pub type UnsubscribeHandler = Rc<dyn Fn(&Unsubscribe, Box<dyn Fn()>)>;
-/// Called once the newest message has rendered.
-pub type RenderedCallback = Box<dyn Fn(&MessageView)>;
+/// Called once the selected message has rendered.
+pub type RenderedCallback = Box<dyn Fn()>;
 
 /// What the window does for a view: fetch bodies, save/open attachments, and
 /// unsubscribe (the second argument hides the banner once the list confirmed).
@@ -41,17 +41,15 @@ const EXTERNAL_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 
 const GUTTER: i32 = 12;
 const SMALL_GUTTER: i32 = 6;
-/// Content sits on the reader's own left edge, lined up with the subject.
+/// Headers and message content line up with the subject. HTML keeps this
+/// inset inside its own canvas so the padding shares the body's background.
 const EDGE: i32 = 24;
 const AVATAR_SIZE: i32 = 40;
-/// Tall enough that most messages need no inner scrolling; the WebView can't
-/// report its content height until after layout.
-const BODY_HEIGHT: i32 = 800;
 
 thread_local! {
     // An unrelated WebView costs its own web process: ~300 MB and up to
     // 1.5 s to start. Related views share one, so every message body hangs
-    // off this anchor, which belongs to no conversation and so survives
+    // off this anchor, which belongs to no email and so survives
     // closing one. The composer's WebView stays unrelated on purpose -- it
     // runs JavaScript and must not share a process with untrusted mail HTML.
     static ANCHOR: RefCell<Option<webkit::WebView>> = const { RefCell::new(None) };
@@ -91,8 +89,6 @@ struct Inner {
     handlers: Rc<Handlers>,
     on_rendered: Option<RenderedCallback>,
     should_load_remote_images: bool,
-    is_loaded: bool,
-    is_loading: bool,
     is_released: bool,
     placeholder: Option<gtk::Label>,
     webview: Option<webkit::WebView>,
@@ -106,23 +102,21 @@ struct Inner {
 pub struct MessageView {
     root: gtk::Box,
     body: gtk::Box,
-    revealer: gtk::Revealer,
     inner: Rc<RefCell<Inner>>,
 }
 
 impl MessageView {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         email: Email,
         handlers: Rc<Handlers>,
-        on_rendered: Option<RenderedCallback>,
-        is_expanded: bool,
+        on_rendered: RenderedCallback,
         should_load_remote_images: bool,
         avatars: &AvatarLoader,
         account: Option<&Account>,
     ) -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
             .css_classes(["message-view"])
             .build();
 
@@ -194,33 +188,22 @@ impl MessageView {
         meta.append(&date);
         header.append(&meta);
 
-        let toggle = gtk::Button::builder()
-            .child(&header)
-            .css_classes(["flat", "message-header"])
-            .build();
-        root.append(&toggle);
+        root.append(&header);
 
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(GUTTER)
-            .margin_start(EDGE)
-            .margin_end(EDGE)
-            .margin_bottom(EDGE)
+            .vexpand(true)
             .build();
-        let revealer = gtk::Revealer::builder().child(&body).build();
-        root.append(&revealer);
+        root.append(&body);
 
         let view = MessageView {
             root,
             body,
-            revealer,
             inner: Rc::new(RefCell::new(Inner {
                 email,
                 handlers,
-                on_rendered,
+                on_rendered: Some(on_rendered),
                 should_load_remote_images,
-                is_loaded: false,
-                is_loading: false,
                 is_released: false,
                 placeholder: None,
                 webview: None,
@@ -231,11 +214,7 @@ impl MessageView {
             })),
         };
 
-        let this = view.clone();
-        toggle.connect_clicked(move |_| this.on_toggle());
-        if is_expanded {
-            view.expand();
-        }
+        view.load();
         view
     }
 
@@ -251,22 +230,9 @@ impl MessageView {
         self.inner.borrow().parsed.clone()
     }
 
-    fn on_toggle(&self) {
-        if self.revealer.reveals_child() {
-            self.revealer.set_reveal_child(false);
-        } else {
-            self.expand();
-        }
-    }
-
-    fn expand(&self) {
-        self.revealer.set_reveal_child(true);
+    fn load(&self) {
         let (email, handlers) = {
             let mut inner = self.inner.borrow_mut();
-            if inner.is_loaded || inner.is_loading {
-                return;
-            }
-            inner.is_loading = true;
             let placeholder = gtk::Label::builder()
                 .label(gettext("Loading…"))
                 .margin_top(GUTTER)
@@ -286,7 +252,6 @@ impl MessageView {
             if inner.is_released {
                 return;
             }
-            inner.is_loading = false;
             if let Some(placeholder) = inner.placeholder.take() {
                 self.body.remove(&placeholder);
             }
@@ -305,7 +270,6 @@ impl MessageView {
         let parsed = mime::parse_message(&raw);
         {
             let mut inner = self.inner.borrow_mut();
-            inner.is_loaded = true;
             inner.raw = Some(raw);
             inner.parsed = Some(parsed.clone());
         }
@@ -319,7 +283,7 @@ impl MessageView {
 
         let on_rendered = self.inner.borrow_mut().on_rendered.take();
         if let Some(on_rendered) = on_rendered {
-            on_rendered(self);
+            on_rendered();
         }
     }
 
@@ -364,6 +328,8 @@ impl MessageView {
         let expander = gtk::Expander::builder()
             .label(gettext("Details"))
             .child(&grid)
+            .margin_start(EDGE)
+            .margin_end(EDGE)
             .build();
         self.body.append(&expander);
     }
@@ -389,6 +355,10 @@ impl MessageView {
             .label(text)
             .xalign(0.0)
             .yalign(0.0)
+            .margin_top(GUTTER)
+            .margin_start(EDGE)
+            .margin_end(EDGE)
+            .margin_bottom(EDGE)
             .wrap(true)
             .selectable(true)
             .build();
@@ -417,8 +387,9 @@ impl MessageView {
 
         let webview = webkit::WebView::builder()
             .related_view(&ensure_anchor())
+            .hexpand(true)
+            .vexpand(true)
             .build();
-        webview.set_size_request(-1, BODY_HEIGHT);
         let root = self.root.clone();
         webview.connect_decide_policy(move |_, decision, _| decide_policy(&root, decision));
         if let Some(settings) = WebViewExt::settings(&webview) {
@@ -445,9 +416,17 @@ impl MessageView {
 
     fn sandboxed_html(&self) -> String {
         let inner = self.inner.borrow();
-        // Links take the system accent, the one place the message's own
-        // styling is overridden -- and only where it set none itself.
-        let mut style = format!("a:not([style]) {{ color: {}; }}", accent::accent_hex());
+        // Keep the inset inside the HTML canvas: its background then paints
+        // both the content and padding, even when the email sets a body colour.
+        // Border-box includes that padding in the viewport's minimum height.
+        // Links inherit the system accent unless they carry their own style.
+        let mut style = format!(
+            "html {{ margin: 0; padding: 0; }} \
+             body {{ margin: 0 !important; padding: {GUTTER}px {EDGE}px {EDGE}px !important; \
+             box-sizing: border-box; min-height: 100vh; }} \
+             a:not([style]) {{ color: {}; }}",
+            accent::accent_hex()
+        );
         let html = inner.html.as_deref().unwrap_or("");
         // In dark mode the body is rewritten the way Outlook does it: light
         // canvases go dark, dark ink goes light, hues stay. The defaults an

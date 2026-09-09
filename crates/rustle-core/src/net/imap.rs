@@ -50,8 +50,6 @@ pub struct FetchedHeader {
     pub subject: String,
     pub date: String,
     pub message_id: String,
-    pub in_reply_to: String,
-    pub references: String,
     pub is_seen: bool,
     pub is_flagged: bool,
     pub is_pinned: bool,
@@ -317,7 +315,7 @@ impl ImapSession {
             // BODY.PEEK[...] = look at the header WITHOUT marking it \Seen.
             // The first 4 KiB of the body ride along for the preview line;
             // Content-Type and the transfer encoding are what decode them.
-            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)",
+            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)",
         )?;
         Ok(fetches
             .iter()
@@ -470,8 +468,6 @@ pub fn parse_header(
         subject: header("Subject"),
         date: header("Date"),
         message_id: header("Message-ID"),
-        in_reply_to: header("In-Reply-To"),
-        references: header("References"),
         is_seen,
         is_flagged,
         is_pinned,
@@ -485,9 +481,8 @@ pub fn parse_header(
 fn decoded_header(message: &mail_parser::Message, name: &str) -> Option<String> {
     use mail_parser::HeaderValue;
     let value = message.header(name)?;
-    // mail-parser strips the angle brackets off message ids; the threader
-    // matches tokens verbatim, so put them back on every id header alike.
-    let is_id_header = matches!(name, "Message-ID" | "In-Reply-To" | "References");
+    // Restore the angle brackets stripped by mail-parser.
+    let is_id_header = name == "Message-ID";
     let text = match value {
         HeaderValue::Text(text) if is_id_header => format!("<{text}>"),
         HeaderValue::Address(address) => address
@@ -545,7 +540,6 @@ mod tests {
         assert_eq!(header.to_header, "\"Bob\" <bob@x.y>, c@x.y");
         assert_eq!(header.subject, "Grüße");
         assert_eq!(header.message_id, "<m1@x>");
-        assert_eq!(header.references, "<a@x> <b@x>");
         assert!(header.date.contains("2026"));
         assert!(header.is_seen);
     }

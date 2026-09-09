@@ -22,5 +22,4 @@ pub mod providers;
 pub mod secrets;
 pub mod sounds;
 pub mod sync;
-pub mod threader;
 pub mod watch;

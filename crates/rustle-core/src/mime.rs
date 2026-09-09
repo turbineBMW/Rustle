@@ -32,11 +32,11 @@ pub struct ParsedMessage {
     pub unsubscribe: Option<Unsubscribe>,
 }
 
-/// The most characters a conversation-list preview keeps. Two lines of a
+/// The most characters a email-list preview keeps. Two lines of a
 /// narrow sidebar never show more; the rest would only bloat the database.
 pub const PREVIEW_CHARS: usize = 240;
 
-/// A one-paragraph snippet of a message body for the conversation list: the
+/// A one-paragraph snippet of a message body for the email list: the
 /// plain-text part when there is one, otherwise the HTML flattened, with all
 /// whitespace collapsed to single spaces.
 pub fn preview(parsed: &ParsedMessage) -> String {

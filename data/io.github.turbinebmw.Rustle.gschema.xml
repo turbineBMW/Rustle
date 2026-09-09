@@ -68,7 +68,7 @@
 		<key name="conversation-sidebar-width" type="i">
 			<range min="220" max="600"/>
 			<default>380</default>
-			<summary>Conversation list width</summary>
+			<summary>Email list width</summary>
 		</key>
 	</schema>
 </schemalist>

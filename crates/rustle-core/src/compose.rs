@@ -29,7 +29,7 @@ pub fn forward_subject(subject: &str) -> String {
     }
 }
 
-/// Reply All keeps the rest of the thread in the loop: the original To and
+/// Reply All includes the original To and
 /// Cc, minus ourselves and minus whoever the reply is already addressed to.
 pub fn reply_all_cc(to_header: &str, cc_header: &str, own_email: &str, to_addr: &str) -> String {
     let excluded = [own_email.to_lowercase(), to_addr.to_lowercase()];

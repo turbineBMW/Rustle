@@ -118,7 +118,7 @@ impl MainWindow {
         }
         if sent_count > 0 {
             self.reload_folders();
-            self.refresh_conversations(None);
+            self.refresh_emails(None);
             self.toast(&i18n::plural(
                 "Sent {n} queued message.",
                 "Sent {n} queued messages.",
@@ -151,7 +151,7 @@ impl MainWindow {
             return;
         }
         self.set_syncing(account.id, true);
-        let stack = &self.imp().conversation_stack;
+        let stack = &self.imp().email_stack;
         if stack.visible_child_name().as_deref() == Some(PAGE_EMPTY) {
             stack.set_visible_child_name(PAGE_LOADING);
         }
@@ -232,8 +232,8 @@ impl MainWindow {
         if self.is_stale(account) {
             return;
         }
-        // Remember the open conversation so a background poll doesn't yank it.
-        let keep_id = self.selected_conversation().map(|c| c.id());
+        // Remember the open email so a background poll doesn't yank it.
+        let keep_id = self.selected_email().map(|c| c.id());
 
         let mut new_messages: Vec<MessageHeader> = Vec::new();
         let target_id;
@@ -325,9 +325,6 @@ impl MainWindow {
                     log::error!("could not prune {}: {error}", target.name);
                 }
             }
-            if let Err(error) = db.reassign_conversations(target.id) {
-                log::error!("could not thread {}: {error}", target.name);
-            }
             // From every fetched header, not just the newly added ones, so an
             // existing install fills its contacts on the next sync.
             let addresses: Vec<(String, String)> = result
@@ -368,7 +365,7 @@ impl MainWindow {
         let arrived_elsewhere = self.apply_unread_counts(account, &result.unread_counts);
 
         self.reload_folders();
-        self.refresh_conversations(keep_id);
+        self.refresh_emails(keep_id);
         self.imp().connection_banner.set_revealed(false);
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
     }
@@ -491,7 +488,7 @@ impl MainWindow {
         let notification = if messages.len() == 1 {
             let notification = gio::Notification::new(&messages[0].sender);
             notification.set_body(Some(&messages[0].subject));
-            // Clicking it opens that thread, which is what marks it read.
+            // Clicking it opens that message, which is what marks it read.
             notification.set_default_action_and_target_value(
                 "app.open-mail",
                 Some(&(folder_id, messages[0].uid.clone()).to_variant()),
@@ -615,7 +612,7 @@ impl MainWindow {
         }
     }
 
-    /// Each account row spins on its own, but the conversation list only
+    /// Each account row spins on its own, but the email list only
     /// waits on the accounts whose folders are open.
     pub(super) fn is_current_account_syncing(&self) -> bool {
         let folders = self.current_folders();

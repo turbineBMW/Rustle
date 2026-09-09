@@ -1,4 +1,4 @@
-//! One row of the conversation list.
+//! One row of the email list.
 
 use crate::account_colors;
 use crate::avatar_loader::AvatarLoader;
@@ -7,13 +7,13 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::pango;
 use gtk::subclass::prelude::*;
-use rustle_core::models::{Account, Conversation};
+use rustle_core::models::{Account, Email};
 use std::cell::{Cell, RefCell};
 
 mod imp {
     use super::*;
 
-    pub struct ConversationRow {
+    pub struct EmailRow {
         pub avatar: adw::Avatar,
         pub sender: gtk::Label,
         pub star: gtk::Image,
@@ -28,7 +28,7 @@ mod imp {
         pub avatars: RefCell<Option<AvatarLoader>>,
     }
 
-    impl Default for ConversationRow {
+    impl Default for EmailRow {
         fn default() -> Self {
             let label = |classes: &[&str]| {
                 gtk::Label::builder()
@@ -37,9 +37,9 @@ mod imp {
                     .css_classes(classes)
                     .build()
             };
-            ConversationRow {
+            EmailRow {
                 avatar: adw::Avatar::new(40, None, true),
-                sender: label(&["conversation-sender"]),
+                sender: label(&["email-sender"]),
                 star: gtk::Image::builder()
                     .icon_name("starred-symbolic")
                     .pixel_size(12)
@@ -47,14 +47,14 @@ mod imp {
                 pin: gtk::Image::builder()
                     .icon_name("view-pin-symbolic")
                     .pixel_size(12)
-                    .css_classes(["conversation-pin"])
+                    .css_classes(["email-pin"])
                     .build(),
                 date: gtk::Label::builder()
                     .xalign(1.0)
                     .css_classes(["dim-label"])
                     .build(),
-                subject: label(&["conversation-subject"]),
-                preview: label(&["conversation-preview", "dim-label"]),
+                subject: label(&["email-subject"]),
+                preview: label(&["email-preview", "dim-label"]),
                 account: gtk::Box::builder()
                     .width_request(10)
                     .height_request(10)
@@ -71,21 +71,21 @@ mod imp {
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for ConversationRow {
-        const NAME: &'static str = "RustleConversationRow";
-        type Type = super::ConversationRow;
+    impl ObjectSubclass for EmailRow {
+        const NAME: &'static str = "RustleEmailRow";
+        type Type = super::EmailRow;
         type ParentType = gtk::Box;
     }
 
-    impl ObjectImpl for ConversationRow {
+    impl ObjectImpl for EmailRow {
         fn constructed(&self) {
             self.parent_constructed();
             let row = self.obj().clone();
             row.set_orientation(gtk::Orientation::Horizontal);
             row.set_spacing(12);
             // Padding rather than margins, so an unread row's tint runs
-            // edge to edge (see .conversation-row in style.css).
-            row.add_css_class("conversation-row");
+            // edge to edge (see .email-row in style.css).
+            row.add_css_class("email-row");
             row.append(&self.avatar);
 
             let text = gtk::Box::builder()
@@ -108,59 +108,46 @@ mod imp {
             text.append(&self.preview);
         }
     }
-    impl WidgetImpl for ConversationRow {}
-    impl BoxImpl for ConversationRow {}
+    impl WidgetImpl for EmailRow {}
+    impl BoxImpl for EmailRow {}
 }
 
 glib::wrapper! {
-    pub struct ConversationRow(ObjectSubclass<imp::ConversationRow>)
+    pub struct EmailRow(ObjectSubclass<imp::EmailRow>)
         @extends gtk::Box, gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
 }
 
-impl ConversationRow {
+impl EmailRow {
     pub fn new(avatars: AvatarLoader) -> Self {
         let row: Self = glib::Object::new();
         row.imp().avatars.replace(Some(avatars));
         row
     }
 
-    /// Fill this row from a conversation. In an outgoing folder the sender of
+    /// Fill this row from a email. In an outgoing folder the sender of
     /// every message is the account itself, so the row names the recipient
     /// instead. `account` is given in the unified inbox, where the account a
-    /// thread belongs to is otherwise invisible: the row then carries a dot
+    /// message belongs to is otherwise invisible: the row then carries a dot
     /// in that account's colour before the sender.
-    pub fn bind(&self, conversation: &Conversation, is_outgoing: bool, account: Option<&Account>) {
+    pub fn bind(&self, email: &Email, is_outgoing: bool, account: Option<&Account>) {
         let imp = self.imp();
-        let mut subject = conversation.subject().to_string();
-        if conversation.count() > 1 {
-            subject = format!("{subject}  ({})", conversation.count());
-        }
-        let latest = conversation.latest();
-        let (name, address, participants) = if is_outgoing && !latest.recipient.is_empty() {
-            (
-                latest.recipient.clone(),
-                latest.recipient_address.clone(),
-                latest.recipient.clone(),
-            )
+        let (name, address) = if is_outgoing && !email.recipient.is_empty() {
+            (&email.recipient, &email.recipient_address)
         } else {
-            (
-                latest.sender.clone(),
-                latest.sender_address.clone(),
-                conversation.participants(),
-            )
+            (&email.sender, &email.sender_address)
         };
 
-        imp.avatar.set_text(Some(&name));
-        self.load_avatar(&address);
-        imp.sender.set_label(&participants);
-        imp.star.set_visible(conversation.is_starred());
-        imp.pin.set_visible(conversation.is_pinned());
-        imp.pinned.set(conversation.is_pinned());
-        imp.date.set_label(&i18n::time_label(conversation.date()));
-        imp.date_value.replace(conversation.date().to_string());
-        imp.subject.set_label(&subject);
-        imp.preview.set_label(conversation.preview());
+        imp.avatar.set_text(Some(name));
+        self.load_avatar(address);
+        imp.sender.set_label(name);
+        imp.star.set_visible(email.is_starred);
+        imp.pin.set_visible(email.is_pinned);
+        imp.pinned.set(email.is_pinned);
+        imp.date.set_label(&i18n::time_label(&email.date));
+        imp.date_value.replace(email.date.to_string());
+        imp.subject.set_label(&email.subject);
+        imp.preview.set_label(&email.preview);
         match account {
             Some(account) => {
                 imp.account.set_tooltip_text(Some(&account.email));
@@ -171,7 +158,7 @@ impl ConversationRow {
         }
         // The list's own row widget wraps this box; tag it too so the
         // highlight covers the full row, edge to edge.
-        if conversation.is_unread() {
+        if email.is_unread {
             self.add_css_class("unread");
         } else {
             self.remove_css_class("unread");

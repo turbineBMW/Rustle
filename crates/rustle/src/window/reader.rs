@@ -1,8 +1,8 @@
-//! The reading pane: the thread, message bodies, and attachments.
+//! The reading pane: the selected message and its attachments.
 
 use super::{MainWindow, PAGE_EMPTY, PAGE_MESSAGE};
 use crate::i18n::{self, gettext};
-use crate::objects::ConversationObject;
+use crate::objects::EmailObject;
 use crate::settings as keys;
 use crate::widgets::message_view::{Handlers, LoadCallback, MessageView, RenderedCallback};
 use crate::workers;
@@ -66,41 +66,40 @@ impl MainWindow {
     }
 
     pub(super) fn update_reader(&self) {
-        // The conversation store only fills once a mail view is loaded, and
+        // The email store only fills once a mail view is loaded, and
         // there is nothing to read before then.
         if self.state().view.is_none() {
             return;
         }
         let imp = self.imp();
-        let selected = self.selected_conversations();
+        let selected = self.selected_emails();
         self.update_move_menu();
         if selected.len() != 1 {
             {
                 let mut state = self.state_mut();
                 state.rendered_id = None;
-                state.active_view = None;
             }
             self.set_reply_forward_enabled(false);
             self.set_mail_actions_enabled(!selected.is_empty());
             if !selected.is_empty() {
                 self.update_action_buttons(&selected);
             }
-            // Hiding the pane isn't enough: the views behind it keep their
-            // WebViews, and each one holds a web process open.
-            self.clear_thread();
+            // Hiding the pane isn't enough: the view behind it keeps its
+            // WebView and holds a web process open.
+            self.clear_message();
             imp.reader_stack.set_visible_child_name(PAGE_EMPTY);
             return;
         }
 
-        let conversation = &selected[0];
+        let email = &selected[0];
         self.update_action_buttons(&selected);
         self.set_reply_forward_enabled(false);
 
-        // Already showing this thread (e.g. after a flag change) -- don't rebuild.
-        if self.state().rendered_id == Some(conversation.id()) {
+        // Already showing this message (e.g. after a flag change) -- don't rebuild.
+        if self.state().rendered_id == Some(email.id()) {
             let is_ready = self
                 .state()
-                .active_view
+                .message_view
                 .as_ref()
                 .is_some_and(|view| view.raw().is_some());
             self.set_reply_forward_enabled(is_ready);
@@ -110,19 +109,18 @@ impl MainWindow {
 
         {
             let mut state = self.state_mut();
-            state.rendered_id = Some(conversation.id());
-            state.active_view = None;
+            state.rendered_id = Some(email.id());
         }
-        self.render_thread(conversation);
-        // Opening a conversation marks it read (like most mail clients).
-        self.mark_conversation_read(conversation);
+        self.render_message(email);
+        // Opening an email marks it read (like most mail clients).
+        self.mark_email_read(email);
     }
 
-    /// Reflect the selected conversations' state on the action buttons.
-    fn update_action_buttons(&self, selected: &[ConversationObject]) {
+    /// Reflect the selected emails' state on the action buttons.
+    fn update_action_buttons(&self, selected: &[EmailObject]) {
         let imp = self.imp();
         self.set_mail_actions_enabled(true);
-        if selected.iter().any(|c| c.with(|c| c.is_unread())) {
+        if selected.iter().any(|c| c.with(|c| c.is_unread)) {
             imp.mark_read_button.set_icon_name("mail-read-symbolic");
             imp.mark_read_button
                 .set_tooltip_text(Some(&gettext("Mark Read")));
@@ -131,14 +129,14 @@ impl MainWindow {
             imp.mark_read_button
                 .set_tooltip_text(Some(&gettext("Mark Unread")));
         }
-        if selected.iter().any(|c| c.with(|c| c.is_starred())) {
+        if selected.iter().any(|c| c.with(|c| c.is_starred)) {
             imp.star_button.set_icon_name("starred-symbolic");
             imp.star_button.set_tooltip_text(Some(&gettext("Unstar")));
         } else {
             imp.star_button.set_icon_name("non-starred-symbolic");
             imp.star_button.set_tooltip_text(Some(&gettext("Star")));
         }
-        if selected.iter().any(|c| c.with(|c| c.is_pinned())) {
+        if selected.iter().any(|c| c.with(|c| c.is_pinned)) {
             imp.pin_button.set_tooltip_text(Some(&gettext("Unpin")));
             imp.pin_button.add_css_class("pinned");
         } else {
@@ -147,23 +145,21 @@ impl MainWindow {
         }
     }
 
-    /// Empty the reading pane, releasing each view's WebView as it goes.
-    pub(super) fn clear_thread(&self) {
-        let views = std::mem::take(&mut self.state_mut().thread_views);
-        let thread_box = &self.imp().thread_box;
-        for view in views {
-            thread_box.remove(view.widget());
+    /// Empty the reading pane and release its WebView.
+    pub(super) fn clear_message(&self) {
+        let view = self.state_mut().message_view.take();
+        if let Some(view) = view {
+            self.imp().message_box.remove(view.widget());
             view.release();
         }
     }
 
-    /// Build one MessageView per email, newest first. The newest starts
-    /// expanded (which loads its body); older ones load when expanded.
-    fn render_thread(&self, conversation: &ConversationObject) {
+    /// Display only the selected email.
+    fn render_message(&self, email: &EmailObject) {
         let imp = self.imp();
-        imp.reader_subject
-            .set_label(&conversation.with(|c| c.subject().to_string()));
-        self.clear_thread();
+        let email = email.get();
+        imp.reader_subject.set_label(&email.subject);
+        self.clear_message();
 
         let should_load_remote_images = self.settings().boolean(keys::LOAD_REMOTE_IMAGES);
         let handlers = self
@@ -171,50 +167,32 @@ impl MainWindow {
             .message_handlers
             .clone()
             .expect("set at construction");
-        let avatars = self.avatars();
-        let emails: Vec<Email> = conversation.with(|c| c.emails.iter().rev().cloned().collect());
-        let mut views = Vec::with_capacity(emails.len());
-        let is_unified = self.is_unified_view();
-        for (index, email) in emails.into_iter().enumerate() {
-            let is_newest = index == 0;
-            let on_rendered: Option<RenderedCallback> = if is_newest {
-                let window = self.downgrade();
-                Some(Box::new(move |view: &MessageView| {
-                    if let Some(window) = window.upgrade() {
-                        window.on_newest_rendered(view);
-                    }
-                }))
-            } else {
-                None
-            };
-            let account = if is_unified {
-                self.account_for_folder(email.folder_id)
-                    .map(|(account, _)| account)
-            } else {
-                None
-            };
-            let view = MessageView::new(
-                email,
-                handlers.clone(),
-                on_rendered,
-                is_newest,
-                should_load_remote_images,
-                &avatars,
-                account.as_ref(),
-            );
-            imp.thread_box.append(view.widget());
-            views.push(view);
-        }
-        self.state_mut().thread_views = views;
+        let window = self.downgrade();
+        let email_id = email.id;
+        let on_rendered: RenderedCallback = Box::new(move || {
+            if let Some(window) = window.upgrade() {
+                if window.state().rendered_id == Some(email_id) {
+                    window.set_reply_forward_enabled(true);
+                }
+            }
+        });
+        let account = if self.is_unified_view() {
+            self.account_for_folder(email.folder_id)
+                .map(|(account, _)| account)
+        } else {
+            None
+        };
+        let view = MessageView::new(
+            email,
+            handlers,
+            on_rendered,
+            should_load_remote_images,
+            &self.avatars(),
+            account.as_ref(),
+        );
+        imp.message_box.append(view.widget());
+        self.state_mut().message_view = Some(view);
         imp.reader_stack.set_visible_child_name(PAGE_MESSAGE);
-    }
-
-    fn on_newest_rendered(&self, view: &MessageView) {
-        if self.selected_conversations().len() != 1 {
-            return;
-        }
-        self.state_mut().active_view = Some(view.clone());
-        self.set_reply_forward_enabled(true);
     }
 
     /// Fetch one message's raw bytes for a MessageView: serve the cached copy

@@ -1,40 +1,40 @@
-//! The conversation list: contents, search, and paging.
+//! The email list: contents, search, and paging.
 
 use super::{MainWindow, PAGE_EMPTY, PAGE_LIST, PAGE_LOADING, SEARCH_DEBOUNCE_MS};
 use crate::i18n;
-use crate::objects::ConversationObject;
-use crate::widgets::conversation_row::ConversationRow;
+use crate::objects::EmailObject;
+use crate::widgets::email_row::EmailRow;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::{gdk, gio};
 use rustle_core::dates;
 use rustle_core::folders;
-use rustle_core::models::Conversation;
+use rustle_core::models::Email;
 use std::time::Duration;
 
 impl MainWindow {
-    /// Rebuild the conversation list from the current view, applying the
-    /// search query if one is typed. `keep_id` re-selects that conversation
+    /// Rebuild the email list from the current view, applying the
+    /// search query if one is typed. `keep_id` re-selects that email
     /// if it's still in the list, so a mail action can refresh without
     /// reloading the reader.
-    pub(super) fn refresh_conversations(&self, keep_id: Option<i64>) {
+    pub(super) fn refresh_emails(&self, keep_id: Option<i64>) {
         if self.state().view.is_none() {
             return;
         }
-        let scroller = &self.imp().conversation_scroller;
+        let scroller = &self.imp().email_scroller;
         let vadjustment = scroller.vadjustment();
         let scroll_position = vadjustment.value();
 
-        let matches = self.matching_conversations(keep_id);
-        self.replace_conversations(matches, keep_id);
+        let matches = self.matching_emails(keep_id);
+        self.replace_emails(matches, keep_id);
         self.show_list_or_placeholder();
         self.update_reader();
         restore_scroll(&vadjustment, scroll_position);
     }
 
-    /// The view's conversations, narrowed by the search box and filter.
-    fn matching_conversations(&self, keep_id: Option<i64>) -> Vec<Conversation> {
+    /// The view's emails, narrowed by the search box and filter.
+    fn matching_emails(&self, keep_id: Option<i64>) -> Vec<Email> {
         let imp = self.imp();
         let folder_ids = self.current_folder_ids();
         let query = imp.search_entry.text().trim().to_string();
@@ -42,34 +42,34 @@ impl MainWindow {
             let db = self.db();
             let db = db.borrow();
             let result = if query.is_empty() {
-                db.conversations_in_folders(&folder_ids)
+                db.emails_in_folders(&folder_ids)
             } else {
-                db.search_conversations(&folder_ids, &query)
+                db.search_emails(&folder_ids, &query)
             };
             result.unwrap_or_else(|error| {
-                log::error!("could not load conversations: {error}");
+                log::error!("could not load emails: {error}");
                 Vec::new()
             })
         };
         if !imp.unread_button.is_active() {
             return matches;
         }
-        // Keep the conversation being read even once it's marked read, so
+        // Keep the email being read even once it's marked read, so
         // opening a mail here doesn't make it vanish under you.
         matches
             .into_iter()
-            .filter(|c| c.is_unread() || Some(c.id()) == keep_id)
+            .filter(|c| c.is_unread || Some(c.id) == keep_id)
             .collect()
     }
 
     /// Swap in the new list, keeping `keep_id` selected if it survived.
-    /// MultiSelection tracks positions while keep_id tracks the conversation
+    /// MultiSelection tracks positions while keep_id tracks the email
     /// itself, so the selection is cleared before the store is spliced and
     /// restored by identity afterwards.
-    fn replace_conversations(&self, matches: Vec<Conversation>, keep_id: Option<i64>) {
-        let target = keep_id.and_then(|id| matches.iter().position(|c| c.id() == id));
+    fn replace_emails(&self, matches: Vec<Email>, keep_id: Option<i64>) {
+        let target = keep_id.and_then(|id| matches.iter().position(|c| c.id == id));
         let sections = day_sections(matches);
-        let store = self.conversation_sections();
+        let store = self.email_sections();
         let selection = self.selection();
         self.state_mut().is_selection_update_in_progress = true;
         selection.unselect_all();
@@ -82,14 +82,14 @@ impl MainWindow {
     }
 
     pub(super) fn show_list_or_placeholder(&self) {
-        let page = if self.conversation_model().n_items() > 0 {
+        let page = if self.email_model().n_items() > 0 {
             PAGE_LIST
         } else if self.is_current_account_syncing() {
             PAGE_LOADING
         } else {
             PAGE_EMPTY
         };
-        self.imp().conversation_stack.set_visible_child_name(page);
+        self.imp().email_stack.set_visible_child_name(page);
     }
 
     /// Pins the day of the topmost visible row above the list, so the date
@@ -98,13 +98,13 @@ impl MainWindow {
     /// and when the list is empty.
     pub(super) fn update_sticky_day(&self) {
         let imp = self.imp();
-        let scroller = &imp.conversation_scroller;
+        let scroller = &imp.email_scroller;
         // Just inside the top edge, past the header's own hairline.
         let hit = scroller.pick(scroller.width() as f64 / 2.0, 1.0, gtk::PickFlags::DEFAULT);
         let row = hit.and_then(|widget| {
             widget
-                .ancestor(ConversationRow::static_type())
-                .and_downcast::<ConversationRow>()
+                .ancestor(EmailRow::static_type())
+                .and_downcast::<EmailRow>()
         });
         match row {
             Some(row) if scroller.vadjustment().value() > 0.0 => {
@@ -127,7 +127,7 @@ impl MainWindow {
                 self,
                 move || {
                     window.state_mut().search_timeout = None;
-                    window.refresh_conversations(None);
+                    window.refresh_emails(None);
                 }
             ),
         );
@@ -136,8 +136,8 @@ impl MainWindow {
 
     /// Potentially thousands of rows, so this uses the scalable GTK4 pattern:
     /// a ListStore of data, a MultiSelection wrapper, and a factory that
-    /// recycles a handful of ConversationRow widgets as you scroll.
-    pub(super) fn setup_conversation_list(&self) {
+    /// recycles a handful of EmailRow widgets as you scroll.
+    pub(super) fn setup_email_list(&self) {
         let imp = self.imp();
         self.selection().connect_selection_changed(glib::clone!(
             #[weak(rename_to = window)]
@@ -148,7 +148,7 @@ impl MainWindow {
                 }
             }
         ));
-        imp.conversation_list.set_model(Some(&self.selection()));
+        imp.email_list.set_model(Some(&self.selection()));
 
         let factory = gtk::SignalListItemFactory::new();
         // setup: build one empty widget. A right-click gesture opens the
@@ -160,7 +160,7 @@ impl MainWindow {
                 let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                     return;
                 };
-                let row = ConversationRow::new(window.avatars());
+                let row = EmailRow::new(window.avatars());
                 let gesture = gtk::GestureClick::builder()
                     .button(gdk::BUTTON_SECONDARY)
                     .build();
@@ -182,9 +182,9 @@ impl MainWindow {
                 let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                     return;
                 };
-                let (Some(row), Some(conversation)) = (
-                    item.child().and_downcast::<ConversationRow>(),
-                    item.item().and_downcast::<ConversationObject>(),
+                let (Some(row), Some(email)) = (
+                    item.child().and_downcast::<EmailRow>(),
+                    item.item().and_downcast::<EmailObject>(),
                 ) else {
                     return;
                 };
@@ -193,18 +193,18 @@ impl MainWindow {
                     .is_some_and(|folder| folders::is_outgoing_folder(&folder.name));
                 let account = if window.is_unified_view() {
                     window
-                        .account_for_folder(conversation.with(|c| c.folder_id()))
+                        .account_for_folder(email.with(|c| c.folder_id))
                         .map(|(account, _)| account)
                 } else {
                     None
                 };
-                conversation.with(|c| row.bind(c, is_outgoing, account.as_ref()));
+                email.with(|c| row.bind(c, is_outgoing, account.as_ref()));
             }
         ));
-        imp.conversation_list.set_factory(Some(&factory));
+        imp.email_list.set_factory(Some(&factory));
 
         // Sections are days (see `day_sections`); each gets a sticky header
-        // labelled from its first conversation.
+        // labelled from its first email.
         let headers = gtk::SignalListItemFactory::new();
         headers.connect_setup(|_, item| {
             let Some(header) = item.downcast_ref::<gtk::ListHeader>() else {
@@ -212,7 +212,7 @@ impl MainWindow {
             };
             let label = gtk::Label::builder()
                 .xalign(0.0)
-                .css_classes(["conversation-day-header"])
+                .css_classes(["email-day-header"])
                 .build();
             header.set_child(Some(&label));
         });
@@ -220,15 +220,15 @@ impl MainWindow {
             let Some(header) = item.downcast_ref::<gtk::ListHeader>() else {
                 return;
             };
-            let (Some(label), Some(conversation)) = (
+            let (Some(label), Some(email)) = (
                 header.child().and_downcast::<gtk::Label>(),
-                header.item().and_downcast::<ConversationObject>(),
+                header.item().and_downcast::<EmailObject>(),
             ) else {
                 return;
             };
-            label.set_label(&conversation.with(|c| i18n::section_label(c.is_pinned(), c.date())));
+            label.set_label(&email.with(|c| i18n::section_label(c.is_pinned, &c.date)));
         });
-        imp.conversation_list.set_header_factory(Some(&headers));
+        imp.email_list.set_header_factory(Some(&headers));
     }
 
     /// Scrolling to the bottom pulls the next-older page for the open folder,
@@ -274,25 +274,25 @@ impl MainWindow {
 /// Put the scroll position back after the store was replaced. Deferred to an
 /// idle callback because the new contents have not been laid out yet.
 /// Split the (pinned-then-date-ordered) matches into one store per section:
-/// every pinned thread in a first run, then one per calendar day, in the
+/// every pinned email in a first run, then one per calendar day, in the
 /// order they arrive. Unreadable dates all fall into a single run.
-fn day_sections(matches: Vec<Conversation>) -> Vec<gio::ListStore> {
+fn day_sections(matches: Vec<Email>) -> Vec<gio::ListStore> {
     let mut sections: Vec<gio::ListStore> = Vec::new();
     let mut current_day = None;
-    for conversation in matches {
-        let day = if conversation.is_pinned() {
+    for email in matches {
+        let day = if email.is_pinned {
             (true, None)
         } else {
-            (false, dates::day_of(conversation.date()))
+            (false, dates::day_of(&email.date))
         };
         if sections.is_empty() || current_day != Some(day) {
-            sections.push(gio::ListStore::new::<ConversationObject>());
+            sections.push(gio::ListStore::new::<EmailObject>());
             current_day = Some(day);
         }
         sections
             .last()
             .expect("pushed above")
-            .append(&ConversationObject::new(conversation));
+            .append(&EmailObject::new(email));
     }
     sections
 }

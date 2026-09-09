@@ -9,14 +9,14 @@
   <description>
     <p>
       Rustle is a native GTK 4 / libadwaita email client written in Rust. Three panes —
-      folders, conversations, reader — with a unified inbox across every account and
+      folders, emails, reader — with a unified inbox across every account and
       nothing to configure beyond your account details.
     </p>
     <p>Features include:</p>
     <ul>
       <li>Multiple IMAP/SMTP accounts, with TLS or STARTTLS, or imported from GNOME Online Accounts</li>
       <li>A unified inbox across all accounts</li>
-      <li>Conversations grouped into threads, nested folders shown as a tree</li>
+      <li>Individual messages in date order, nested folders shown as a tree</li>
       <li>Instant full-text search across your mail</li>
       <li>A rich-text composer with attachments, and one-click unsubscribe</li>
       <li>Follows the system accent colour and dark style</li>

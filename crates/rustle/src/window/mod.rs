@@ -1,4 +1,4 @@
-//! The main window: folders, conversations, reader. One class, ordered by
+//! The main window: folders, emails, reader. One class, ordered by
 //! concern across the files of this module -- Rust lets each concern sit in
 //! its own `impl` block without redeclaring anything.
 
@@ -12,7 +12,7 @@ mod sync;
 mod watch;
 
 use crate::avatar_loader::AvatarLoader;
-use crate::objects::{ConversationObject, SidebarItem};
+use crate::objects::{EmailObject, SidebarItem};
 use crate::settings as keys;
 use crate::widgets::folder_row::FolderRow;
 use crate::widgets::message_view::{self, Handlers, MessageView};
@@ -60,7 +60,7 @@ const PAGE_LIST: &str = "list";
 const PAGE_LOADING: &str = "loading";
 const PAGE_MESSAGE: &str = "message";
 
-/// What the conversation list is showing.
+/// What the email list is showing.
 #[derive(Clone, Debug)]
 pub enum View {
     /// Every account's inbox at once.
@@ -86,8 +86,7 @@ pub struct State {
     /// Set once `load_mail_view` has run; None on an empty database, so
     /// everything per-account reads it through a guard.
     pub view: Option<View>,
-    pub active_view: Option<MessageView>,
-    pub thread_views: Vec<MessageView>,
+    pub message_view: Option<MessageView>,
     pub search_timeout: Option<glib::SourceId>,
     pub rendered_id: Option<i64>,
     pub is_folder_refresh_suppressed: bool,
@@ -135,19 +134,19 @@ mod imp {
         #[template_child]
         pub folder_list: TemplateChild<gtk::ListView>,
         #[template_child]
-        pub conversation_list: TemplateChild<gtk::ListView>,
+        pub email_list: TemplateChild<gtk::ListView>,
         #[template_child]
-        pub conversation_scroller: TemplateChild<gtk::ScrolledWindow>,
+        pub email_scroller: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub sticky_day: TemplateChild<gtk::Label>,
         #[template_child]
-        pub conversation_stack: TemplateChild<gtk::Stack>,
+        pub email_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub reader_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub reader_subject: TemplateChild<gtk::Label>,
         #[template_child]
-        pub thread_box: TemplateChild<gtk::Box>,
+        pub message_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub main_stack: TemplateChild<gtk::Stack>,
         #[template_child]
@@ -193,7 +192,7 @@ mod imp {
         #[template_child]
         pub folder_resize_handle: TemplateChild<gtk::Box>,
         #[template_child]
-        pub conversation_resize_handle: TemplateChild<gtk::Box>,
+        pub email_resize_handle: TemplateChild<gtk::Box>,
 
         pub db: OnceCell<Rc<RefCell<Database>>>,
         pub settings: OnceCell<gio::Settings>,
@@ -202,12 +201,12 @@ mod imp {
         pub folder_tree_model: OnceCell<gtk::TreeListModel>,
         pub folder_selection: OnceCell<gtk::SingleSelection>,
         // One persistent outer store of per-day sections, each a ListStore
-        // of ConversationObject, spliced in place on every refresh: swapping
+        // of EmailObject, spliced in place on every refresh: swapping
         // in a new model makes GtkListView reset its scroll to the top, which
         // fights load-on-scroll. The flattened view is what the selection
         // and the list see; its sections drive the sticky day headers.
-        pub conversation_sections: OnceCell<gio::ListStore>,
-        pub conversation_model: OnceCell<gtk::FlattenListModel>,
+        pub email_sections: OnceCell<gio::ListStore>,
+        pub email_model: OnceCell<gtk::FlattenListModel>,
         pub selection: OnceCell<gtk::MultiSelection>,
         pub avatars: OnceCell<AvatarLoader>,
         pub network: OnceCell<gio::NetworkMonitor>,
@@ -275,9 +274,9 @@ impl MainWindow {
             500,
         );
         window.setup_sidebar_resize(
-            &imp.conversation_resize_handle,
+            &imp.email_resize_handle,
             &imp.inner_split,
-            keys::CONVERSATION_WIDTH,
+            keys::EMAIL_WIDTH,
             220,
             600,
         );
@@ -288,7 +287,7 @@ impl MainWindow {
             glib::clone!(
                 #[weak]
                 window,
-                move |_, _| window.refresh_conversations(None)
+                move |_, _| window.refresh_emails(None)
             ),
         );
         settings.connect_changed(
@@ -316,7 +315,7 @@ impl MainWindow {
         window.build_mail_models();
 
         // The WebKit views carry the accent in their own stylesheet, so a
-        // change in Settings re-renders the open thread with the new colour.
+        // change in Settings re-renders the open message with the new colour.
         crate::accent::watch(glib::clone!(
             #[weak]
             window,
@@ -380,18 +379,18 @@ impl MainWindow {
             .clone()
     }
 
-    pub(super) fn conversation_sections(&self) -> gio::ListStore {
+    pub(super) fn email_sections(&self) -> gio::ListStore {
         self.imp()
-            .conversation_sections
+            .email_sections
             .get()
             .expect("built at construction")
             .clone()
     }
 
-    /// Every listed conversation in display order, sections flattened.
-    pub(super) fn conversation_model(&self) -> gtk::FlattenListModel {
+    /// Every listed email in display order, sections flattened.
+    pub(super) fn email_model(&self) -> gtk::FlattenListModel {
         self.imp()
-            .conversation_model
+            .email_model
             .get()
             .expect("built at construction")
             .clone()
@@ -536,16 +535,16 @@ impl MainWindow {
         imp.unread_button.connect_toggled(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_| window.refresh_conversations(None)
+            move |_| window.refresh_emails(None)
         ));
         // Load older mail when the list is scrolled to the bottom.
-        imp.conversation_scroller.connect_edge_reached(glib::clone!(
+        imp.email_scroller.connect_edge_reached(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |_, position| window.on_list_edge_reached(position)
         ));
         // The sticky day label tracks whichever row is at the top edge.
-        imp.conversation_scroller
+        imp.email_scroller
             .vadjustment()
             .connect_value_changed(glib::clone!(
                 #[weak(rename_to = window)]
@@ -655,7 +654,7 @@ impl MainWindow {
             imp.outer_split.min_sidebar_width() as i32,
         );
         let _ = settings.set_int(
-            keys::CONVERSATION_WIDTH,
+            keys::EMAIL_WIDTH,
             imp.inner_split.min_sidebar_width() as i32,
         );
         // Nothing on screen to render, so give the web process back.
@@ -666,9 +665,8 @@ impl MainWindow {
             {
                 let mut state = self.state_mut();
                 state.rendered_id = None;
-                state.active_view = None;
             }
-            self.clear_thread();
+            self.clear_message();
             imp.reader_stack.set_visible_child_name(PAGE_EMPTY);
             self.set_visible(false);
             self.notify_background();
@@ -688,23 +686,19 @@ impl MainWindow {
     }
 
     /// Open one message by IMAP UID (from a notification). Clearing
-    /// `rendered_id` makes the reader rebuild even if the thread is already
+    /// `rendered_id` makes the reader rebuild even if the message is already
     /// shown, so the usual open path marks it read.
     pub fn open_email(&self, folder_id: i64, uid: &str) {
         if self.state().view.is_none() {
             return;
         }
         self.select_folder_by_id(folder_id);
-        let model = self.conversation_model();
+        let model = self.email_model();
         for index in 0..model.n_items() {
-            let Some(conversation) = model.item(index).and_downcast::<ConversationObject>() else {
+            let Some(email) = model.item(index).and_downcast::<EmailObject>() else {
                 continue;
             };
-            let holds_uid = conversation.with(|c| {
-                c.emails
-                    .iter()
-                    .any(|mail| mail.server_id.as_deref() == Some(uid))
-            });
+            let holds_uid = email.with(|c| c.server_id.as_deref() == Some(uid));
             if holds_uid {
                 self.state_mut().rendered_id = None;
                 let selection = self.selection();
