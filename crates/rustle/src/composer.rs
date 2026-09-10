@@ -205,6 +205,9 @@ mod imp {
         pub is_syncing_buttons: Cell<bool>,
         pub webview: RefCell<Option<webkit::WebView>>,
         pub suggestions: RefCell<Vec<Rc<AddressSuggestions>>>,
+        pub image_menu: RefCell<Option<(gtk::PopoverMenu, gio::Menu)>>,
+        pub image_size_action: RefCell<Option<gio::SimpleAction>>,
+        pub selected_image: Cell<Option<usize>>,
     }
 
     #[glib::object_subclass]
@@ -227,6 +230,14 @@ mod imp {
             static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
                 std::sync::OnceLock::new();
             SIGNALS.get_or_init(|| vec![glib::subclass::Signal::builder("finished").build()])
+        }
+
+        fn dispose(&self) {
+            // The picture menu is parented on the editor by hand, so it has
+            // to be taken off by hand too.
+            if let Some((popover, _)) = self.image_menu.take() {
+                popover.unparent();
+            }
         }
     }
     impl WidgetImpl for ComposerWindow {}
@@ -464,8 +475,131 @@ impl ComposerWindow {
                 move |json| window.on_editor_changed(json)
             ),
         );
+        editor::connect_image_clicked(
+            &webview,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |info| window.on_image_clicked(info)
+            ),
+        );
         imp.body_container.append(&webview);
         imp.webview.replace(Some(webview));
+        self.build_image_actions();
+    }
+
+    // --- inline images ----------------------------------------------------
+
+    /// The `image.` actions behind the picture menu: `size` is a radio over
+    /// the preset names, `remove` takes the picture out.
+    fn build_image_actions(&self) {
+        let group = gio::SimpleActionGroup::new();
+        let size = gio::SimpleAction::new_stateful(
+            "size",
+            Some(glib::VariantTy::STRING),
+            &"original".to_variant(),
+        );
+        size.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |action, parameter| {
+                let Some(name) = parameter.and_then(|p| p.get::<String>()) else {
+                    return;
+                };
+                action.set_state(&name.to_variant());
+                let imp = window.imp();
+                if let (Some(index), Some(webview)) =
+                    (imp.selected_image.get(), imp.webview.borrow().as_ref())
+                {
+                    editor::resize_image(webview, index, &name);
+                }
+            }
+        ));
+        group.add_action(&size);
+        let remove = gio::SimpleAction::new("remove", None);
+        remove.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                let imp = window.imp();
+                if let (Some(index), Some(webview)) =
+                    (imp.selected_image.get(), imp.webview.borrow().as_ref())
+                {
+                    editor::remove_image(webview, index);
+                }
+            }
+        ));
+        group.add_action(&remove);
+        self.insert_action_group("image", Some(&group));
+        self.imp().image_size_action.replace(Some(size));
+    }
+
+    /// Pop the size menu up under a picture the user clicked. Each preset is
+    /// labelled with the width it scales to and what the picture would then
+    /// weigh, the way Outlook offers to shrink a picture to save data.
+    fn on_image_clicked(&self, info: editor::ImageInfo) {
+        let imp = self.imp();
+        let Some(webview) = imp.webview.borrow().clone() else {
+            return;
+        };
+        imp.selected_image.set(Some(info.index));
+        if let Some(action) = imp.image_size_action.borrow().as_ref() {
+            let current = info.current.clone().unwrap_or_default();
+            action.set_state(&current.to_variant());
+        }
+
+        let mut menu = imp.image_menu.borrow_mut();
+        let (popover, model) = menu.get_or_insert_with(|| {
+            let model = gio::Menu::new();
+            let popover = gtk::PopoverMenu::from_model(Some(&model));
+            popover.set_parent(&webview);
+            popover.set_position(gtk::PositionType::Bottom);
+            popover.set_has_arrow(true);
+            (popover, model)
+        });
+
+        model.remove_all();
+        let sizes = gio::Menu::new();
+        for option in &info.options {
+            let label = match option.name.as_str() {
+                "small" => gettext("Small"),
+                "medium" => gettext("Medium"),
+                "large" => gettext("Large"),
+                _ => gettext("Original"),
+            };
+            let item = gio::MenuItem::new(
+                Some(&i18n::format(
+                    &gettext("{label} ({width} px, {size})"),
+                    &[
+                        ("label", &label),
+                        ("width", &option.width.to_string()),
+                        ("size", &glib::format_size(option.bytes)),
+                    ],
+                )),
+                None,
+            );
+            item.set_action_and_target_value(Some("image.size"), Some(&option.name.to_variant()));
+            sizes.append_item(&item);
+        }
+        model.append_section(
+            Some(&i18n::format(
+                &gettext("Image, {size}"),
+                &[("size", &glib::format_size(info.bytes))],
+            )),
+            &sizes,
+        );
+        let actions = gio::Menu::new();
+        actions.append(Some(&gettext("Remove Image")), Some("image.remove"));
+        model.append_section(None, &actions);
+
+        let rect = &info.rect;
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(
+            rect.x.round() as i32,
+            rect.y.round() as i32,
+            rect.width.round().max(1.0) as i32,
+            rect.height.round().max(1.0) as i32,
+        )));
+        popover.popup();
     }
 
     fn on_editor_changed(&self, json: &str) {

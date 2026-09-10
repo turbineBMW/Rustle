@@ -119,8 +119,52 @@ fn lettre_mailbox(text: &str) -> Result<LettreMailbox, ComposeError> {
     Ok(LettreMailbox::new(name, addr))
 }
 
-/// The raw message bytes for the wire: text and HTML alternatives, plus any
-/// attachments. Bcc is never written into it -- that goes on the envelope.
+/// An image the composer embedded as a `data:` URI, lifted out of the HTML
+/// so it can travel as a `multipart/related` part instead.
+struct InlineImage {
+    content_id: String,
+    mime_type: String,
+    content: Vec<u8>,
+}
+
+/// Replace every `<img src="data:image/…;base64,…">` in `html` with a
+/// `cid:` reference and return the decoded images. Pasted and dropped images
+/// land in the editor as data: URIs; sending those verbatim inflates the
+/// HTML and several major clients refuse to show them, so they go out as
+/// inline parts, the same shape the reader already understands.
+fn extract_inline_images(html: &str) -> (String, Vec<InlineImage>) {
+    use base64::Engine;
+    if !html.contains("data:image/") {
+        return (html.to_string(), Vec::new());
+    }
+    let re = regex::Regex::new(
+        r#"(<img\b[^>]*?\bsrc\s*=\s*)(["'])data:(image/[A-Za-z0-9.+-]+);base64,([^"']*)["']"#,
+    )
+    .expect("inline image pattern is valid");
+    let mut images = Vec::new();
+    let html = re.replace_all(html, |captures: &regex::Captures| {
+        let payload: String = captures[4].chars().filter(|c| !c.is_whitespace()).collect();
+        match base64::engine::general_purpose::STANDARD.decode(payload) {
+            Ok(content) => {
+                let content_id = format!("{}@rustle", uuid::Uuid::new_v4().simple());
+                let quote = &captures[2];
+                let reference = format!("{}{quote}cid:{content_id}{quote}", &captures[1]);
+                images.push(InlineImage {
+                    content_id,
+                    mime_type: captures[3].to_string(),
+                    content,
+                });
+                reference
+            }
+            Err(_) => captures[0].to_string(),
+        }
+    });
+    (html.into_owned(), images)
+}
+
+/// The raw message bytes for the wire: text and HTML alternatives, inline
+/// images the HTML refers to, plus any attachments. Bcc is never written
+/// into it -- that goes on the envelope.
 pub fn build_mime_message(
     from_addr: &str,
     to_addrs: &[String],
@@ -140,12 +184,26 @@ pub fn build_mime_message(
         builder = builder.cc(lettre_mailbox(cc)?);
     }
 
-    let alternative =
-        MultiPart::alternative_plain_html(html_to_text(body_html), body_html.to_string());
-    let message = if attachments.is_empty() {
-        builder.multipart(alternative)?
+    let (body_html, images) = extract_inline_images(body_html);
+    let alternative = MultiPart::alternative_plain_html(html_to_text(&body_html), body_html);
+    let body = if images.is_empty() {
+        alternative
     } else {
-        let mut mixed = MultiPart::mixed().multipart(alternative);
+        let mut related = MultiPart::related().multipart(alternative);
+        for image in images {
+            let content_type = ContentType::parse(&image.mime_type)
+                .or_else(|_| ContentType::parse("application/octet-stream"))
+                .expect("octet-stream is a valid content type");
+            let part: SinglePart =
+                LettreAttachment::new_inline(image.content_id).body(image.content, content_type);
+            related = related.singlepart(part);
+        }
+        related
+    };
+    let message = if attachments.is_empty() {
+        builder.multipart(body)?
+    } else {
+        let mut mixed = MultiPart::mixed().multipart(body);
         for attachment in attachments {
             let content_type = ContentType::parse(&attachment.mime_type)
                 .or_else(|_| ContentType::parse("application/octet-stream"))
@@ -347,6 +405,52 @@ mod tests {
             vec!["ada@example.com", "bob@example.org"]
         );
         assert!(build_mime_message("nonsense", &[], &[], "s", "", &[]).is_err());
+    }
+
+    #[test]
+    fn data_images_become_inline_parts() {
+        let html = "<div>see <img src=\"data:image/png;base64,AQID\" alt=\"x\"> and \
+                    <img src='data:image/gif;base64,not base64!'></div>";
+        let (html, images) = extract_inline_images(html);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime_type, "image/png");
+        assert_eq!(images[0].content, vec![1, 2, 3]);
+        assert!(html.contains(&format!(
+            "<img src=\"cid:{}\" alt=\"x\">",
+            images[0].content_id
+        )));
+        // Undecodable data stays put rather than being dropped.
+        assert!(html.contains("data:image/gif;base64,not base64!"));
+
+        let raw = build_mime_message(
+            "me@example.com",
+            &["ada@example.com".into()],
+            &[],
+            "Pic",
+            "<div><img src=\"data:image/png;base64,AQID\"></div>",
+            &[Attachment {
+                filename: "a.txt".into(),
+                mime_type: "text/plain".into(),
+                content: b"x".to_vec(),
+            }],
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("multipart/mixed"));
+        assert!(text.contains("multipart/related"));
+        assert!(text.contains("Content-Disposition: inline"));
+        assert!(!text.contains("data:image/png"));
+
+        // The reader puts the image back where it was and does not list it
+        // as an attachment.
+        let parsed = crate::mime::parse_message(&raw);
+        assert!(parsed
+            .html_body
+            .as_deref()
+            .unwrap_or("")
+            .contains("data:image/png;base64,AQID"));
+        assert_eq!(parsed.attachments.len(), 1);
+        assert_eq!(parsed.attachments[0].filename, "a.txt");
     }
 
     #[test]
