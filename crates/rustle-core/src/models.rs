@@ -3,6 +3,9 @@
 
 use std::fmt;
 
+/// Stored placeholder for messages without a subject.
+pub const NO_SUBJECT: &str = "(no subject)";
+
 /// TCP ports are 16-bit and 0 is not dialable.
 pub const MIN_PORT: u32 = 1;
 pub const MAX_PORT: u32 = 65535;
@@ -228,14 +231,13 @@ pub struct Email {
     pub date: String,
     pub is_unread: bool,
     pub is_starred: bool,
+    /// Outlook's pin-to-top; pinned messages sort above the day sections.
+    pub is_pinned: bool,
     pub message_id: String,
-    pub in_reply_to: String,
-    pub references: String,
-    pub conversation_id: Option<i64>,
 }
 
 impl Email {
-    /// A proxy for when a message arrived, for ordering threads/messages.
+    /// A proxy for when a message arrived, for ordering messages.
     ///
     /// The IMAP UID is guaranteed by the protocol to increase with arrival
     /// order within a folder, unlike the local autoincrement id: once
@@ -247,77 +249,6 @@ impl Email {
             .as_deref()
             .and_then(|uid| uid.parse().ok())
             .unwrap_or(u32::MAX)
-    }
-}
-
-/// A thread: emails sorted oldest first, so `latest()` is the last one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Conversation {
-    pub emails: Vec<Email>,
-}
-
-impl Conversation {
-    pub fn new(emails: Vec<Email>) -> Self {
-        Self { emails }
-    }
-
-    pub fn id(&self) -> i64 {
-        let first = &self.emails[0];
-        first.conversation_id.unwrap_or(first.id)
-    }
-
-    pub fn latest(&self) -> &Email {
-        self.emails
-            .last()
-            .expect("a conversation holds at least one email")
-    }
-
-    pub fn subject(&self) -> &str {
-        &self.latest().subject
-    }
-
-    pub fn date(&self) -> &str {
-        &self.latest().date
-    }
-
-    pub fn preview(&self) -> &str {
-        &self.latest().preview
-    }
-
-    pub fn count(&self) -> usize {
-        self.emails.len()
-    }
-
-    pub fn folder_id(&self) -> i64 {
-        self.latest().folder_id
-    }
-
-    pub fn is_unread(&self) -> bool {
-        self.emails.iter().any(|mail| mail.is_unread)
-    }
-
-    pub fn is_starred(&self) -> bool {
-        self.emails.iter().any(|mail| mail.is_starred)
-    }
-
-    /// Every distinct sender, in first-seen order.
-    pub fn participants(&self) -> String {
-        let mut seen: Vec<&str> = Vec::new();
-        for mail in &self.emails {
-            if !seen.contains(&mail.sender.as_str()) {
-                seen.push(&mail.sender);
-            }
-        }
-        seen.join(", ")
-    }
-
-    /// The IMAP UIDs of the messages, skipping any without one. A locally
-    /// saved copy has nothing on the server to act on yet.
-    pub fn server_uids(&self) -> Vec<String> {
-        self.emails
-            .iter()
-            .filter_map(|mail| mail.server_id.clone())
-            .collect()
     }
 }
 
@@ -348,10 +279,9 @@ pub struct MessageHeader {
     pub date: String,
     pub is_unread: bool,
     pub is_starred: bool,
+    pub is_pinned: bool,
     pub preview: String,
     pub message_id: String,
-    pub in_reply_to: String,
-    pub references: String,
     /// Every (name, address) pair on the message, for the contacts list.
     pub addresses: Vec<(String, String)>,
 }
@@ -408,20 +338,14 @@ mod tests {
             date: String::new(),
             is_unread: id % 2 == 0,
             is_starred: false,
+            is_pinned: false,
             message_id: String::new(),
-            in_reply_to: String::new(),
-            references: String::new(),
-            conversation_id: Some(1),
         }
     }
 
     #[test]
-    fn conversation_aggregates() {
-        let conversation = Conversation::new(vec![email(1, Some("5")), email(2, None)]);
-        assert_eq!(conversation.id(), 1);
-        assert!(conversation.is_unread());
-        assert_eq!(conversation.participants(), "s1, s2");
-        assert_eq!(conversation.server_uids(), vec!["5".to_string()]);
+    fn arrival_order() {
+        assert_eq!(email(1, Some("5")).arrival_key(), 5);
         assert_eq!(email(2, None).arrival_key(), u32::MAX);
     }
 }

@@ -4,12 +4,12 @@
 use crate::address;
 use crate::dates;
 use crate::folders::{self, FolderRole};
+use crate::models::NO_SUBJECT;
 use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
 use crate::net::imap::{FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
 use crate::net::smtp::SmtpSession;
-use crate::threader::NO_SUBJECT;
 use log::warn;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -50,7 +50,7 @@ pub struct MoveResult {
     pub error: Option<String>,
 }
 
-fn open_imap(account: &Account, credential: &Credential) -> Result<ImapSession> {
+pub(crate) fn open_imap(account: &Account, credential: &Credential) -> Result<ImapSession> {
     let mut session =
         ImapSession::new(&account.imap_host, account.imap_port, account.imap_security);
     session.connect()?;
@@ -149,10 +149,9 @@ pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
         date: dates::to_iso(&fetched.date),
         is_unread: !fetched.is_seen,
         is_starred: fetched.is_flagged,
+        is_pinned: fetched.is_pinned,
         preview: fetched.preview,
         message_id: fetched.message_id,
-        in_reply_to: fetched.in_reply_to,
-        references: fetched.references,
         addresses,
     }
 }
@@ -191,7 +190,7 @@ pub fn set_flag(
     Ok(())
 }
 
-/// Move every message of a conversation to another mailbox.
+/// Move the selected messages to another mailbox.
 pub fn move_messages(
     account: &Account,
     credential: &Credential,

@@ -4,7 +4,7 @@
 
 use gtk::glib;
 use gtk::subclass::prelude::*;
-use rustle_core::models::{Account, Conversation, Folder};
+use rustle_core::models::{Account, Email, Folder};
 use std::cell::RefCell;
 
 /// What one row of the folder sidebar stands for.
@@ -34,17 +34,17 @@ mod imp {
     impl ObjectImpl for SidebarItem {}
 
     #[derive(Default)]
-    pub struct ConversationObject {
-        pub conversation: RefCell<Option<Conversation>>,
+    pub struct EmailObject {
+        pub email: RefCell<Option<Email>>,
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for ConversationObject {
-        const NAME: &'static str = "RustleConversation";
-        type Type = super::ConversationObject;
+    impl ObjectSubclass for EmailObject {
+        const NAME: &'static str = "RustleEmail";
+        type Type = super::EmailObject;
     }
 
-    impl ObjectImpl for ConversationObject {}
+    impl ObjectImpl for EmailObject {}
 }
 
 glib::wrapper! {
@@ -86,32 +86,32 @@ impl SidebarItem {
 }
 
 glib::wrapper! {
-    pub struct ConversationObject(ObjectSubclass<imp::ConversationObject>);
+    pub struct EmailObject(ObjectSubclass<imp::EmailObject>);
 }
 
-impl ConversationObject {
-    pub fn new(conversation: Conversation) -> Self {
+impl EmailObject {
+    pub fn new(email: Email) -> Self {
         let object: Self = glib::Object::new();
-        object.imp().conversation.replace(Some(conversation));
+        object.imp().email.replace(Some(email));
         object
     }
 
-    /// Read through the wrapper without cloning the whole thread.
-    pub fn with<R>(&self, read: impl FnOnce(&Conversation) -> R) -> R {
-        let borrowed = self.imp().conversation.borrow();
+    /// Read through the wrapper without cloning the email.
+    pub fn with<R>(&self, read: impl FnOnce(&Email) -> R) -> R {
+        let borrowed = self.imp().email.borrow();
         read(borrowed.as_ref().expect("set at construction"))
     }
 
-    pub fn update(&self, write: impl FnOnce(&mut Conversation)) {
-        let mut borrowed = self.imp().conversation.borrow_mut();
+    pub fn update(&self, write: impl FnOnce(&mut Email)) {
+        let mut borrowed = self.imp().email.borrow_mut();
         write(borrowed.as_mut().expect("set at construction"));
     }
 
-    pub fn get(&self) -> Conversation {
+    pub fn get(&self) -> Email {
         self.with(Clone::clone)
     }
 
     pub fn id(&self) -> i64 {
-        self.with(Conversation::id)
+        self.with(|email| email.id)
     }
 }

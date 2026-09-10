@@ -2,26 +2,20 @@
 //! do network and hand results back here.
 
 use crate::folders;
-use crate::models::{
-    is_hex_color, Account, Conversation, Email, Folder, MessageHeader, NewAccount, Security,
-};
-use crate::threader;
+use crate::models::{is_hex_color, Account, Email, Folder, MessageHeader, NewAccount, Security};
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub type Result<T> = std::result::Result<T, rusqlite::Error>;
 
 /// Every column `email_from_row` reads.
 const EMAIL_COLUMNS: &str = "id, folder_id, server_id, sender, sender_address, recipient, \
-    recipient_address, subject, preview, date, unread, starred, message_id, in_reply_to, \
-    reference_ids, conversation_id";
+    recipient_address, subject, preview, date, unread, starred, message_id, pinned";
 
 /// Schema changes since the first release, applied in order. How many have run
 /// is stored in PRAGMA user_version. Only ever append -- editing or reordering
 /// these would give databases in the wild a different schema to new ones.
-/// These mirror the Python app's migrations exactly, so an existing
-/// the schema stays compatible with Postcard.
 const MIGRATIONS: &[&str] = &[
     "ALTER TABLE folders ADD COLUMN parent_id INTEGER REFERENCES folders(id)",
     "ALTER TABLE folders ADD COLUMN delimiter TEXT NOT NULL DEFAULT '/'",
@@ -36,6 +30,10 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE accounts ADD COLUMN signature TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN label TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE accounts ADD COLUMN notification_sound TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE emails ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE emails DROP COLUMN conversation_id;
+     ALTER TABLE emails DROP COLUMN in_reply_to;
+     ALTER TABLE emails DROP COLUMN reference_ids",
 ];
 
 /// Turn free text into a safe FTS5 query: each word matched as a prefix.
@@ -141,9 +139,11 @@ impl Database {
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         let version = version.max(0) as usize;
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(version) {
-            self.conn.execute_batch(sql)?;
-            self.conn
-                .pragma_update(None, "user_version", (index + 1) as i64)?;
+            // Keep multi-column removals and their version marker atomic.
+            let transaction = self.conn.unchecked_transaction()?;
+            transaction.execute_batch(sql)?;
+            transaction.pragma_update(None, "user_version", (index + 1) as i64)?;
+            transaction.commit()?;
         }
         Ok(())
     }
@@ -411,16 +411,10 @@ impl Database {
             date: row.get("date")?,
             is_unread: row.get::<_, i64>("unread")? != 0,
             is_starred: row.get::<_, i64>("starred")? != 0,
+            is_pinned: row.get::<_, i64>("pinned")? != 0,
             message_id: row
                 .get::<_, Option<String>>("message_id")?
                 .unwrap_or_default(),
-            in_reply_to: row
-                .get::<_, Option<String>>("in_reply_to")?
-                .unwrap_or_default(),
-            references: row
-                .get::<_, Option<String>>("reference_ids")?
-                .unwrap_or_default(),
-            conversation_id: row.get("conversation_id")?,
         })
     }
 
@@ -467,34 +461,8 @@ impl Database {
         Ok(removed)
     }
 
-    /// Recompute the thread grouping for a folder and store it on each row.
-    /// Rows that already hold the right id are left alone.
-    pub fn reassign_conversations(&mut self, folder_id: i64) -> Result<()> {
-        let emails = self.emails_in_folder(folder_id)?;
-        let groups = threader::group(&emails);
-        let transaction = self.conn.transaction()?;
-        {
-            let mut update =
-                transaction.prepare("UPDATE emails SET conversation_id = ?1 WHERE id = ?2")?;
-            for mail in &emails {
-                let group = groups[&mail.id];
-                if Some(group) != mail.conversation_id {
-                    update.execute(params![group, mail.id])?;
-                }
-            }
-        }
-        transaction.commit()
-    }
-
-    /// Group a folder's emails into threads, newest thread first.
-    pub fn conversations_in_folder(&self, folder_id: i64) -> Result<Vec<Conversation>> {
-        self.conversations_in_folders(&[folder_id])
-    }
-
-    /// Threads across several folders at once -- the unified inbox. Threads
-    /// never span folders (grouping is per folder), so this is a union sorted
-    /// by date.
-    pub fn conversations_in_folders(&self, folder_ids: &[i64]) -> Result<Vec<Conversation>> {
+    /// Individual emails across folders, pinned first and then newest first.
+    pub fn emails_in_folders(&self, folder_ids: &[i64]) -> Result<Vec<Email>> {
         if folder_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -504,20 +472,14 @@ impl Database {
         let rows =
             statement.query_map(rusqlite::params_from_iter(folder_ids), Self::email_from_row)?;
         let emails = rows.collect::<Result<Vec<_>>>()?;
-        Ok(Self::conversations_from_emails(emails))
+        Ok(Self::sort_emails(emails))
     }
 
-    /// Full-text search; return each matching conversation whole. The subquery
-    /// narrows to the threads a message matched in, so a search builds only
-    /// those.
-    pub fn search_conversations(
-        &self,
-        folder_ids: &[i64],
-        query: &str,
-    ) -> Result<Vec<Conversation>> {
+    /// Full-text search returns only the individual messages that match.
+    pub fn search_emails(&self, folder_ids: &[i64], query: &str) -> Result<Vec<Email>> {
         let matcher = fts_query(query);
         if matcher.is_empty() {
-            return self.conversations_in_folders(folder_ids);
+            return self.emails_in_folders(folder_ids);
         }
         if folder_ids.is_empty() {
             return Ok(Vec::new());
@@ -525,52 +487,35 @@ impl Database {
         let placeholders = vec!["?"; folder_ids.len()].join(", ");
         let sql = format!(
             "SELECT {EMAIL_COLUMNS} FROM emails
-             WHERE folder_id IN ({placeholders}) AND COALESCE(conversation_id, id) IN (
-                SELECT COALESCE(e.conversation_id, e.id) FROM emails_fts f
-                JOIN emails e ON e.id = f.rowid
-                WHERE e.folder_id IN ({placeholders}) AND emails_fts MATCH ?
+             WHERE folder_id IN ({placeholders}) AND id IN (
+                SELECT rowid FROM emails_fts WHERE emails_fts MATCH ?
              )"
         );
         let mut statement = self.conn.prepare(&sql)?;
         let mut values: Vec<rusqlite::types::Value> = Vec::new();
-        for _ in 0..2 {
-            values.extend(
-                folder_ids
-                    .iter()
-                    .map(|id| rusqlite::types::Value::from(*id)),
-            );
-        }
+        values.extend(
+            folder_ids
+                .iter()
+                .map(|id| rusqlite::types::Value::from(*id)),
+        );
         values.push(rusqlite::types::Value::from(matcher));
         let rows = statement.query_map(rusqlite::params_from_iter(values), Self::email_from_row)?;
         let emails = rows.collect::<Result<Vec<_>>>()?;
-        Ok(Self::conversations_from_emails(emails))
+        Ok(Self::sort_emails(emails))
     }
 
-    fn conversations_from_emails(emails: Vec<Email>) -> Vec<Conversation> {
-        let mut groups: HashMap<(i64, i64), Vec<Email>> = HashMap::new();
-        let mut order: Vec<(i64, i64)> = Vec::new();
-        for email in emails {
-            let key = (email.folder_id, email.conversation_id.unwrap_or(email.id));
-            let entry = groups.entry(key).or_default();
-            if entry.is_empty() {
-                order.push(key);
-            }
-            entry.push(email);
-        }
-        let mut conversations: Vec<Conversation> = order
-            .into_iter()
-            .map(|key| {
-                let mut mails = groups.remove(&key).expect("every key was inserted");
-                mails.sort_by_key(Email::arrival_key); // oldest first, so latest() is right
-                Conversation::new(mails)
-            })
-            .collect();
-        // Newest first by sent time (comparable across accounts, and what
-        // the list's day sections assume); arrival order only breaks ties.
-        conversations.sort_by_key(|c| {
-            std::cmp::Reverse((crate::dates::sort_key(c.date()), c.latest().arrival_key()))
+    fn sort_emails(mut emails: Vec<Email>) -> Vec<Email> {
+        // Sent time is comparable across accounts and defines the day sections.
+        // Arrival order breaks ties; the local ID makes the ordering stable.
+        emails.sort_by_key(|email| {
+            std::cmp::Reverse((
+                email.is_pinned,
+                crate::dates::sort_key(&email.date),
+                email.arrival_key(),
+                email.id,
+            ))
         });
-        conversations
+        emails
     }
 
     pub fn unread_count_in_folder(&self, folder_id: i64) -> Result<i64> {
@@ -593,6 +538,14 @@ impl Database {
         self.conn.execute(
             "UPDATE emails SET starred = ?1 WHERE id = ?2",
             params![is_starred as i64, email_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_email_pinned(&self, email_id: i64, is_pinned: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE emails SET pinned = ?1 WHERE id = ?2",
+            params![is_pinned as i64, email_id],
         )?;
         Ok(())
     }
@@ -715,10 +668,11 @@ impl Database {
         }
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread, starred,
-                message_id, in_reply_to, reference_ids, sender_address, recipient, recipient_address)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                message_id, sender_address, recipient, recipient_address,
+                pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
-                unread = excluded.unread, starred = excluded.starred,
+                unread = excluded.unread, starred = excluded.starred, pinned = excluded.pinned,
                 recipient = excluded.recipient, recipient_address = excluded.recipient_address,
                 preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END",
             params![
@@ -731,11 +685,10 @@ impl Database {
                 header.is_unread as i64,
                 header.is_starred as i64,
                 header.message_id,
-                header.in_reply_to,
-                header.references,
                 header.sender_address,
                 header.recipient,
                 header.recipient_address,
+                header.is_pinned as i64,
             ],
         )?;
         Ok(is_new)
@@ -884,6 +837,147 @@ mod tests {
     }
 
     #[test]
+    fn existing_mail_survives_removal_of_grouping_columns() {
+        let old = Database {
+            conn: Connection::open_in_memory().unwrap(),
+        };
+        old.create_tables().unwrap();
+        for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            old.conn.execute_batch(sql).unwrap();
+        }
+        old.conn
+            .pragma_update(None, "user_version", (MIGRATIONS.len() - 1) as i64)
+            .unwrap();
+        let account = old.save_account(&account()).unwrap();
+        let inbox = old.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        old.save_incoming_email(
+            inbox.id,
+            &header("1", "Topic", "2026-01-01T00:00:00Z", "Ada"),
+        )
+        .unwrap();
+        old.save_incoming_email(
+            inbox.id,
+            &header("2", "Re: Topic", "2026-01-02T00:00:00Z", "Bob"),
+        )
+        .unwrap();
+        old.conn.execute_batch("UPDATE emails SET conversation_id = 1, in_reply_to = '<1@x>', reference_ids = '<1@x>'").unwrap();
+        let before = old.emails_in_folders(&[inbox.id]).unwrap();
+        let raw = b"Subject: Topic\r\n\r\nOriginal body";
+        old.save_raw_message(before[1].id, raw).unwrap();
+        let before = old.emails_in_folders(&[inbox.id]).unwrap();
+
+        let db = Database::init(old.conn).unwrap();
+        assert_eq!(db.emails_in_folders(&[inbox.id]).unwrap(), before);
+        assert_eq!(
+            db.raw_message(before[1].id).unwrap().as_deref(),
+            Some(raw.as_slice())
+        );
+        assert_eq!(db.search_emails(&[inbox.id], "Topic").unwrap().len(), 2);
+        let removed_columns: i64 = db.conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('emails') WHERE name IN ('conversation_id', 'in_reply_to', 'reference_ids')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(removed_columns, 0);
+        // Starting the app again does not replay the column removal.
+        let reopened = Database::init(db.conn).unwrap();
+        assert_eq!(reopened.emails_in_folders(&[inbox.id]).unwrap(), before);
+    }
+
+    #[test]
+    fn related_emails_keep_their_positions_and_individual_state() {
+        let mut db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let archive = db.get_or_create_folder(account.id, "Archive", "a").unwrap();
+        // Backfill the oldest message last, so local IDs disagree with dates.
+        for (uid, subject, date, sender) in [
+            ("2", "Unrelated", "2026-01-02T00:00:00Z", "Cy"),
+            ("3", "Re: Topic", "2026-01-03T00:00:00Z", "Bob"),
+            ("1", "Topic", "2026-01-01T00:00:00Z", "Ada"),
+        ] {
+            db.save_incoming_email(inbox.id, &header(uid, subject, date, sender))
+                .unwrap();
+        }
+        let emails = db.emails_in_folders(&[inbox.id]).unwrap();
+        assert_eq!(
+            emails
+                .iter()
+                .map(|e| e.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["Re: Topic", "Unrelated", "Topic"]
+        );
+        let reply = emails[0].id;
+        let original = emails[2].id;
+        db.set_email_unread(reply, false).unwrap();
+        db.set_email_starred(reply, true).unwrap();
+        assert!(db.email(original).unwrap().unwrap().is_unread);
+        assert!(!db.email(original).unwrap().unwrap().is_starred);
+        assert_eq!(
+            db.emails_in_folders(&[inbox.id])
+                .unwrap()
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            emails.iter().map(|e| e.id).collect::<Vec<_>>()
+        );
+        db.set_email_pinned(original, true).unwrap();
+        assert_eq!(db.emails_in_folders(&[inbox.id]).unwrap()[0].id, original);
+        assert!(!db.email(reply).unwrap().unwrap().is_pinned);
+
+        let topic = db.search_emails(&[inbox.id], "Topic").unwrap();
+        assert_eq!(topic.len(), 2);
+        assert_eq!(topic[0].id, original);
+        let sender = db.search_emails(&[inbox.id], "Bob").unwrap();
+        assert_eq!(sender.len(), 1);
+        assert_eq!(sender[0].id, reply);
+        db.move_emails(&[reply], archive.id).unwrap();
+        assert_eq!(db.email(original).unwrap().unwrap().folder_id, inbox.id);
+        assert_eq!(db.search_emails(&[inbox.id], "Bob").unwrap().len(), 0);
+        assert_eq!(
+            db.search_emails(&[inbox.id, archive.id], "Bob")
+                .unwrap()
+                .len(),
+            1
+        );
+        db.delete_email(reply).unwrap();
+        assert!(db.email(original).unwrap().is_some());
+        assert_eq!(db.search_emails(&[inbox.id], "Topic").unwrap().len(), 1);
+        assert!(db.emails_in_folders(&[]).unwrap().is_empty());
+        assert!(db.search_emails(&[], "Topic").unwrap().is_empty());
+        assert_eq!(
+            db.search_emails(&[inbox.id], "  ").unwrap(),
+            db.emails_in_folders(&[inbox.id]).unwrap()
+        );
+    }
+
+    #[test]
+    fn pinned_emails_sort_first() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let mut old = header("1", "Old", "2026-01-01T00:00:00Z", "Ada");
+        old.is_pinned = true;
+        db.save_incoming_email(inbox.id, &old).unwrap();
+        db.save_incoming_email(inbox.id, &header("2", "New", "2026-02-01T00:00:00Z", "Bob"))
+            .unwrap();
+        let subjects = |db: &Database| -> Vec<String> {
+            db.emails_in_folders(&[inbox.id])
+                .unwrap()
+                .iter()
+                .map(|c| c.subject.to_string())
+                .collect()
+        };
+        assert_eq!(subjects(&db), vec!["Old", "New"]);
+        // Outlook unpinned it: the next sync's header carries no keyword.
+        old.is_pinned = false;
+        db.save_incoming_email(inbox.id, &old).unwrap();
+        assert_eq!(subjects(&db), vec!["New", "Old"]);
+        let id = db.emails_in_folders(&[inbox.id]).unwrap()[1].id;
+        db.set_email_pinned(id, true).unwrap();
+        assert_eq!(subjects(&db), vec!["Old", "New"]);
+    }
+
+    #[test]
     fn sync_search_and_unified_inbox() {
         let mut db = Database::open_in_memory().unwrap();
         let one = db.save_account(&account()).unwrap();
@@ -914,26 +1008,22 @@ mod tests {
                 &header("1", "Beta", "2026-01-03T00:00:00Z", "Cy")
             )
             .unwrap());
-        db.reassign_conversations(inbox_one.id).unwrap();
-        db.reassign_conversations(inbox_two.id).unwrap();
 
-        let threads = db.conversations_in_folder(inbox_one.id).unwrap();
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].count(), 2);
-        assert_eq!(threads[0].subject(), "Re: Alpha");
+        let emails = db.emails_in_folders(&[inbox_one.id]).unwrap();
+        assert_eq!(emails.len(), 2);
+        assert_eq!(emails[0].subject, "Re: Alpha");
+        assert_eq!(emails[1].subject, "Alpha");
 
-        let unified = db
-            .conversations_in_folders(&[inbox_one.id, inbox_two.id])
-            .unwrap();
-        assert_eq!(unified.len(), 2);
-        assert_eq!(unified[0].subject(), "Beta");
-        assert_eq!(unified[1].folder_id(), inbox_one.id);
+        let unified = db.emails_in_folders(&[inbox_one.id, inbox_two.id]).unwrap();
+        assert_eq!(unified.len(), 3);
+        assert_eq!(unified[0].subject, "Beta");
+        assert_eq!(unified[1].folder_id, inbox_one.id);
 
         let found = db
-            .search_conversations(&[inbox_one.id, inbox_two.id], "bet")
+            .search_emails(&[inbox_one.id, inbox_two.id], "bet")
             .unwrap();
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].subject(), "Beta");
+        assert_eq!(found[0].subject, "Beta");
         assert_eq!(db.unread_count_in_folder(inbox_one.id).unwrap(), 2);
 
         assert_eq!(

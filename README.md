@@ -4,7 +4,8 @@ A native GTK 4 / libadwaita email client for GNOME, written in Rust.
 
 - Multiple IMAP/SMTP accounts, or accounts imported from GNOME Online Accounts (OAuth)
 - A unified inbox across every account, plus each account's own folder tree
-- Threaded conversations, full-text search, load-on-scroll history
+- Individual emails, full-text search, load-on-scroll history
+- Pinned emails stay at the top of the list, in sync with Outlook through graphmail-bridge (the `$Pinned` keyword)
 - Rich-text composer with attachments, Outbox with retry, one-click unsubscribe
 - Follows the system accent colour and light/dark style
 

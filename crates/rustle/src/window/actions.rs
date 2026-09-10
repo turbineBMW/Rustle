@@ -2,7 +2,7 @@
 
 use super::{MainWindow, MAIL_ACTIONS, REPLY_FORWARD_ACTIONS};
 use crate::i18n::{self, gettext};
-use crate::objects::ConversationObject;
+use crate::objects::EmailObject;
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -11,7 +11,7 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::models::Account;
 use rustle_core::net::errors::classify;
-use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_SEEN};
+use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
 use rustle_core::{secrets, sync};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -23,6 +23,7 @@ type ActionHandler = fn(&MainWindow);
 enum FlagField {
     Unread,
     Starred,
+    Pinned,
 }
 
 /// One IMAP flag edit to apply to a set of messages in one mailbox. A frozen
@@ -49,9 +50,10 @@ fn register(
 
 impl MainWindow {
     pub(super) fn setup_actions(&self) {
-        let plain: [(&str, ActionHandler); 13] = [
+        let plain: [(&str, ActionHandler); 14] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
+            ("toggle-pin", |w| w.on_toggle_pin()),
             ("archive", |w| w.on_archive()),
             ("trash", |w| w.on_trash()),
             ("compose", |w| w.on_compose_clicked()),
@@ -113,27 +115,27 @@ impl MainWindow {
         }
     }
 
-    /// Every selected conversation. Before a mail view is loaded there is
+    /// Every selected email. Before a mail view is loaded there is
     /// nothing selected rather than an error; every mail action funnels
     /// through here, which is why the guard belongs here.
-    pub(super) fn selected_conversations(&self) -> Vec<ConversationObject> {
+    pub(super) fn selected_emails(&self) -> Vec<EmailObject> {
         if self.state().view.is_none() {
             return Vec::new();
         }
         let selection = self.selection();
-        let model = self.conversation_model();
+        let model = self.email_model();
         let positions = selection.selection();
         (0..positions.size())
             .filter_map(|index| {
                 model
                     .item(positions.nth(index as u32))
-                    .and_downcast::<ConversationObject>()
+                    .and_downcast::<EmailObject>()
             })
             .collect()
     }
 
-    pub(super) fn selected_conversation(&self) -> Option<ConversationObject> {
-        let selected = self.selected_conversations();
+    pub(super) fn selected_email(&self) -> Option<EmailObject> {
+        let selected = self.selected_emails();
         if selected.len() == 1 {
             selected.into_iter().next()
         } else {
@@ -142,74 +144,82 @@ impl MainWindow {
     }
 
     fn on_toggle_read(&self) {
-        let conversations = self.selected_conversations();
-        if !conversations.is_empty() {
-            self.toggle_flag(&conversations, FlagField::Unread);
+        let emails = self.selected_emails();
+        if !emails.is_empty() {
+            self.toggle_flag(&emails, FlagField::Unread);
         }
     }
 
     fn on_toggle_star(&self) {
-        let conversations = self.selected_conversations();
-        if !conversations.is_empty() {
-            self.toggle_flag(&conversations, FlagField::Starred);
+        let emails = self.selected_emails();
+        if !emails.is_empty() {
+            self.toggle_flag(&emails, FlagField::Starred);
         }
     }
 
-    /// Clear the unread flag for a whole conversation: locally, in the
-    /// badges and list, and on the server. Guarded so an already-read thread
+    fn on_toggle_pin(&self) {
+        let emails = self.selected_emails();
+        if !emails.is_empty() {
+            self.toggle_flag(&emails, FlagField::Pinned);
+        }
+    }
+
+    /// Clear the unread flag for an email: locally, in the
+    /// badges and list, and on the server. Guarded so an already-read email
     /// isn't flipped back to unread.
-    pub(super) fn mark_conversation_read(&self, conversation: &ConversationObject) {
-        if conversation.with(|c| c.is_unread()) {
-            self.toggle_flag(std::slice::from_ref(conversation), FlagField::Unread);
+    pub(super) fn mark_email_read(&self, email: &EmailObject) {
+        if email.with(|c| c.is_unread) {
+            self.toggle_flag(std::slice::from_ref(email), FlagField::Unread);
         }
     }
 
     /// Flip one boolean flag across a selection, locally and on the server.
     /// A mixed selection follows the aggregate command shown in the menu: if
     /// anything is unread, the whole selection is marked read.
-    fn toggle_flag(&self, conversations: &[ConversationObject], field: FlagField) {
+    fn toggle_flag(&self, emails: &[EmailObject], field: FlagField) {
         let read = |mail: &rustle_core::models::Email| match field {
             FlagField::Unread => mail.is_unread,
             FlagField::Starred => mail.is_starred,
+            FlagField::Pinned => mail.is_pinned,
         };
         let mut originals: HashMap<i64, bool> = HashMap::new();
         let mut any_set = false;
-        for conversation in conversations {
-            conversation.with(|c| {
-                for mail in &c.emails {
-                    originals.insert(mail.id, read(mail));
-                    any_set |= read(mail);
-                }
+        for email in emails {
+            email.with(|mail| {
+                originals.insert(mail.id, read(mail));
+                any_set |= read(mail);
             });
         }
         let value = !any_set;
-        let keep_id = if conversations.len() == 1 {
-            Some(conversations[0].id())
+        let keep_id = if emails.len() == 1 {
+            Some(emails[0].id())
         } else {
             None
         };
 
-        let objects: Vec<ConversationObject> = conversations.to_vec();
+        let objects: Vec<EmailObject> = emails.to_vec();
         let db = self.db();
         let write = move |values: &HashMap<i64, bool>| {
             let db = db.borrow();
-            for conversation in &objects {
-                conversation.update(|c| {
-                    for mail in &mut c.emails {
-                        let new_value = values.get(&mail.id).copied().unwrap_or(false);
-                        let saved = match field {
-                            FlagField::Unread => {
-                                mail.is_unread = new_value;
-                                db.set_email_unread(mail.id, new_value)
-                            }
-                            FlagField::Starred => {
-                                mail.is_starred = new_value;
-                                db.set_email_starred(mail.id, new_value)
-                            }
-                        };
-                        if let Err(error) = saved {
-                            log::error!("could not save the flag of message {}: {error}", mail.id);
+            for email in &objects {
+                email.update(|mail| {
+                    let new_value = values.get(&mail.id).copied().unwrap_or(false);
+                    let saved = match field {
+                        FlagField::Unread => {
+                            mail.is_unread = new_value;
+                            db.set_email_unread(mail.id, new_value)
                         }
+                        FlagField::Starred => {
+                            mail.is_starred = new_value;
+                            db.set_email_starred(mail.id, new_value)
+                        }
+                        FlagField::Pinned => {
+                            mail.is_pinned = new_value;
+                            db.set_email_pinned(mail.id, new_value)
+                        }
+                    };
+                    if let Err(error) = saved {
+                        log::error!("could not save the flag of message {}: {error}", mail.id);
                     }
                 });
             }
@@ -232,17 +242,18 @@ impl MainWindow {
         // One STORE per mailbox rather than one per message: in the unified
         // inbox a selection can span several accounts.
         let mut by_folder: HashMap<i64, Vec<String>> = HashMap::new();
-        for conversation in conversations {
-            conversation.with(|c| {
+        for email in emails {
+            email.with(|c| {
                 by_folder
-                    .entry(c.folder_id())
+                    .entry(c.folder_id)
                     .or_default()
-                    .extend(c.server_uids())
+                    .extend(c.server_id.iter().cloned())
             });
         }
         let (flag, should_add) = match field {
             FlagField::Unread => (FLAG_SEEN, !value),
             FlagField::Starred => (FLAG_FLAGGED, value),
+            FlagField::Pinned => (FLAG_PINNED, value),
         };
         for (folder_id, uids) in by_folder {
             let Some((account, folder)) = self.account_for_folder(folder_id) else {
@@ -262,10 +273,10 @@ impl MainWindow {
     }
 
     /// Update badges and the list after a flag change, keeping the
-    /// conversation selected so the reader doesn't reload.
+    /// email selected so the reader doesn't reload.
     fn after_flag_change(&self, keep_id: Option<i64>) {
         self.reload_folders();
-        self.refresh_conversations(keep_id);
+        self.refresh_emails(keep_id);
     }
 
     fn run_flag_worker(&self, change: FlagChange, revert: Rc<dyn Fn()>) {
@@ -343,10 +354,10 @@ impl MainWindow {
             self.state_mut().is_selection_update_in_progress = false;
             self.update_reader();
         }
-        let Some(conversation) = self
-            .conversation_model()
+        let Some(email) = self
+            .email_model()
             .item(position)
-            .and_downcast::<ConversationObject>()
+            .and_downcast::<EmailObject>()
         else {
             return;
         };
@@ -354,7 +365,7 @@ impl MainWindow {
             return;
         };
 
-        let popover = gtk::PopoverMenu::from_model(Some(&self.context_menu(&conversation)));
+        let popover = gtk::PopoverMenu::from_model(Some(&self.context_menu(&email)));
         popover.insert_action_group("context", Some(&self.context_actions()));
         popover.set_parent(&row_widget);
         popover.set_has_arrow(false);
@@ -371,9 +382,10 @@ impl MainWindow {
     /// The subset of the window's actions the row context menu offers.
     fn context_actions(&self) -> gio::SimpleActionGroup {
         let group = gio::SimpleActionGroup::new();
-        let handlers: [(&str, ActionHandler); 4] = [
+        let handlers: [(&str, ActionHandler); 5] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
+            ("toggle-pin", |w| w.on_toggle_pin()),
             ("archive", |w| w.on_archive()),
             ("trash", |w| w.on_trash()),
         ];
@@ -401,14 +413,15 @@ impl MainWindow {
         group
     }
 
-    fn context_menu(&self, conversation: &ConversationObject) -> gio::Menu {
+    fn context_menu(&self, email: &EmailObject) -> gio::Menu {
         let menu = gio::Menu::new();
-        let mut selected = self.selected_conversations();
+        let mut selected = self.selected_emails();
         if selected.is_empty() {
-            selected.push(conversation.clone());
+            selected.push(email.clone());
         }
-        let any_unread = selected.iter().any(|c| c.with(|c| c.is_unread()));
-        let any_starred = selected.iter().any(|c| c.with(|c| c.is_starred()));
+        let any_unread = selected.iter().any(|c| c.with(|c| c.is_unread));
+        let any_starred = selected.iter().any(|c| c.with(|c| c.is_starred));
+        let any_pinned = selected.iter().any(|c| c.with(|c| c.is_pinned));
 
         let flags = gio::Menu::new();
         flags.append(
@@ -426,6 +439,14 @@ impl MainWindow {
                 gettext("Star")
             }),
             Some("context.toggle-star"),
+        );
+        flags.append(
+            Some(&if any_pinned {
+                gettext("Unpin")
+            } else {
+                gettext("Pin")
+            }),
+            Some("context.toggle-pin"),
         );
         menu.append_section(None, &flags);
 

@@ -35,21 +35,21 @@ impl MainWindow {
         let _ = imp.folder_tree_model.set(tree_model);
         let _ = imp.folder_selection.set(folder_selection);
 
-        let conversation_sections = gio::ListStore::new::<gio::ListStore>();
-        let conversation_model = gtk::FlattenListModel::new(Some(conversation_sections.clone()));
-        let selection = gtk::MultiSelection::new(Some(conversation_model.clone()));
+        let email_sections = gio::ListStore::new::<gio::ListStore>();
+        let email_model = gtk::FlattenListModel::new(Some(email_sections.clone()));
+        let selection = gtk::MultiSelection::new(Some(email_model.clone()));
         // The sticky day label follows the model as well as the scroll.
-        conversation_model.connect_items_changed(glib::clone!(
+        email_model.connect_items_changed(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |_, _, _, _| window.update_sticky_day()
         ));
-        let _ = imp.conversation_sections.set(conversation_sections);
-        let _ = imp.conversation_model.set(conversation_model);
+        let _ = imp.email_sections.set(email_sections);
+        let _ = imp.email_model.set(email_model);
         let _ = imp.selection.set(selection);
 
         self.setup_folder_sidebar();
-        self.setup_conversation_list();
+        self.setup_email_list();
     }
 
     /// Two kinds of branch: an account row holds its top-level mailboxes, a
@@ -260,7 +260,7 @@ impl MainWindow {
         if self.state().is_folder_refresh_suppressed {
             return;
         }
-        self.refresh_conversations(None);
+        self.refresh_emails(None);
 
         // Only sync on a real view change -- rebuilding the sidebar re-emits
         // selection-changed for the same folder, which would loop. A folder
@@ -393,12 +393,13 @@ impl MainWindow {
         if let Some(row) = unified_row {
             row.bind_unified_inbox(self.unified_badge());
         }
+        self.sync_inbox_watchers();
     }
 
     fn rebuild_folder_tree(&self, accounts: &[Account]) {
         // Preserve the selection by identity, not row index -- pruning stale
         // folders shifts the indices. Re-selecting is suppressed so it doesn't
-        // rebuild the conversation list; callers refresh that explicitly.
+        // rebuild the email list; callers refresh that explicitly.
         let keep = self.state().view.clone();
         {
             let mut state = self.state_mut();

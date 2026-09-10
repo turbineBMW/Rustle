@@ -16,7 +16,8 @@ pub const WINDOW_WIDTH: &str = "window-width";
 pub const WINDOW_HEIGHT: &str = "window-height";
 pub const WINDOW_MAXIMIZED: &str = "window-maximized";
 pub const FOLDER_WIDTH: &str = "folder-sidebar-width";
-pub const CONVERSATION_WIDTH: &str = "conversation-sidebar-width";
+// Retain the persisted key so existing sidebar widths survive the rename.
+pub const EMAIL_WIDTH: &str = "conversation-sidebar-width";
 
 /// The app's settings. Prefers the installed schema; falls back to the one
 /// build.rs compiled so a checkout runs without `make install`.

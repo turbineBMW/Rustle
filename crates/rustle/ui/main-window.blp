@@ -106,15 +106,15 @@ template $RustleMainWindow: Adw.ApplicationWindow {
             sidebar-width-unit: px;
 
             sidebar: Adw.NavigationPage {
-              title: _("Conversations");
+              title: _("Messages");
               child: Gtk.Overlay {
                 [overlay]
-                Gtk.Box conversation_resize_handle {
+                Gtk.Box email_resize_handle {
                   halign: end;
                   width-request: 5;
 
                   accessibility {
-                    label: _("Resize conversation list");
+                    label: _("Resize email list");
                   }
                 }
 
@@ -150,7 +150,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                     };
                   }
 
-                  content: Gtk.Stack conversation_stack {
+                  content: Gtk.Stack email_stack {
                     StackPage {
                       name: "list";
                       child: Gtk.Box {
@@ -159,15 +159,15 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                         Gtk.Label sticky_day {
                           xalign: 0;
                           visible: false;
-                          styles ["conversation-day-header", "sticky-day"]
+                          styles ["email-day-header", "sticky-day"]
                         }
 
-                        Gtk.ScrolledWindow conversation_scroller {
+                        Gtk.ScrolledWindow email_scroller {
                           hscrollbar-policy: never;
                           vexpand: true;
 
-                          child: Gtk.ListView conversation_list {
-                            styles ["navigation-sidebar", "conversation-list"]
+                          child: Gtk.ListView email_list {
+                            styles ["navigation-sidebar", "email-list"]
                           };
                         }
                       };
@@ -245,6 +245,13 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                       sensitive: false;
                     }
 
+                    Gtk.Button pin_button {
+                      icon-name: "view-pin-symbolic";
+                      tooltip-text: _("Pin");
+                      action-name: "win.toggle-pin";
+                      sensitive: false;
+                    }
+
                     Gtk.MenuButton move_button {
                       icon-name: "folder-symbolic";
                       tooltip-text: _("Move to Folder");
@@ -278,7 +285,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                     name: "empty";
                     child: Adw.StatusPage {
                       icon-name: "mail-read-symbolic";
-                      title: _("Select a Conversation");
+                      title: _("Select an Email");
                       description: _("Pick a message from the list to read it here.");
                     };
                   }
@@ -320,7 +327,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
                         styles ["reader-body"]
 
-                        child: Gtk.Box thread_box {
+                        child: Gtk.Box message_box {
                           orientation: vertical;
                         };
                       }

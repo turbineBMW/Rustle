@@ -50,6 +50,7 @@ impl MainWindow {
                 state.accounts.clear();
                 state.view = None;
             }
+            self.sync_inbox_watchers();
             self.imp()
                 .main_stack
                 .set_visible_child_name(PAGE_NO_ACCOUNT);
@@ -103,10 +104,10 @@ impl MainWindow {
     }
 
     /// The account a new message is written from: the one owning the
-    /// selected conversation, else the open folder's, else the first.
+    /// selected email, else the open folder's, else the first.
     fn compose_account(&self) -> Option<Account> {
-        if let Some(selected) = self.selected_conversation() {
-            if let Some((account, _)) = self.account_for_folder(selected.with(|c| c.folder_id())) {
+        if let Some(selected) = self.selected_email() {
+            if let Some((account, _)) = self.account_for_folder(selected.with(|c| c.folder_id)) {
                 return Some(account);
             }
         }
@@ -208,13 +209,13 @@ impl MainWindow {
         );
     }
 
-    /// The rendered newest message of the one selected conversation, if it
+    /// The rendered selected email, if it
     /// has finished loading.
     fn active_parsed(&self) -> Option<(crate::widgets::message_view::MessageView, ParsedMessage)> {
-        if self.selected_conversations().len() != 1 {
+        if self.selected_emails().len() != 1 {
             return None;
         }
-        let view = self.state().active_view.clone()?;
+        let view = self.state().message_view.clone()?;
         let parsed = view.parsed()?;
         Some((view, parsed))
     }
@@ -245,9 +246,9 @@ impl MainWindow {
     }
 
     fn on_composer_finished(&self) {
-        let keep_id = self.selected_conversation().map(|c| c.id());
+        let keep_id = self.selected_email().map(|c| c.id());
         self.reload_folders();
-        self.refresh_conversations(keep_id);
+        self.refresh_emails(keep_id);
         let accounts: Vec<Account> = self.state().accounts.values().cloned().collect();
         for account in accounts {
             self.drain_outbox(&account);

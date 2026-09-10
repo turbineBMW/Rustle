@@ -31,7 +31,7 @@ window and its search bar captures whatever the user is typing elsewhere.
 ```
 Cargo.toml                 workspace (edition 2021, thin LTO in release)
 crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo test`)
-  models.rs    Account/Folder/Email/Conversation/Attachment/MessageHeader, Security enum
+  models.rs    Account/Folder/Email/Attachment/MessageHeader, Security enum
   db.rs        rusqlite; schema + append-only MIGRATIONS tracked by PRAGMA user_version
   net/         imap.rs (imap crate; socket built by hand so it has a timeout, STARTTLS
                spoken on the raw socket), smtp.rs (lettre), auth.rs (Credential:
@@ -40,7 +40,8 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   mime.rs      mail-parser -> ParsedMessage; sandbox_html builds the CSP'd reader document
   compose.rs   reply/forward bodies, MIME building (lettre), mailto:, address helpers
   folders.rs   FolderRole classification by name, display names, modified UTF-7
-  threader.rs  union-find threading; address.rs, dates.rs, providers.rs, html.rs
+  address.rs, dates.rs, providers.rs, html.rs
+  watch.rs     IMAP IDLE: one cancellable long-lived session per account on its inbox
   secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
   avatars.rs   sender pictures: local graphmail-bridge photo endpoint (loopback+plain IMAP
                accounts, port from `bridge-photo-port`), then Gravatar/favicon; on-disk cache
@@ -48,8 +49,8 @@ crates/rustle/             the GTK layer
   build.rs     blueprint-compiler ui/*.blp -> gresource; glib-compile-schemas -> OUT_DIR
   ui/*.blp     Blueprint templates; the Rust attribute names must match the ids
   src/window/  one MainWindow, one impl block per concern: accounts, actions, folders,
-               list, moves, reader, sync
-  src/widgets/ FolderRow, ConversationRow (gtk::Box subclasses), MessageView (plain struct)
+               list, moves, reader, sync, watch (the IDLE threads)
+  src/widgets/ FolderRow, EmailRow (gtk::Box subclasses), MessageView (plain struct)
   src/dialogs/ account, accounts, online_accounts, preferences;  src/composer.rs
   src/workers.rs  the threading model (below);  src/accent.rs  accent colour helpers
 data/                      gschema, desktop file, metainfo, D-Bus service, icons
@@ -62,6 +63,10 @@ data/                      gschema, desktop file, metainfo, D-Bus service, icons
   resolves credentials itself (keyring/GOA block on IPC); `on_done` runs on the main loop
   and is the only place that touches the database or widgets. Never log a `Credential`'s
   secret — its `Debug` hides it; don't `{:?}` a struct that embeds the raw token.
+  The one long-lived thread is the inbox watcher (`window/watch.rs`): it reports back
+  through a `SendWeakRef` on the window via `MainContext::invoke`, and is cancelled through
+  its `InboxWatch` handle, which shuts the socket so a blocked read returns at once.
+  `sync_inbox_watchers` reconciles the threads against `State::accounts` and is idempotent.
 - **Window state** is one `RefCell<State>` behind `state()`/`state_mut()`. Never hold a
   `Ref` across a call that may need `state_mut()`. Bind to a local before an
   `if let`/`match`: a temporary in the scrutinee lives for the whole block. This crashed

@@ -1,60 +1,60 @@
 /* The accent follows the GNOME setting through libadwaita's CSS variables.
-   Unread conversations tint the whole row and carry an accent bar on the
+   Unread emails tint the whole row and carry an accent bar on the
    left edge, so they read at a glance without an indicator to hunt for.
    The selected row keeps libadwaita's highlight and only the bar remains. */
-.conversation-row {
+.email-row {
   padding: 8px 12px;
 }
 
-.conversation-row.unread {
+.email-row.unread {
   background-color: color-mix(in srgb, var(--accent-bg-color) 14%, transparent);
   box-shadow: inset 4px 0 var(--accent-bg-color);
 }
 
-.conversation-list > row:hover .conversation-row.unread {
+.email-list > row:hover .email-row.unread {
   background-color: color-mix(in srgb, var(--accent-bg-color) 22%, transparent);
 }
 
-.conversation-list > row:selected .conversation-row.unread {
+.email-list > row:selected .email-row.unread {
   background-color: transparent;
   box-shadow: inset 4px 0 var(--accent-fg-color);
 }
 
-.conversation-sender {
+.email-sender {
   font-weight: 500;
 }
 
-.unread .conversation-sender {
+.unread .email-sender {
   font-weight: bold;
 }
 
-.unread .conversation-subject {
+.unread .email-subject {
   font-weight: bold;
 }
 
 /* A line of body: smaller than the subject, and dimmed to match the date
    (both carry libadwaita's dim-label). */
-.conversation-preview {
+.email-preview {
   font-size: 0.9em;
 }
 
-/* A hairline between conversations, as in Mail.app. Rows are squared off
+/* A hairline between emails, as in Mail.app. Rows are squared off
    and run edge to edge so the line is straight rather than following the
    sidebar's rounded corners; the shadow costs no layout and is dropped under
    the selected row. */
-.conversation-list > row {
+.email-list > row {
   border-radius: 0;
   margin-left: 0;
   margin-right: 0;
 }
 
-.conversation-list > row:not(:last-child):not(:selected) {
+.email-list > row:not(:last-child):not(:selected) {
   box-shadow: inset 0 -1px var(--border-color);
 }
 
 /* Sticky day headers (Today / Yesterday / Wednesday, August 26th): opaque so
    rows scroll under them, with the same hairline as the rows. */
-.conversation-list > header {
+.email-list > header {
   background: var(--view-bg-color);
   box-shadow: inset 0 -1px var(--border-color);
   padding: 4px 12px;
@@ -66,13 +66,20 @@
   padding: 4px 12px;
 }
 
-.conversation-day-header {
+.email-day-header {
   font-size: 0.85em;
   font-weight: bold;
   color: var(--dim-label-color, alpha(currentColor, 0.55));
 }
 
-/* Which account a thread belongs to, shown only in the unified inbox: a dot
+/* The pin glyph on a row, and the toolbar button while the selection is
+   pinned, take the accent so a pin reads as a state, not a decoration. */
+.email-pin,
+button.pinned {
+  color: var(--accent-color);
+}
+
+/* Which account an email belongs to, shown only in the unified inbox: a dot
    in the account's colour before the sender. `--account-color` is set per
    account by the provider in account_colors.rs through the `account-<id>`
    class. */
@@ -92,8 +99,7 @@
   color: var(--account-color, var(--accent-color));
 }
 
-/* Reader: the subject sits in its own block over a plain body, so the thread
-   below reads as one document instead of a stack of cards. */
+/* Reader: the subject sits in its own block above the message body. */
 .reader-header {
   padding: 18px 24px;
   border-bottom: 1px solid var(--border-color);
@@ -103,19 +109,20 @@
   background-color: var(--view-bg-color);
 }
 
-.message-view:not(:last-child) {
-  border-bottom: 1px solid var(--border-color);
-}
-
-/* The whole header row is the expand/collapse button; its own padding would
-   double up on the margins the row already sets. */
-.message-header {
-  padding: 0;
-  border-radius: 0;
-}
-
-.sender-address {
+.sender-address,
+.recipient-address {
   color: var(--accent-color);
+}
+
+.attachment-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.attachment-open {
+  padding: 10px;
+  border-radius: 11px;
 }
 
 .message-html {
