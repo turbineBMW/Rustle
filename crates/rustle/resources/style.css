@@ -109,8 +109,20 @@ button.pinned {
   background-color: var(--view-bg-color);
 }
 
-.sender-address {
+.sender-address,
+.recipient-address {
   color: var(--accent-color);
+}
+
+.attachment-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.attachment-open {
+  padding: 10px;
+  border-radius: 11px;
 }
 
 .message-html {

@@ -45,6 +45,7 @@ const SMALL_GUTTER: i32 = 6;
 /// inset inside its own canvas so the padding shares the body's background.
 const EDGE: i32 = 24;
 const AVATAR_SIZE: i32 = 40;
+const ATTACHMENT_WIDTH: i32 = 260;
 
 thread_local! {
     // An unrelated WebView costs its own web process: ~300 MB and up to
@@ -101,6 +102,7 @@ struct Inner {
 #[derive(Clone)]
 pub struct MessageView {
     root: gtk::Box,
+    recipients: gtk::Box,
     body: gtk::Box,
     inner: Rc<RefCell<Inner>>,
 }
@@ -128,6 +130,7 @@ impl MessageView {
             .margin_end(EDGE)
             .build();
         let avatar = adw::Avatar::new(AVATAR_SIZE, Some(&email.sender), true);
+        avatar.set_valign(gtk::Align::Start);
         header.append(&avatar);
         if !email.sender_address.is_empty() {
             let avatar = avatar.clone();
@@ -141,23 +144,34 @@ impl MessageView {
             .hexpand(true)
             .valign(gtk::Align::Center)
             .build();
+        let sender_line = gtk::Box::builder().spacing(SMALL_GUTTER).build();
         let sender = gtk::Label::builder()
             .label(&email.sender)
             .xalign(0.0)
             .ellipsize(pango::EllipsizeMode::End)
             .css_classes(["heading"])
             .build();
-        names.append(&sender);
+        sender_line.append(&sender);
         if !email.sender_address.is_empty() {
             let address = gtk::Label::builder()
                 .label(&email.sender_address)
                 .xalign(0.0)
                 .ellipsize(pango::EllipsizeMode::End)
+                .hexpand(true)
                 .selectable(true)
+                .tooltip_text(&email.sender_address)
                 .css_classes(["caption", "sender-address"])
                 .build();
-            names.append(&address);
+            sender_line.append(&address);
         }
+        names.append(&sender_line);
+        let recipients = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(2)
+            .visible(false)
+            .build();
+        names.append(&recipients);
         header.append(&names);
         // Read from the unified inbox, the message names its account above
         // the date, in that account's colour.
@@ -198,6 +212,7 @@ impl MessageView {
 
         let view = MessageView {
             root,
+            recipients,
             body,
             inner: Rc::new(RefCell::new(Inner {
                 email,
@@ -273,13 +288,13 @@ impl MessageView {
             inner.raw = Some(raw);
             inner.parsed = Some(parsed.clone());
         }
-        self.show_details(&parsed);
+        self.show_recipients(&parsed);
+        self.populate_attachments(&parsed.attachments);
         self.show_unsubscribe(parsed.unsubscribe.as_ref());
         match &parsed.html_body {
             Some(html) => self.show_html(html),
             None => self.show_text(parsed.text_body.as_deref().unwrap_or("")),
         }
-        self.populate_attachments(&parsed.attachments);
 
         let on_rendered = self.inner.borrow_mut().on_rendered.take();
         if let Some(on_rendered) = on_rendered {
@@ -287,51 +302,44 @@ impl MessageView {
         }
     }
 
-    /// A collapsed Details section with the full From/To/Cc/Bcc/Date.
-    fn show_details(&self, parsed: &ParsedMessage) {
-        let grid = gtk::Grid::builder()
-            .row_spacing(4)
-            .column_spacing(GUTTER)
-            .margin_bottom(SMALL_GUTTER)
-            .build();
-        let mut row = 0;
+    /// Recipient information lives alongside the sender in the header.
+    fn show_recipients(&self, parsed: &ParsedMessage) {
+        // GtkGrid can report the height at the label's minimum width as its
+        // minimum height here, making a long recipient list consume the pane.
+        // Box rows measure wrapping labels using the actual available width.
+        let label_widths = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
         for (label, value) in [
-            (gettext("From"), parsed.from_display.clone()),
             (gettext("To"), parsed.to.join(", ")),
             (gettext("Cc"), parsed.cc.join(", ")),
             (gettext("Bcc"), parsed.bcc.join(", ")),
-            (gettext("Date"), parsed.date.clone()),
         ] {
             if value.is_empty() {
                 continue;
             }
+            let row = gtk::Box::builder().spacing(SMALL_GUTTER).build();
             let name = gtk::Label::builder()
                 .label(label)
                 .xalign(1.0)
                 .valign(gtk::Align::Start)
-                .css_classes(["dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .build();
-            grid.attach(&name, 0, row, 1, 1);
+            label_widths.add_widget(&name);
+            row.append(&name);
             let content = gtk::Label::builder()
                 .label(value)
                 .xalign(0.0)
                 .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .max_width_chars(1)
                 .selectable(true)
                 .hexpand(true)
+                .css_classes(["caption", "recipient-address"])
                 .build();
-            grid.attach(&content, 1, row, 1, 1);
-            row += 1;
+            row.append(&content);
+            self.recipients.append(&row);
         }
-        if row == 0 {
-            return;
-        }
-        let expander = gtk::Expander::builder()
-            .label(gettext("Details"))
-            .child(&grid)
-            .margin_start(EDGE)
-            .margin_end(EDGE)
-            .build();
-        self.body.append(&expander);
+        self.recipients
+            .set_visible(self.recipients.first_child().is_some());
     }
 
     fn show_unsubscribe(&self, target: Option<&Unsubscribe>) {
@@ -465,41 +473,85 @@ impl MessageView {
         if attachments.is_empty() {
             return;
         }
+        let section = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(SMALL_GUTTER)
+            .margin_start(EDGE)
+            .margin_end(EDGE)
+            .margin_bottom(GUTTER)
+            .build();
         let heading = gtk::Label::builder()
             .label(gettext("Attachments"))
             .xalign(0.0)
-            .css_classes(["heading"])
+            .css_classes(["caption", "dim-label"])
             .build();
-        self.body.append(&heading);
-        let list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
+        section.append(&heading);
+        let cards = adw::WrapBox::builder()
+            .child_spacing(GUTTER)
+            .line_spacing(SMALL_GUTTER)
+            .justify(adw::JustifyMode::None)
+            .align(0.0)
             .build();
-        self.body.append(&list);
+        section.append(&cards);
+        self.body.append(&section);
         let handlers = self.inner.borrow().handlers.clone();
         for attachment in attachments {
-            let row = adw::ActionRow::builder()
-                .title(&attachment.filename)
-                .subtitle(glib::format_size(attachment.size() as u64).as_str())
-                .activatable(true)
-                .tooltip_text(gettext("Open with the default app"))
+            let card = gtk::Box::builder()
+                .width_request(ATTACHMENT_WIDTH)
+                .hexpand(false)
+                .css_classes(["attachment-card"])
                 .build();
-            row.add_prefix(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
+            let content = gtk::Box::builder().spacing(SMALL_GUTTER).build();
+            content.append(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
+            let labels = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .hexpand(true)
+                .build();
+            let filename = gtk::Label::builder()
+                .label(&attachment.filename)
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::Middle)
+                // Keep the natural width below the card's fixed request,
+                // even for long filenames; the label fills available space.
+                .max_width_chars(1)
+                .css_classes(["heading"])
+                .build();
+            labels.append(&filename);
+            labels.append(
+                &gtk::Label::builder()
+                    .label(glib::format_size(attachment.size() as u64))
+                    .xalign(0.0)
+                    .css_classes(["caption", "dim-label"])
+                    .build(),
+            );
+            content.append(&labels);
+            let open_button = gtk::Button::builder()
+                .child(&content)
+                .hexpand(true)
+                .tooltip_text(format!(
+                    "{}\n{}",
+                    attachment.filename,
+                    gettext("Open with the default app")
+                ))
+                .css_classes(["flat", "attachment-open"])
+                .build();
             let open = attachment.clone();
             let open_handlers = handlers.clone();
-            row.connect_activated(move |_| (open_handlers.on_open_attachment)(&open));
+            open_button.connect_clicked(move |_| (open_handlers.on_open_attachment)(&open));
+            card.append(&open_button);
 
             let save_button = gtk::Button::builder()
                 .icon_name("document-save-symbolic")
                 .valign(gtk::Align::Center)
+                .margin_end(SMALL_GUTTER)
                 .tooltip_text(gettext("Save Attachment"))
                 .css_classes(["flat"])
                 .build();
             let save = attachment.clone();
             let save_handlers = handlers.clone();
             save_button.connect_clicked(move |_| (save_handlers.on_save_attachment)(&save));
-            row.add_suffix(&save_button);
-            list.append(&row);
+            card.append(&save_button);
+            cards.append(&card);
         }
     }
 
@@ -559,3 +611,7 @@ fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
 fn is_dark() -> bool {
     adw::StyleManager::default().is_dark()
 }
+
+#[cfg(test)]
+#[path = "message_view_tests.rs"]
+mod tests;
