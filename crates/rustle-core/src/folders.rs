@@ -61,7 +61,11 @@ pub fn role_for_folder(name: &str) -> FolderRole {
 
 /// Whether new mail landing in this folder deserves a notification. Junk
 /// and Trash fill up on their own, and Sent/Drafts hold the user's own mail.
+/// All Mail mirrors arrivals in other folders, so notifying duplicates them.
 pub fn notifies_on_arrival(name: &str) -> bool {
+    if display_name_for_folder(name, None).eq_ignore_ascii_case("All Mail") {
+        return false;
+    }
     !matches!(
         role_for_folder(name),
         FolderRole::Junk | FolderRole::Trash | FolderRole::Sent | FolderRole::Drafts
@@ -176,7 +180,7 @@ pub fn decode_mailbox_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn junk_and_trash_are_quiet() {
+    fn notification_folder_filter() {
         for name in [
             "Junk",
             "Spam",
@@ -184,6 +188,12 @@ mod tests {
             "[Gmail]/Spam",
             "Trash",
             "Deleted Items",
+            "Sent",
+            "Drafts",
+            "All Mail",
+            "[Gmail]/All Mail",
+            "[Google Mail]/All Mail",
+            "[Gmail]/all mail",
         ] {
             assert!(!super::notifies_on_arrival(name), "{name}");
         }
