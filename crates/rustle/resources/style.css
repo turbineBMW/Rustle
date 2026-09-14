@@ -99,6 +99,27 @@ button.pinned {
   color: var(--account-color, var(--accent-color));
 }
 
+/* Composer: the sending account is a pill beside Cancel, filled with the
+   account's colour so the identity about to go on the wire is unmissable.
+   `--account-fg-color` is black or white, whichever reads on that colour. */
+.from-dropdown > button {
+  background-color: var(--account-color, var(--accent-bg-color));
+  color: var(--account-fg-color, var(--accent-fg-color));
+}
+
+.from-dropdown > button:hover {
+  background-image: image(rgb(255 255 255 / 10%));
+}
+
+.from-dropdown > button:active,
+.from-dropdown > button:checked {
+  background-image: image(rgb(0 0 0 / 20%));
+}
+
+.from-dropdown > button:disabled {
+  filter: opacity(50%);
+}
+
 /* Reader: the subject sits in its own block above the message body. */
 .reader-header {
   padding: 18px 24px;

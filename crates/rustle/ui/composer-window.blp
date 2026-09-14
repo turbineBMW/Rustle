@@ -18,6 +18,15 @@ template $RustleComposerWindow: Adw.Window {
           label: _("Cancel");
         }
 
+        // The sending account, filled with that account's colour. Its
+        // factories are built in Rust, where the accounts are.
+        [start]
+        Gtk.DropDown from_dropdown {
+          valign: center;
+
+          styles ["from-dropdown"]
+        }
+
         [end]
         Gtk.Button send_button {
           label: _("Send");
@@ -44,10 +53,6 @@ template $RustleComposerWindow: Adw.Window {
           selection-mode: none;
 
           styles ["boxed-list"]
-
-          Adw.ComboRow from_row {
-            title: _("From");
-          }
 
           Adw.EntryRow to_row {
             title: _("To");
