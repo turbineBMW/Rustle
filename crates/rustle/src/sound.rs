@@ -10,6 +10,8 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 const DESKTOP_SOUND_SCHEMA: &str = "org.gnome.desktop.sound";
+const DESKTOP_NOTIFICATIONS_SCHEMA: &str = "org.gnome.desktop.notifications";
+const QUIET_NOTIFICATION_VOLUME: f64 = 0.2;
 
 thread_local! {
     /// Every sound still playing, held so none is finalised mid-note:
@@ -104,11 +106,45 @@ pub fn play(sound: &NotificationSound) {
     }
 }
 
+/// Play an arriving-mail sound, respecting GNOME's Do Not Disturb switch
+/// and reducing its volume while an MPRIS player is active. This is separate
+/// from `play` so a sound explicitly previewed in Preferences remains audible.
+pub fn play_notification(sound: &NotificationSound, media_is_playing: bool) {
+    if do_not_disturb() {
+        return;
+    }
+    if let Some(path) = path_for(sound) {
+        let volume = if media_is_playing {
+            QUIET_NOTIFICATION_VOLUME
+        } else {
+            1.0
+        };
+        play_file_at_volume(&path, volume);
+    }
+}
+
+/// GNOME implements Do Not Disturb by disabling notification banners. The
+/// freedesktop notification protocol has no portable DND state, so desktops
+/// without this schema retain Rustle's normal sound behaviour.
+fn do_not_disturb() -> bool {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return false;
+    };
+    if source.lookup(DESKTOP_NOTIFICATIONS_SCHEMA, true).is_none() {
+        return false;
+    }
+    !gio::Settings::new(DESKTOP_NOTIFICATIONS_SCHEMA).boolean("show-banners")
+}
+
 /// Play one file from the start, alongside whatever is still playing --
 /// unless that same file already is, so two accounts arriving on the same
 /// tick make one sound. Files the backend can't handle are refused (logged),
 /// never handed over.
 pub fn play_file(path: &Path) {
+    play_file_at_volume(path, 1.0);
+}
+
+fn play_file_at_volume(path: &Path, volume: f64) {
     let shown = path.display().to_string();
     if !is_playable(path) {
         log::warn!("refusing to play the notification sound {shown}: not a supported audio format");
@@ -123,6 +159,7 @@ pub fn play_file(path: &Path) {
         return;
     }
     let media = gtk::MediaFile::for_filename(path);
+    media.set_volume(volume);
     media.connect_error_notify(move |media| {
         if let Some(error) = media.error() {
             log::warn!("could not play the notification sound {shown}: {error}");

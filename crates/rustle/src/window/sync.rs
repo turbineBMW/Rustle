@@ -1,6 +1,7 @@
 //! Syncing, the Outbox, and the connection banner.
 
 use super::{MainWindow, PAGE_EMPTY, PAGE_LOADING};
+use crate::application::RustleApplication;
 use crate::config::APP_ID;
 use crate::i18n::{self, gettext};
 use crate::settings as keys;
@@ -411,7 +412,14 @@ impl MainWindow {
             .map(|account| NotificationSound::parse(&account.notification_sound))
             .unwrap_or(NotificationSound::Inherit);
         let default = sound::default_sound(&self.settings());
-        sound::play(&NotificationSound::resolve(&account_choice, &default));
+        let media_is_playing = self
+            .application()
+            .and_downcast::<RustleApplication>()
+            .is_some_and(|app| app.media_is_playing());
+        sound::play_notification(
+            &NotificationSound::resolve(&account_choice, &default),
+            media_is_playing,
+        );
     }
 
     /// Store the server's unread counts; return how many arrived per folder.
