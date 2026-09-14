@@ -9,6 +9,7 @@ mod config;
 mod dialogs;
 mod editor;
 mod i18n;
+mod media_activity;
 mod objects;
 mod settings;
 mod sound;

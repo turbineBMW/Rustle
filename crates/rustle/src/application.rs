@@ -5,6 +5,7 @@ use crate::composer::ComposerWindow;
 use crate::config::{APP_ID, RESOURCE_PATH, VERSION};
 use crate::dialogs::preferences::PreferencesDialog;
 use crate::i18n::gettext;
+use crate::media_activity::MediaActivity;
 use crate::settings;
 use crate::window::MainWindow;
 use adw::prelude::*;
@@ -24,6 +25,7 @@ mod imp {
     pub struct RustleApplication {
         pub db: OnceCell<Rc<RefCell<Database>>>,
         pub settings: OnceCell<gio::Settings>,
+        pub media_activity: OnceCell<MediaActivity>,
         /// For autostart: build the window (so the sync timer runs) but skip
         /// presenting it. The Background portal puts this flag in the
         /// autostart entry it writes -- see "Start at Login" in preferences.
@@ -58,6 +60,7 @@ mod imp {
             self.parent_startup();
             let app = self.obj();
             app.open_database();
+            let _ = self.media_activity.set(MediaActivity::new());
             app.load_css();
         }
 
@@ -130,6 +133,13 @@ impl RustleApplication {
             .get()
             .expect("loaded at startup")
             .clone()
+    }
+
+    pub fn media_is_playing(&self) -> bool {
+        self.imp()
+            .media_activity
+            .get()
+            .is_some_and(MediaActivity::is_playing)
     }
 
     fn open_database(&self) {
