@@ -23,9 +23,10 @@ pub fn apply(accounts: &[Account]) {
         .iter()
         .map(|a| {
             format!(
-                ".{} {{ --account-color: {}; }}\n",
+                ".{} {{ --account-color: {}; --account-fg-color: {}; }}\n",
                 css_class(a.id),
-                a.color_hex()
+                a.color_hex(),
+                contrast_for(a.color_hex())
             )
         })
         .collect();
@@ -63,4 +64,42 @@ pub fn tag(widget: &impl IsA<gtk::Widget>, account_id: Option<i64>) {
 
 pub fn parse_hex(hex: &str) -> Option<gdk::RGBA> {
     gdk::RGBA::parse(hex).ok()
+}
+
+/// The text colour that reads on a filled `#rrggbb` background: white on
+/// anything but the lightest colours. The cut-off sits above the WCAG
+/// break-even so mid tones like the palette green keep white text, the way
+/// Adwaita's own filled buttons do.
+pub fn contrast_for(hex: &str) -> &'static str {
+    let channel = |at: usize| {
+        let byte = u8::from_str_radix(hex.get(at..at + 2).unwrap_or("00"), 16).unwrap_or(0);
+        let value = f64::from(byte) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+    if luminance > 0.4 {
+        "black"
+    } else {
+        "white"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contrast_picks_readable_text() {
+        assert_eq!(contrast_for("#3584e4"), "white"); // palette blue
+        assert_eq!(contrast_for("#3a944a"), "white"); // palette green
+        assert_eq!(contrast_for("#c88800"), "white"); // palette yellow
+        assert_eq!(contrast_for("#f6d32d"), "black"); // bright yellow
+        assert_eq!(contrast_for("#ffffff"), "black");
+        assert_eq!(contrast_for("#000000"), "white");
+        assert_eq!(contrast_for("garbage"), "white");
+    }
 }

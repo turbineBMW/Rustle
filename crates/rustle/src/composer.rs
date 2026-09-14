@@ -77,13 +77,22 @@ impl AddressSuggestions {
                 this.pick(row);
             }
         });
+        // Capture phase: the entry's own Return binding ("activate") would
+        // otherwise swallow the key before this handler ever saw it.
         let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(&this);
         keys.connect_key_pressed(move |_, keyval, _, _| match weak.upgrade() {
             Some(this) => this.on_key_pressed(keyval),
             None => glib::Propagation::Proceed,
         });
         row.add_controller(keys);
+        // A click or a Shift+Tab into another field leaves nothing to
+        // complete, so the drop-down goes with the focus.
+        let focus = gtk::EventControllerFocus::new();
+        let popover = this.popover.clone();
+        focus.connect_leave(move |_| popover.popdown());
+        row.add_controller(focus);
         this
     }
 
@@ -126,17 +135,23 @@ impl AddressSuggestions {
         self.row.set_position(-1);
     }
 
+    /// Enter takes the highlighted address and stays put, ready for the next
+    /// one. Tab is only ever a move to the next field: the highlight is a
+    /// suggestion, not a choice, so what was typed stays as typed.
     fn on_key_pressed(&self, keyval: gdk::Key) -> glib::Propagation {
         if !self.popover.is_visible() {
             return glib::Propagation::Proceed;
         }
         match keyval {
             gdk::Key::Escape => self.popover.popdown(),
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab => match self.list.selected_row()
-            {
+            gdk::Key::Return | gdk::Key::KP_Enter => match self.list.selected_row() {
                 Some(row) => self.pick(&row),
                 None => return glib::Propagation::Proceed,
             },
+            gdk::Key::Tab | gdk::Key::KP_Tab => {
+                self.popover.popdown();
+                return glib::Propagation::Proceed;
+            }
             gdk::Key::Down => self.move_selection(1),
             gdk::Key::Up => self.move_selection(-1),
             _ => return glib::Propagation::Proceed,
@@ -152,6 +167,15 @@ impl AddressSuggestions {
     }
 }
 
+/// Which face of the From drop-down a factory builds.
+#[derive(Clone, Copy)]
+enum FromItem {
+    /// The pill in the header bar.
+    Button,
+    /// One account in the popped-up list.
+    Row,
+}
+
 mod imp {
     use super::*;
 
@@ -165,7 +189,7 @@ mod imp {
         #[template_child]
         pub send_spinner: TemplateChild<gtk::Spinner>,
         #[template_child]
-        pub from_row: TemplateChild<adw::ComboRow>,
+        pub from_dropdown: TemplateChild<gtk::DropDown>,
         #[template_child]
         pub to_row: TemplateChild<adw::EntryRow>,
         #[template_child]
@@ -267,7 +291,7 @@ impl ComposerWindow {
             draft.body_html
         });
 
-        window.build_from_row(account);
+        window.build_from_dropdown(account);
         imp.to_row.set_text(&draft.to);
         imp.cc_row.set_text(&draft.cc);
         imp.bcc_row.set_text(&draft.bcc);
@@ -383,50 +407,149 @@ impl ComposerWindow {
         }
     }
 
-    /// The account every send, draft and Sent copy belongs to. Picking
-    /// another here is the only way to change it once the composer is open.
-    fn build_from_row(&self, account: &Account) {
+    /// The account every send, draft and Sent copy belongs to, as a pill in
+    /// the header bar wearing that account's colour. Picking another here is
+    /// the only way to change it once the composer is open.
+    fn build_from_dropdown(&self, account: &Account) {
         let imp = self.imp();
         let accounts = self.db().borrow().accounts().unwrap_or_default();
-        // A labelled account reads "Work <me@example.com>", so the address
-        // that will go on the wire is never hidden.
-        let names: Vec<String> = accounts
-            .iter()
-            .map(|each| {
-                if each.name() == each.email {
-                    each.email.clone()
-                } else {
-                    format!("{} <{}>", each.name(), each.email)
-                }
-            })
-            .collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        imp.from_row.set_model(Some(&gtk::StringList::new(&names)));
+        // A mailto: launch has no main window to have loaded the colours.
+        crate::account_colors::apply(&accounts);
+        // The model only carries positions; the factories look the account
+        // up by index, so no GObject wrapper is needed.
+        let ids: Vec<String> = accounts.iter().map(|each| each.id.to_string()).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         let index = accounts
             .iter()
             .position(|each| each.id == account.id)
             .unwrap_or(0);
-        imp.from_row.set_selected(index as u32);
-        imp.account.replace(
-            accounts
-                .get(index)
-                .cloned()
-                .or_else(|| Some(account.clone())),
-        );
+        // Before the model: the button binds its item as soon as there is one.
         imp.accounts.replace(accounts);
-        imp.from_row.connect_selected_notify(glib::clone!(
+        imp.from_dropdown
+            .set_model(Some(&gtk::StringList::new(&ids)));
+        imp.from_dropdown
+            .set_factory(Some(&self.account_factory(FromItem::Button)));
+        imp.from_dropdown
+            .set_list_factory(Some(&self.account_factory(FromItem::Row)));
+        imp.from_dropdown.connect_selected_notify(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |row| {
+            move |dropdown| {
                 let imp = window.imp();
-                let picked = imp.accounts.borrow().get(row.selected() as usize).cloned();
+                let picked = imp
+                    .accounts
+                    .borrow()
+                    .get(dropdown.selected() as usize)
+                    .cloned();
                 if let Some(picked) = picked {
                     let signature = picked.signature_html();
+                    window.show_from(&picked);
                     imp.account.replace(Some(picked));
                     window.swap_signature(&signature);
                 }
             }
         ));
+        imp.from_dropdown.set_selected(index as u32);
+        // set_selected on an already-selected 0 notifies nobody.
+        let picked = imp.accounts.borrow().get(index).cloned();
+        let picked = picked.unwrap_or_else(|| account.clone());
+        self.show_from(&picked);
+        imp.account.replace(Some(picked));
+    }
+
+    /// Colour the pill for this account and name the address that will go
+    /// on the wire, which the short label on the pill does not.
+    fn show_from(&self, account: &Account) {
+        let dropdown = &self.imp().from_dropdown;
+        crate::account_colors::tag(&**dropdown, Some(account.id));
+        dropdown.set_tooltip_text(Some(&i18n::format(
+            &gettext("Send from {email}"),
+            &[("email", &account.email)],
+        )));
+    }
+
+    /// The pill shows the account's short name; each row in the list shows
+    /// its colour dot, the same short name and, unless that is the address, the
+    /// address underneath.
+    fn account_factory(&self, kind: FromItem) -> gtk::SignalListItemFactory {
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
+            let child: gtk::Widget = match kind {
+                FromItem::Button => gtk::Label::builder()
+                    .ellipsize(pango::EllipsizeMode::End)
+                    .max_width_chars(20)
+                    .build()
+                    .upcast(),
+                FromItem::Row => {
+                    let dot = gtk::Box::builder()
+                        .width_request(10)
+                        .height_request(10)
+                        .valign(gtk::Align::Center)
+                        .css_classes(["account-dot"])
+                        .build();
+                    let name = gtk::Label::builder().xalign(0.0).build();
+                    let email = gtk::Label::builder()
+                        .xalign(0.0)
+                        .css_classes(["caption", "dim-label"])
+                        .build();
+                    let text = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .build();
+                    text.append(&name);
+                    text.append(&email);
+                    let row = gtk::Box::builder().spacing(10).build();
+                    row.append(&dot);
+                    row.append(&text);
+                    row.upcast()
+                }
+            };
+            item.set_child(Some(&child));
+        });
+        factory.connect_bind(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, item| {
+                let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let account = window
+                    .imp()
+                    .accounts
+                    .borrow()
+                    .get(item.position() as usize)
+                    .cloned();
+                let (Some(account), Some(child)) = (account, item.child()) else {
+                    return;
+                };
+                match kind {
+                    FromItem::Button => {
+                        if let Some(label) = child.downcast_ref::<gtk::Label>() {
+                            label.set_label(account.short_label());
+                        }
+                    }
+                    FromItem::Row => {
+                        let dot = child.first_child();
+                        let text = dot.as_ref().and_then(|dot| dot.next_sibling());
+                        let name = text.as_ref().and_then(|text| text.first_child());
+                        let email = name.as_ref().and_then(|name| name.next_sibling());
+                        if let Some(dot) = dot {
+                            crate::account_colors::tag(&dot, Some(account.id));
+                        }
+                        if let Some(name) = name.and_downcast::<gtk::Label>() {
+                            name.set_label(account.short_label());
+                        }
+                        if let Some(email) = email.and_downcast::<gtk::Label>() {
+                            email.set_label(&account.email);
+                            email.set_visible(account.short_label() != account.email);
+                        }
+                    }
+                }
+            }
+        ));
+        factory
     }
 
     /// Each account has its own signature, so picking another From replaces
@@ -979,7 +1102,7 @@ impl ComposerWindow {
     fn set_sending(&self, is_sending: bool) {
         let imp = self.imp();
         imp.send_button.set_sensitive(!is_sending);
-        imp.from_row.set_sensitive(!is_sending);
+        imp.from_dropdown.set_sensitive(!is_sending);
         imp.cancel_button.set_sensitive(!is_sending);
         imp.send_spinner.set_visible(is_sending);
         imp.send_spinner.set_spinning(is_sending);
