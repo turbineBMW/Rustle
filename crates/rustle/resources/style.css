@@ -120,6 +120,14 @@ button.pinned {
   filter: opacity(50%);
 }
 
+/* Composer colour menus: the swatches are drawn to size, so the buttons
+   around them carry no padding of their own. */
+button.color-swatch {
+  padding: 3px;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* Reader: the subject sits in its own block above the message body. */
 .reader-header {
   padding: 18px 24px;

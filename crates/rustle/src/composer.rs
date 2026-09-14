@@ -1,8 +1,9 @@
 //! The composer: recipients, a contenteditable WebKit editor, attachments,
 //! and sending through the Outbox so a crash mid-send never loses a message.
 
-use crate::editor::{self, FORMAT_COMMANDS};
+use crate::editor::{self, ColorKind, LinkInfo, FORMAT_COMMANDS};
 use crate::i18n::{self, gettext};
+use crate::widgets::color_menu::{ColorMenu, HIGHLIGHT_PALETTE, TEXT_PALETTE};
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -213,6 +214,10 @@ mod imp {
         #[template_child]
         pub numbers_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
+        pub text_color_button: TemplateChild<gtk::MenuButton>,
+        #[template_child]
+        pub highlight_button: TemplateChild<gtk::MenuButton>,
+        #[template_child]
         pub link_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub attach_button: TemplateChild<gtk::Button>,
@@ -232,6 +237,15 @@ mod imp {
         pub image_menu: RefCell<Option<(gtk::PopoverMenu, gio::Menu)>>,
         pub image_size_action: RefCell<Option<gio::SimpleAction>>,
         pub selected_image: Cell<Option<usize>>,
+        pub text_color_menu: RefCell<Option<Rc<ColorMenu>>>,
+        pub highlight_menu: RefCell<Option<Rc<ColorMenu>>>,
+        /// What the last editor payload said: the selected text and the
+        /// link the caret sits in, which the link button edits in place.
+        pub selection: RefCell<String>,
+        pub current_link: RefCell<Option<LinkInfo>>,
+        /// The link last clicked in the editor, the target of the link menu.
+        pub clicked_link: RefCell<Option<LinkInfo>>,
+        pub link_menu: RefCell<Option<(gtk::PopoverMenu, gio::Menu)>>,
     }
 
     #[glib::object_subclass]
@@ -260,6 +274,9 @@ mod imp {
             // The picture menu is parented on the editor by hand, so it has
             // to be taken off by hand too.
             if let Some((popover, _)) = self.image_menu.take() {
+                popover.unparent();
+            }
+            if let Some((popover, _)) = self.link_menu.take() {
                 popover.unparent();
             }
         }
@@ -579,7 +596,7 @@ impl ComposerWindow {
                     if (anchor) anchor.insertAdjacentHTML('beforebegin', block);
                     else document.body.insertAdjacentHTML('beforeend', block);
                 }} else return;
-                post();
+                window.rustlePost();
             }})()",
             serde_json::to_string(&block).unwrap_or_default()
         );
@@ -606,9 +623,136 @@ impl ComposerWindow {
                 move |info| window.on_image_clicked(info)
             ),
         );
+        editor::connect_link_clicked(
+            &webview,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |info| window.on_link_in_editor_clicked(info)
+            ),
+        );
         imp.body_container.append(&webview);
         imp.webview.replace(Some(webview));
         self.build_image_actions();
+        self.build_color_menus();
+        self.build_link_actions();
+    }
+
+    // --- colours ----------------------------------------------------------
+
+    fn build_color_menus(&self) {
+        let imp = self.imp();
+        let text = ColorMenu::attach(
+            &imp.text_color_button,
+            TEXT_PALETTE,
+            &gettext("Default Colour"),
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |color| window.set_color(ColorKind::Text, color)
+            ),
+        );
+        let highlight = ColorMenu::attach(
+            &imp.highlight_button,
+            HIGHLIGHT_PALETTE,
+            &gettext("No Highlight"),
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |color| window.set_color(ColorKind::Highlight, color)
+            ),
+        );
+        imp.text_color_menu.replace(Some(text));
+        imp.highlight_menu.replace(Some(highlight));
+    }
+
+    fn set_color(&self, kind: ColorKind, color: Option<gdk::RGBA>) {
+        if let Some(webview) = self.imp().webview.borrow().as_ref() {
+            editor::set_color(webview, kind, color.as_ref());
+            webview.grab_focus();
+        }
+    }
+
+    // --- links ------------------------------------------------------------
+
+    /// The `link.` actions behind the menu on a clicked link.
+    fn build_link_actions(&self) {
+        let group = gio::SimpleActionGroup::new();
+        let edit = gio::SimpleAction::new("edit", None);
+        edit.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                let link = window.imp().clicked_link.borrow().clone();
+                if let Some(link) = link {
+                    window.edit_link(link);
+                }
+            }
+        ));
+        group.add_action(&edit);
+        let remove = gio::SimpleAction::new("remove", None);
+        remove.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                let imp = window.imp();
+                let link = imp.clicked_link.borrow().clone();
+                if let (Some(link), Some(webview)) = (link, imp.webview.borrow().as_ref()) {
+                    editor::remove_link(webview, link.index);
+                }
+            }
+        ));
+        group.add_action(&remove);
+        self.insert_action_group("link", Some(&group));
+    }
+
+    /// Pop a menu up under a link the user clicked: where it goes, and the
+    /// choice to change or remove it.
+    fn on_link_in_editor_clicked(&self, info: LinkInfo) {
+        let imp = self.imp();
+        let Some(webview) = imp.webview.borrow().clone() else {
+            return;
+        };
+        let Some(rect) = info.rect.clone() else {
+            return;
+        };
+        let mut menu = imp.link_menu.borrow_mut();
+        let (popover, model) = menu.get_or_insert_with(|| {
+            let model = gio::Menu::new();
+            let popover = gtk::PopoverMenu::from_model(Some(&model));
+            popover.set_parent(&webview);
+            popover.set_position(gtk::PositionType::Bottom);
+            popover.set_has_arrow(true);
+            (popover, model)
+        });
+        model.remove_all();
+        let actions = gio::Menu::new();
+        actions.append(Some(&gettext("Edit Link…")), Some("link.edit"));
+        actions.append(Some(&gettext("Remove Link")), Some("link.remove"));
+        model.append_section(Some(&editor::elide(&info.href, 48)), &actions);
+        popover.set_pointing_to(Some(&rect.to_gdk()));
+        imp.clicked_link.replace(Some(info));
+        popover.popup();
+    }
+
+    /// Change `link`'s text or address through the link dialog.
+    fn edit_link(&self, link: LinkInfo) {
+        let index = link.index;
+        editor::link_dialog(
+            self,
+            Some(&link),
+            "",
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |text, href| {
+                    if let Some(webview) = window.imp().webview.borrow().as_ref() {
+                        editor::update_link(webview, index, &href, &text);
+                        webview.grab_focus();
+                    }
+                }
+            ),
+        );
     }
 
     // --- inline images ----------------------------------------------------
@@ -715,13 +859,7 @@ impl ComposerWindow {
         actions.append(Some(&gettext("Remove Image")), Some("image.remove"));
         model.append_section(None, &actions);
 
-        let rect = &info.rect;
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(
-            rect.x.round() as i32,
-            rect.y.round() as i32,
-            rect.width.round().max(1.0) as i32,
-            rect.height.round().max(1.0) as i32,
-        )));
+        popover.set_pointing_to(Some(&info.rect.to_gdk()));
         popover.popup();
     }
 
@@ -731,12 +869,20 @@ impl ComposerWindow {
         };
         let imp = self.imp();
         imp.body_html.replace(payload.html);
+        imp.selection.replace(payload.selection);
+        imp.current_link.replace(payload.link);
         imp.is_syncing_buttons.set(true);
         for (name, command) in FORMAT_COMMANDS {
             self.format_button(name)
                 .set_active(payload.states.get(command).copied().unwrap_or(false));
         }
         imp.is_syncing_buttons.set(false);
+        if let Some(menu) = imp.text_color_menu.borrow().as_ref() {
+            menu.set_current(payload.colors.text());
+        }
+        if let Some(menu) = imp.highlight_menu.borrow().as_ref() {
+            menu.set_current(payload.colors.highlight());
+        }
         self.update_send_sensitivity();
     }
 
@@ -756,36 +902,31 @@ impl ComposerWindow {
         }
     }
 
+    /// The toolbar's link button: edits the link under the caret, or links
+    /// the selection (or fresh text) somewhere new.
     fn on_link_clicked(&self) {
-        let entry = gtk::Entry::builder()
-            .placeholder_text("https://")
-            .activates_default(true)
-            .build();
-        let dialog = adw::AlertDialog::builder()
-            .heading(gettext("Insert Link"))
-            .extra_child(&entry)
-            .build();
-        dialog.add_response("cancel", &gettext("Cancel"));
-        dialog.add_response("insert", &gettext("Insert"));
-        dialog.set_response_appearance("insert", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("insert"));
-        dialog.connect_response(
+        let imp = self.imp();
+        let current = imp.current_link.borrow().clone();
+        if let Some(link) = current {
+            self.edit_link(link);
+            return;
+        }
+        let selection = imp.selection.borrow().clone();
+        editor::link_dialog(
+            self,
             None,
+            &selection,
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
-                move |_, response| {
-                    let url = entry.text().trim().to_string();
-                    if response == "insert" && !url.is_empty() {
-                        window.exec("createLink", Some(&url));
-                    }
+                move |text, href| {
                     if let Some(webview) = window.imp().webview.borrow().as_ref() {
+                        editor::insert_link(webview, &href, &text);
                         webview.grab_focus();
                     }
                 }
             ),
         );
-        dialog.present(Some(self));
     }
 
     fn update_send_sensitivity(&self) {
@@ -906,10 +1047,13 @@ impl ComposerWindow {
                     .borrow_mut()
                     .retain(|(_, each)| *each != row);
                 imp.attachments_list.remove(&row);
+                imp.attachments_list
+                    .set_visible(!imp.attachments.borrow().is_empty());
             }
         ));
         row.add_suffix(&remove_button);
         imp.attachments_list.append(&row);
+        imp.attachments_list.set_visible(true);
         imp.attachments.borrow_mut().push((attachment, row));
     }
 

@@ -3,8 +3,12 @@
 //! message it posts back on every edit.
 
 use crate::accent;
+use crate::i18n::gettext;
+use adw::prelude::*;
 use gtk::gdk;
 use gtk::gio;
+use gtk::glib;
+use rustle_core::compose;
 use std::collections::HashMap;
 use webkit::prelude::*;
 
@@ -47,19 +51,150 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
   document.addEventListener('DOMContentLoaded', function () {
     var COMMANDS = __COMMANDS__;
 
+    function currentRange() {
+      var selection = window.getSelection();
+      return selection.rangeCount ? selection.getRangeAt(0) : null;
+    }
+
+    function linkAt(node) {
+      while (node && node !== document.body) {
+        if (node.nodeType === 1 && node.tagName === 'A') return node;
+        node = node.parentNode;
+      }
+      return null;
+    }
+
+    function anchors() {
+      return document.querySelectorAll('a');
+    }
+
+    function describeLink(a) {
+      return {
+        index: Array.prototype.indexOf.call(anchors(), a),
+        href: a.getAttribute('href') || '',
+        text: a.textContent
+      };
+    }
+
     function post() {
       var states = {};
       COMMANDS.forEach(function (name) {
         states[name] = document.queryCommandState(name);
       });
+      var range = currentRange();
+      var link = range ? linkAt(range.commonAncestorContainer) : null;
       window.webkit.messageHandlers.editor.postMessage(JSON.stringify({
         html: document.body.innerHTML,
-        states: states
+        states: states,
+        colors: {
+          text: document.queryCommandValue('foreColor'),
+          // Some engines only answer the older name for the same value.
+          highlight: document.queryCommandValue('hiliteColor')
+            || document.queryCommandValue('backColor')
+        },
+        selection: range ? range.toString() : '',
+        link: link ? describeLink(link) : null
       }));
     }
+    window.rustlePost = post;
 
     document.addEventListener('input', post);
     document.addEventListener('selectionchange', post);
+
+    // --- colours ---------------------------------------------------------
+    // Clearing a colour means applying the one the surroundings already
+    // have: WebKit then strips the explicit colour from the selection and,
+    // as the value matches the computed style, wraps nothing new. The text
+    // keeps following the reader's theme instead of being pinned to
+    // whatever the editor's default happened to be.
+    function inheritedValue(property, setsIt) {
+      var range = currentRange();
+      var node = range ? range.commonAncestorContainer : document.body;
+      if (node.nodeType !== 1) node = node.parentNode;
+      while (node && node !== document.body && setsIt(node)) node = node.parentNode;
+      return getComputedStyle(node || document.body)[property];
+    }
+
+    window.rustleSetColor = function (kind, value) {
+      var command = kind === 'highlight' ? 'hiliteColor' : 'foreColor';
+      if (value === null) {
+        value = kind === 'highlight'
+          ? inheritedValue('backgroundColor', function (el) {
+              return el.style.backgroundColor !== '';
+            })
+          : inheritedValue('color', function (el) {
+              return el.style.color !== '' || (el.tagName === 'FONT' && el.hasAttribute('color'));
+            });
+      }
+      document.execCommand(command, false, value);
+      post();
+    };
+
+    // --- links -----------------------------------------------------------
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function caretAfter(node) {
+      var range = document.createRange();
+      range.setStartAfter(node);
+      range.collapse(true);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    // A link at the selection: over the selected text when that is the
+    // text asked for, otherwise typed in fresh. Inside an existing link the
+    // link is edited instead of nested.
+    window.rustleInsertLink = function (href, text) {
+      var range = currentRange();
+      var existing = range ? linkAt(range.commonAncestorContainer) : null;
+      if (existing) {
+        window.rustleUpdateLink(describeLink(existing).index, href, text);
+        return;
+      }
+      if (range && !range.collapsed && range.toString() === text) {
+        document.execCommand('createLink', false, href);
+      } else {
+        document.execCommand('insertHTML', false,
+          '<a href="' + escapeHtml(href) + '">' + escapeHtml(text || href) + '</a>');
+      }
+      post();
+    };
+
+    window.rustleUpdateLink = function (index, href, text) {
+      var a = anchors()[index];
+      if (!a) return;
+      a.setAttribute('href', href);
+      // Left alone when unchanged so formatting inside the link survives.
+      if (a.textContent !== text) a.textContent = text;
+      caretAfter(a);
+      post();
+    };
+
+    window.rustleRemoveLink = function (index) {
+      var a = anchors()[index];
+      if (!a) return;
+      var range = document.createRange();
+      range.selectNodeContents(a);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand('unlink');
+      post();
+    };
+
+    function reportLink(a) {
+      var handler = window.webkit.messageHandlers.link;
+      if (!handler) return;
+      var info = describeLink(a);
+      var rect = a.getBoundingClientRect();
+      info.rect = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+      handler.postMessage(JSON.stringify(info));
+    }
 
     // Pasted or dropped image files go in as data: URIs; the MIME builder
     // turns them into inline parts when the message is sent. A paste that
@@ -205,8 +340,14 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
     }
 
     document.addEventListener('click', function (event) {
-      var img = event.target;
-      if (img && img.tagName === 'IMG') reportImage(img);
+      var target = event.target;
+      if (!target) return;
+      if (target.tagName === 'IMG') {
+        reportImage(target);
+        return;
+      }
+      var a = linkAt(target);
+      if (a) reportLink(a);
     });
 
     window.rustleResizeImage = function (index, name) {
@@ -278,10 +419,66 @@ pub const FORMAT_COMMANDS: [(&str, &str); 6] = [
     ("numbers", "insertOrderedList"),
 ];
 
+/// The editor's default text colour in each scheme, as the page's stylesheet
+/// sets it; text reading back as one of these carries no colour of its own.
+const DEFAULT_TEXT_COLORS: [&str; 2] = ["#241f31", "#f6f5f4"];
+
 #[derive(serde::Deserialize)]
 pub struct EditorPayload {
     pub html: String,
     pub states: HashMap<String, bool>,
+    /// The colours at the selection, as CSS values.
+    #[serde(default)]
+    pub colors: EditorColors,
+    /// The selected text, empty for a caret.
+    #[serde(default)]
+    pub selection: String,
+    /// The link the selection sits in, if any.
+    #[serde(default)]
+    pub link: Option<LinkInfo>,
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct EditorColors {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub highlight: String,
+}
+
+impl EditorColors {
+    /// The explicit text colour, `None` for the editor's own.
+    pub fn text(&self) -> Option<gdk::RGBA> {
+        let rgba = gdk::RGBA::parse(&self.text).ok()?;
+        let hex = crate::accent::rgba_hex(&rgba);
+        (!DEFAULT_TEXT_COLORS.contains(&hex.as_str())).then_some(rgba)
+    }
+
+    /// The highlight colour, `None` when there is none.
+    pub fn highlight(&self) -> Option<gdk::RGBA> {
+        let rgba = gdk::RGBA::parse(&self.highlight).ok()?;
+        (rgba.alpha() > 0.0).then_some(rgba)
+    }
+}
+
+/// Which colour a swatch sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorKind {
+    Text,
+    Highlight,
+}
+
+/// A link in the editor: reported on click, and with every payload when the
+/// selection sits inside one.
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct LinkInfo {
+    /// Position among the page's anchors, the handle the edit calls use.
+    pub index: usize,
+    pub href: String,
+    pub text: String,
+    /// Where it is drawn, in the WebView's coordinates; only on click.
+    #[serde(default)]
+    pub rect: Option<Rect>,
 }
 
 /// A picture the user clicked in the editor, as reported by the page.
@@ -290,7 +487,7 @@ pub struct ImageInfo {
     /// Position in `document.images`, the handle the resize calls use.
     pub index: usize,
     /// Where it is drawn, in the WebView's coordinates.
-    pub rect: ImageRect,
+    pub rect: Rect,
     /// Its current encoded size.
     pub bytes: u64,
     /// The `ImageOption::name` matching its current width, if any.
@@ -299,12 +496,24 @@ pub struct ImageInfo {
     pub options: Vec<ImageOption>,
 }
 
-#[derive(serde::Deserialize)]
-pub struct ImageRect {
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct Rect {
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+impl Rect {
+    /// The rectangle a popover points at: rounded, never empty.
+    pub fn to_gdk(&self) -> gdk::Rectangle {
+        gdk::Rectangle::new(
+            self.x.round() as i32,
+            self.y.round() as i32,
+            self.width.round().max(1.0) as i32,
+            self.height.round().max(1.0) as i32,
+        )
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -344,6 +553,150 @@ pub fn remove_image(webview: &webkit::WebView, index: usize) {
     webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
 }
 
+/// Colour the selection, or with `None` hand it back to its surroundings.
+pub fn set_color(webview: &webkit::WebView, kind: ColorKind, color: Option<&gdk::RGBA>) {
+    let kind = match kind {
+        ColorKind::Text => "text",
+        ColorKind::Highlight => "highlight",
+    };
+    let value = color
+        .map(|c| json(&accent::rgba_hex(c)))
+        .unwrap_or_else(|| "null".into());
+    let script = format!("window.rustleSetColor({}, {value})", json(kind));
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// Hear about links the user clicks in `webview`.
+pub fn connect_link_clicked(webview: &webkit::WebView, on_click: impl Fn(LinkInfo) + 'static) {
+    let Some(manager) = webview.user_content_manager() else {
+        return;
+    };
+    manager.connect_script_message_received(
+        Some("link"),
+        move |_, value| match serde_json::from_str::<LinkInfo>(&value.to_str()) {
+            Ok(info) => on_click(info),
+            Err(error) => log::warn!("editor sent an unreadable link report: {error}"),
+        },
+    );
+}
+
+/// Link the selection to `href`, showing `text`.
+pub fn insert_link(webview: &webkit::WebView, href: &str, text: &str) {
+    let script = format!("window.rustleInsertLink({}, {})", json(href), json(text));
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// Point the `index`th link at `href`, showing `text`.
+pub fn update_link(webview: &webkit::WebView, index: usize, href: &str, text: &str) {
+    let script = format!(
+        "window.rustleUpdateLink({index}, {}, {})",
+        json(href),
+        json(text)
+    );
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// Turn the `index`th link back into plain text.
+pub fn remove_link(webview: &webkit::WebView, index: usize) {
+    let script = format!("window.rustleRemoveLink({index})");
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+fn json(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_default()
+}
+
+/// `text` cut to `max` characters with an ellipsis, for a menu heading.
+pub fn elide(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
+/// Ask for a link's text and address. `link` prefills an existing link to
+/// edit; otherwise `text` is the selection the new link will cover.
+/// `on_confirm` gets the text and the address, the latter made absolute.
+pub fn link_dialog(
+    parent: &impl IsA<gtk::Widget>,
+    link: Option<&LinkInfo>,
+    text: &str,
+    on_confirm: impl Fn(String, String) + 'static,
+) {
+    let editing = link.is_some();
+    let text_row = adw::EntryRow::builder()
+        .title(gettext("Text"))
+        .text(link.map(|l| l.text.as_str()).unwrap_or(text))
+        .activates_default(true)
+        .build();
+    let url_row = adw::EntryRow::builder()
+        .title(gettext("Link"))
+        .text(link.map(|l| l.href.as_str()).unwrap_or_default())
+        .input_purpose(gtk::InputPurpose::Url)
+        .activates_default(true)
+        .build();
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    list.append(&text_row);
+    list.append(&url_row);
+
+    let dialog = adw::AlertDialog::builder()
+        .heading(if editing {
+            gettext("Edit Link")
+        } else {
+            gettext("Insert Link")
+        })
+        .extra_child(&list)
+        .build();
+    dialog.add_response("cancel", &gettext("Cancel"));
+    dialog.add_response(
+        "confirm",
+        &if editing {
+            gettext("Save")
+        } else {
+            gettext("Insert")
+        },
+    );
+    dialog.set_response_appearance("confirm", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("confirm"));
+    dialog.set_response_enabled("confirm", !url_row.text().trim().is_empty());
+    url_row.connect_changed(glib::clone!(
+        #[weak]
+        dialog,
+        move |row| dialog.set_response_enabled("confirm", !row.text().trim().is_empty())
+    ));
+    dialog.connect_response(
+        Some("confirm"),
+        glib::clone!(
+            #[weak]
+            text_row,
+            #[weak]
+            url_row,
+            move |_, _| {
+                let href = compose::normalize_link(&url_row.text());
+                if href.is_empty() {
+                    return;
+                }
+                let text = text_row.text().trim().to_string();
+                on_confirm(if text.is_empty() { href.clone() } else { text }, href);
+            }
+        ),
+    );
+    // Land in the address field when the text is already there.
+    let has_text = editing || !text.is_empty();
+    dialog.connect_map(move |_| {
+        if has_text {
+            url_row.grab_focus();
+        } else {
+            text_row.grab_focus();
+        }
+    });
+    dialog.present(Some(parent));
+}
+
 /// A transparent editor loaded with `body_html`; `on_message` receives the
 /// JSON `EditorPayload` after every edit or selection change. Transparent,
 /// so the Adwaita "card" behind it supplies the background and the editor
@@ -352,6 +705,7 @@ pub fn build_webview(body_html: &str, on_message: impl Fn(&str) + 'static) -> we
     let manager = webkit::UserContentManager::new();
     manager.register_script_message_handler("editor", None);
     manager.register_script_message_handler("image", None);
+    manager.register_script_message_handler("link", None);
     manager.connect_script_message_received(Some("editor"), move |_, value| {
         on_message(&value.to_str())
     });
