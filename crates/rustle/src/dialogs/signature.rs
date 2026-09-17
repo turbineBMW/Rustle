@@ -21,6 +21,10 @@ mod imp {
         pub buttons: RefCell<HashMap<&'static str, gtk::ToggleButton>>,
         pub is_syncing_buttons: Cell<bool>,
         pub on_save: RefCell<Option<SaveCallback>>,
+        /// From the last editor payload: the selected text and the link
+        /// the caret sits in, which the link button then edits.
+        pub selection: RefCell<String>,
+        pub current_link: RefCell<Option<editor::LinkInfo>>,
     }
 
     #[glib::object_subclass]
@@ -238,6 +242,8 @@ impl SignatureDialog {
         };
         let imp = self.imp();
         imp.html.replace(payload.html);
+        imp.selection.replace(payload.selection);
+        imp.current_link.replace(payload.link);
         imp.is_syncing_buttons.set(true);
         for (name, command) in FORMAT_COMMANDS {
             if let Some(button) = imp.buttons.borrow().get(name) {
@@ -265,33 +271,30 @@ impl SignatureDialog {
         self.exec("foreColor", Some(&crate::accent::rgba_hex(rgba)));
     }
 
+    /// Edit the link under the caret, or link the selection somewhere new.
     fn on_link_clicked(&self) {
-        let entry = gtk::Entry::builder()
-            .placeholder_text("https://")
-            .activates_default(true)
-            .build();
-        let alert = adw::AlertDialog::builder()
-            .heading(gettext("Insert Link"))
-            .extra_child(&entry)
-            .build();
-        alert.add_response("cancel", &gettext("Cancel"));
-        alert.add_response("insert", &gettext("Insert"));
-        alert.set_response_appearance("insert", adw::ResponseAppearance::Suggested);
-        alert.set_default_response(Some("insert"));
-        alert.connect_response(
-            None,
+        let imp = self.imp();
+        let link = imp.current_link.borrow().clone();
+        let selection = imp.selection.borrow().clone();
+        let index = link.as_ref().map(|link| link.index);
+        editor::link_dialog(
+            self,
+            link.as_ref(),
+            &selection,
             glib::clone!(
                 #[weak(rename_to = dialog)]
                 self,
-                move |_, response| {
-                    let url = entry.text().trim().to_string();
-                    if response == "insert" && !url.is_empty() {
-                        dialog.exec("createLink", Some(&url));
+                move |text, href| {
+                    if let Some(webview) = dialog.imp().webview.borrow().as_ref() {
+                        match index {
+                            Some(index) => editor::update_link(webview, index, &href, &text),
+                            None => editor::insert_link(webview, &href, &text),
+                        }
+                        webview.grab_focus();
                     }
                 }
             ),
         );
-        alert.present(Some(self));
     }
 
     fn on_save_clicked(&self) {

@@ -341,6 +341,29 @@ pub fn split_addresses(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// A link as typed, made absolute: a bare host gets `https://`, a bare
+/// address `mailto:`, and anything already carrying a scheme is kept.
+pub fn normalize_link(input: &str) -> String {
+    let link = input.trim();
+    if link.is_empty() {
+        return String::new();
+    }
+    let has_scheme = link.split_once(':').is_some_and(|(scheme, rest)| {
+        let mut chars = scheme.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+            // "localhost:8080" is a host and port, not a scheme.
+            && !rest.starts_with(|c: char| c.is_ascii_digit())
+    });
+    if has_scheme {
+        link.to_string()
+    } else if link.contains('@') && !link.contains('/') {
+        format!("mailto:{link}")
+    } else {
+        format!("https://{link}")
+    }
+}
+
 /// A To header as (display name, address), both empty if it names nobody.
 pub fn first_recipient(to_header: &str) -> (String, String) {
     match address::parse_first(to_header) {
@@ -360,6 +383,20 @@ pub fn first_recipient(to_header: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_are_made_absolute() {
+        assert_eq!(normalize_link(" google.com "), "https://google.com");
+        assert_eq!(normalize_link("https://x.org/a?b=1"), "https://x.org/a?b=1");
+        assert_eq!(normalize_link("mailto:a@b.org"), "mailto:a@b.org");
+        assert_eq!(normalize_link("a@b.org"), "mailto:a@b.org");
+        assert_eq!(
+            normalize_link("localhost:8080/x"),
+            "https://localhost:8080/x"
+        );
+        assert_eq!(normalize_link("ftp://host/file"), "ftp://host/file");
+        assert_eq!(normalize_link("  "), "");
+    }
 
     #[test]
     fn subjects() {
