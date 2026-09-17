@@ -4,6 +4,7 @@ use crate::config::{APP_ID, BUILT_SCHEMA_DIR};
 use gtk::gio;
 
 pub const SYNC_INTERVAL: &str = "sync-interval-minutes";
+pub const DOWNLOAD_ALL_MAIL: &str = "download-all-mail";
 pub const NOTIFICATIONS: &str = "notifications";
 pub const NOTIFICATION_SOUND: &str = "notification-sound";
 pub const LOAD_REMOTE_IMAGES: &str = "load-remote-images";

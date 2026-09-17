@@ -222,7 +222,7 @@ impl MainWindow {
 
     /// A sync still in flight when its account was deleted: filing its mail
     /// would recreate the folders that went with it.
-    fn is_stale(&self, account: &Account) -> bool {
+    pub(super) fn is_stale(&self, account: &Account) -> bool {
         !self.state().accounts.contains_key(&account.id)
     }
 
@@ -369,6 +369,11 @@ impl MainWindow {
         self.refresh_emails(keep_id);
         self.imp().connection_banner.set_revealed(false);
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
+        if result.offset == 0 {
+            // The newest page is in; the rest of the account follows in the
+            // background, starting with the folder just opened.
+            self.start_backfill(account, Some(target_id));
+        }
     }
 
     /// The app icon, set explicitly so notification daemons that don't

@@ -248,7 +248,13 @@ impl MainWindow {
                         .folders_with_more_mail
                         .get(&folder.id)
                         .copied()
-                        .unwrap_or(false),
+                        .unwrap_or(false)
+                        // The backfill pages this folder by UID; an offset
+                        // fetch on top would only re-download its next batch.
+                        && !state
+                            .backfills
+                            .get(&folder.account_id)
+                            .is_some_and(|sweep| sweep.has_queued(folder.id)),
                     state.loaded_counts.get(&folder.id).copied().unwrap_or(0),
                     state.accounts.get(&folder.account_id).cloned(),
                 )

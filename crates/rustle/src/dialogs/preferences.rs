@@ -50,6 +50,8 @@ mod imp {
         pub autostart_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub interval_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub all_mail_row: TemplateChild<adw::SwitchRow>,
         pub settings: RefCell<Option<gio::Settings>>,
         pub autostart_subscription: Cell<Option<gio::SignalSubscriptionId>>,
         pub is_settling: Cell<bool>,
@@ -113,6 +115,9 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::RUN_IN_BACKGROUND, &*imp.background_row, "active")
+            .build();
+        settings
+            .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")
             .build();
 
         let intervals = sync_intervals();

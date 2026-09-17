@@ -42,6 +42,11 @@
 			<summary>Background notice already shown</summary>
 			<description>Whether the notice about the app still checking for mail after the window is closed has been shown. It is only shown once.</description>
 		</key>
+		<key name="download-all-mail" type="b">
+			<default>true</default>
+			<summary>Download all mail</summary>
+			<description>After each check, keep fetching the message headers every folder is still missing in the background until the whole account is here, so search and scrolling cover all your mail. Off, only the newest page of the open folder is fetched.</description>
+		</key>
 		<key name="sync-interval-minutes" type="i">
 			<range min="0" max="1440"/>
 			<default>15</default>

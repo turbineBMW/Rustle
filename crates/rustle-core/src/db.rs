@@ -426,6 +426,16 @@ impl Database {
         rows.collect()
     }
 
+    /// The server UIDs stored for a folder: what a backfill compares against
+    /// the server's own list.
+    pub fn uids_in_folder(&self, folder_id: i64) -> Result<HashSet<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT server_id FROM emails WHERE folder_id = ?1 AND server_id IS NOT NULL AND server_id != ''",
+        )?;
+        let rows = statement.query_map([folder_id], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
     pub fn email(&self, email_id: i64) -> Result<Option<Email>> {
         let sql = format!("SELECT {EMAIL_COLUMNS} FROM emails WHERE id = ?1");
         self.conn
@@ -1032,6 +1042,10 @@ mod tests {
             1
         );
         assert_eq!(db.emails_in_folder(inbox_one.id).unwrap().len(), 1);
+        assert_eq!(
+            db.uids_in_folder(inbox_one.id).unwrap(),
+            HashSet::from(["2".to_string()])
+        );
     }
 
     #[test]

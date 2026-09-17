@@ -41,6 +41,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         title: _("Check for Mail");
         subtitle: _("How often to look for new mail");
       }
+
+      Adw.SwitchRow all_mail_row {
+        title: _("Download All Mail");
+        subtitle: _("Keep fetching older messages in every folder until the whole account is here");
+      }
     }
   }
 }
