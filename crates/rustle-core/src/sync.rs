@@ -19,6 +19,9 @@ pub type Result<T> = std::result::Result<T, NetError>;
 /// How many recent messages to pull per sync.
 pub const RECENT_LIMIT: u32 = 50;
 
+/// How many missing headers one backfill batch pulls.
+pub const BACKFILL_LIMIT: u32 = 200;
+
 /// RFC 8058: the body is the whole request, and the server matches it verbatim.
 const ONE_CLICK_BODY: &str = "List-Unsubscribe=One-Click";
 
@@ -39,6 +42,117 @@ pub struct SyncResult {
     pub all_uids: Option<HashSet<String>>,
     /// Server unread counts by mailbox name, for the folders not fetched.
     pub unread_counts: HashMap<String, u32>,
+}
+
+/// One folder the backfill may fill: its mailbox name and the UIDs the
+/// database already holds for it.
+#[derive(Clone, Debug, Default)]
+pub struct BackfillFolder {
+    pub name: String,
+    pub local_uids: HashSet<String>,
+}
+
+/// One batch of the whole-mailbox download.
+#[derive(Clone, Debug, Default)]
+pub struct BackfillResult {
+    /// The folder the batch came from; None when every folder was complete.
+    pub folder: Option<String>,
+    pub messages: Vec<MessageHeader>,
+    /// How many messages that folder still lacks after this batch.
+    pub remaining: u32,
+    /// Total messages in that folder on the server.
+    pub exists: u32,
+    /// Folders found complete (or unopenable) on the way to this batch.
+    pub completed: Vec<String>,
+}
+
+/// Connect and fetch one batch of the headers the database lacks, from the
+/// first of `folders` that lacks any. Newest first, so a folder fills from
+/// the top the way the list shows it. Every UID is asked for by name, so
+/// mail arriving or leaving between batches never shifts the window.
+pub fn backfill(
+    account: &Account,
+    credential: &Credential,
+    folders: &[BackfillFolder],
+    limit: u32,
+) -> Result<BackfillResult> {
+    let mut session = open_imap(account, credential)?;
+    let mut completed = Vec::new();
+    for folder in folders {
+        let exists = match session.select(&folder.name, false) {
+            Ok(exists) => exists,
+            Err(error) => {
+                // A folder that won't open (a bare container, a broken
+                // share) is done as far as the backfill is concerned.
+                warn!("could not open {} to backfill it: {error}", folder.name);
+                completed.push(folder.name.clone());
+                continue;
+            }
+        };
+        let server_uids = session.search_all_uids()?;
+        let missing = missing_uids(&server_uids, &folder.local_uids);
+        if missing.is_empty() {
+            completed.push(folder.name.clone());
+            continue;
+        }
+        let batch = &missing[..missing.len().min(limit.max(1) as usize)];
+        let raw = session.fetch_headers_by_uid(&uid_set(batch))?;
+        session.logout();
+        return Ok(BackfillResult {
+            folder: Some(folder.name.clone()),
+            messages: raw.into_iter().map(to_message_header).collect(),
+            remaining: (missing.len() - batch.len()) as u32,
+            exists,
+            completed,
+        });
+    }
+    session.logout();
+    Ok(BackfillResult {
+        completed,
+        ..BackfillResult::default()
+    })
+}
+
+/// The server's UIDs the database doesn't hold, newest (highest) first.
+fn missing_uids(server: &HashSet<String>, local: &HashSet<String>) -> Vec<u32> {
+    let mut missing: Vec<u32> = server
+        .difference(local)
+        .filter_map(|uid| uid.parse().ok())
+        .collect();
+    missing.sort_unstable_by(|a, b| b.cmp(a));
+    missing
+}
+
+/// An IMAP sequence set for a run of UIDs, with consecutive values folded
+/// into ranges so a 200-message batch stays a short command line.
+fn uid_set(uids: &[u32]) -> String {
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut parts: Vec<String> = Vec::new();
+    let mut run: Option<(u32, u32)> = None;
+    for uid in sorted {
+        match run {
+            Some((start, end)) if uid == end + 1 => run = Some((start, uid)),
+            Some((start, end)) => {
+                parts.push(range_text(start, end));
+                run = Some((uid, uid));
+            }
+            None => run = Some((uid, uid)),
+        }
+    }
+    if let Some((start, end)) = run {
+        parts.push(range_text(start, end));
+    }
+    parts.join(",")
+}
+
+fn range_text(start: u32, end: u32) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}:{end}")
+    }
 }
 
 /// Results from the commands attempted by a mailbox move: a move that fails
@@ -292,6 +406,26 @@ pub fn post_unsubscribe(url: &str) -> std::result::Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn uids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn missing_uids_are_newest_first_and_skip_junk() {
+        let server = uids(&["1", "2", "3", "10", "7", "x"]);
+        let local = uids(&["2", "10"]);
+        assert_eq!(missing_uids(&server, &local), vec![7, 3, 1]);
+        assert!(missing_uids(&local, &server).is_empty());
+    }
+
+    #[test]
+    fn uid_set_folds_runs_into_ranges() {
+        assert_eq!(uid_set(&[]), "");
+        assert_eq!(uid_set(&[5]), "5");
+        assert_eq!(uid_set(&[9, 8, 7, 3, 1, 2, 7]), "1:3,7:9");
+        assert_eq!(uid_set(&[4, 2]), "2,4");
+    }
 
     #[test]
     fn converts_fetched_headers() {

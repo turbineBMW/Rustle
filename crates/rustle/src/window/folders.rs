@@ -350,6 +350,9 @@ impl MainWindow {
         {
             let mut state = self.state_mut();
             state.loaded_counts.retain(|id, _| live_ids.contains(id));
+            for sweep in state.backfills.values_mut() {
+                sweep.retain_folders(&live_ids);
+            }
             state
                 .folders_with_more_mail
                 .retain(|id, _| live_ids.contains(id));

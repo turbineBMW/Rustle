@@ -4,6 +4,7 @@
 
 mod accounts;
 mod actions;
+mod backfill;
 mod folders;
 mod list;
 mod moves;
@@ -99,6 +100,10 @@ pub struct State {
     pub loaded_counts: HashMap<i64, u32>,
     pub folders_with_more_mail: HashMap<i64, bool>,
     pub folder_sync_times: HashMap<i64, Instant>,
+    /// The whole-mailbox download in progress per account: the folders it
+    /// has yet to finish, first one being fetched. An account with no entry
+    /// has no sweep running.
+    pub backfills: HashMap<i64, backfill::Backfill>,
     /// Unread counts the server last reported for the folders we don't fetch.
     pub remote_unread_counts: HashMap<i64, u32>,
     /// The rows currently on screen, so badges refresh without a rebuild.
@@ -296,6 +301,14 @@ impl MainWindow {
                 #[weak]
                 window,
                 move |_, _| window.reschedule_sync()
+            ),
+        );
+        settings.connect_changed(
+            Some(keys::DOWNLOAD_ALL_MAIL),
+            glib::clone!(
+                #[weak]
+                window,
+                move |_, _| window.start_all_backfills()
             ),
         );
 

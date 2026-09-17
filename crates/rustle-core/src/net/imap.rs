@@ -29,6 +29,11 @@ pub const FLAG_PINNED: &str = "$Pinned";
 /// how it identifies itself, so we don't append a second copy on top.
 pub const GMAIL_CAPABILITY: &str = "X-GM-EXT-1";
 
+/// What a header fetch asks for. BODY.PEEK[...] = look WITHOUT marking the
+/// message \Seen. The first 4 KiB of the body ride along for the preview
+/// line; Content-Type and the transfer encoding are what decode them.
+const HEADER_FETCH_QUERY: &str = "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailboxInfo {
     pub name: String,
@@ -310,13 +315,26 @@ impl ImapSession {
         }
         let end = exists - offset;
         let start = end.saturating_sub(limit - 1).max(1); // exists=1000,limit=50,offset=50 -> 901:950
-        let fetches = self.require()?.fetch(
-            format!("{start}:{end}"),
-            // BODY.PEEK[...] = look at the header WITHOUT marking it \Seen.
-            // The first 4 KiB of the body ride along for the preview line;
-            // Content-Type and the transfer encoding are what decode them.
-            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)",
-        )?;
+        self.fetch_header_set(&format!("{start}:{end}"), false)
+    }
+
+    /// Fetch UID + flags + a few headers for an explicit UID set
+    /// ("1:5,8,10:20"): the backfill's way of asking for exactly the
+    /// messages it lacks, whatever their sequence numbers are by now.
+    pub fn fetch_headers_by_uid(&mut self, uid_set: &str) -> Result<Vec<FetchedHeader>> {
+        if uid_set.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.fetch_header_set(uid_set, true)
+    }
+
+    fn fetch_header_set(&mut self, set: &str, by_uid: bool) -> Result<Vec<FetchedHeader>> {
+        let session = self.require()?;
+        let fetches = if by_uid {
+            session.uid_fetch(set, HEADER_FETCH_QUERY)?
+        } else {
+            session.fetch(set, HEADER_FETCH_QUERY)?
+        };
         Ok(fetches
             .iter()
             .filter_map(|fetch| {
