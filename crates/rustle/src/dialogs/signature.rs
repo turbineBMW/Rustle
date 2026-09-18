@@ -205,7 +205,12 @@ impl SignatureDialog {
         clear.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
-            move |_| dialog.exec("removeFormat", None)
+            move |_| {
+                if let Some(webview) = dialog.imp().webview.borrow().as_ref() {
+                    editor::clear_formatting(webview);
+                    webview.grab_focus();
+                }
+            }
         ));
         toolbar.append(&clear);
 
