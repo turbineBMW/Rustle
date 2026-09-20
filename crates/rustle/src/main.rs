@@ -11,6 +11,7 @@ mod editor;
 mod i18n;
 mod media_activity;
 mod objects;
+mod omarchy;
 mod settings;
 mod sound;
 mod widgets;

@@ -6,6 +6,7 @@ use crate::config::{APP_ID, RESOURCE_PATH, VERSION};
 use crate::dialogs::preferences::PreferencesDialog;
 use crate::i18n::gettext;
 use crate::media_activity::MediaActivity;
+use crate::omarchy::OmarchyTheme;
 use crate::settings;
 use crate::window::MainWindow;
 use adw::prelude::*;
@@ -26,6 +27,7 @@ mod imp {
         pub db: OnceCell<Rc<RefCell<Database>>>,
         pub settings: OnceCell<gio::Settings>,
         pub media_activity: OnceCell<MediaActivity>,
+        pub omarchy_theme: OnceCell<OmarchyTheme>,
         /// For autostart: build the window (so the sync timer runs) but skip
         /// presenting it. The Background portal puts this flag in the
         /// autostart entry it writes -- see "Start at Login" in preferences.
@@ -192,6 +194,10 @@ impl RustleApplication {
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
         crate::accent::install_fallback(&display);
+        let _ = self
+            .imp()
+            .omarchy_theme
+            .set(OmarchyTheme::install(&display, &self.settings()));
     }
 
     fn setup_actions(&self) {

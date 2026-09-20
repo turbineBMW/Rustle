@@ -1,7 +1,8 @@
 //! Preferences: bound straight to GSettings, except autostart, which the
 //! desktop portal decides.
 
-use crate::i18n::gettext;
+use crate::i18n::{self, gettext};
+use crate::omarchy;
 use crate::settings as keys;
 use crate::sound;
 use crate::widgets::sound_row;
@@ -52,6 +53,10 @@ mod imp {
         pub interval_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub all_mail_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub appearance_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub omarchy_row: TemplateChild<adw::SwitchRow>,
         pub settings: RefCell<Option<gio::Settings>>,
         pub autostart_subscription: Cell<Option<gio::SignalSubscriptionId>>,
         pub is_settling: Cell<bool>,
@@ -118,6 +123,20 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")
+            .build();
+
+        // Only offered where there is an Omarchy theme to follow; the key
+        // is inert everywhere else. `omarchy.rs` reacts to the change.
+        imp.appearance_group.set_visible(omarchy::detected());
+        imp.omarchy_row.set_subtitle(&match omarchy::theme_name() {
+            Some(name) => i18n::format(
+                &gettext("Take colours from the desktop theme, currently {theme}"),
+                &[("theme", &name)],
+            ),
+            None => gettext("Take colours from the desktop theme"),
+        });
+        settings
+            .bind(keys::FOLLOW_OMARCHY_THEME, &*imp.omarchy_row, "active")
             .build();
 
         let intervals = sync_intervals();

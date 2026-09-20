@@ -10,6 +10,7 @@ pub const NOTIFICATION_SOUND: &str = "notification-sound";
 pub const LOAD_REMOTE_IMAGES: &str = "load-remote-images";
 pub const LOAD_SENDER_AVATARS: &str = "load-sender-avatars";
 pub const BRIDGE_PHOTO_PORT: &str = "bridge-photo-port";
+pub const FOLLOW_OMARCHY_THEME: &str = "follow-omarchy-theme";
 pub const RUN_IN_BACKGROUND: &str = "run-in-background";
 pub const START_AT_LOGIN: &str = "start-at-login";
 pub const BACKGROUND_NOTICE_SHOWN: &str = "background-notice-shown";

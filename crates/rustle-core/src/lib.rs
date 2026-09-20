@@ -18,6 +18,7 @@ pub mod html;
 pub mod mime;
 pub mod models;
 pub mod net;
+pub mod omarchy;
 pub mod providers;
 pub mod secrets;
 pub mod sounds;
