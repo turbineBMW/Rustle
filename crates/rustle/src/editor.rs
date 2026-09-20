@@ -130,6 +130,47 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
       post();
     };
 
+    // --- clear formatting ------------------------------------------------
+    // removeFormat alone needs a selection and only undoes inline tags, so
+    // a signature pasted from a web page or another client keeps its fonts,
+    // backgrounds and headings. This covers the selection, or everything
+    // when there is none, and leaves the structure that carries meaning:
+    // links, images, lists and line breaks.
+    var STYLING_ATTRIBUTES = ['style', 'class', 'align', 'bgcolor', 'color', 'face', 'size'];
+    var UNWRAPPED = ['SPAN', 'FONT', 'CENTER', 'BIG', 'SMALL'];
+    var HEADINGS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'];
+
+    function unwrap(el) {
+      while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+      el.remove();
+    }
+
+    window.rustleClearFormatting = function () {
+      if (window.getSelection().isCollapsed) document.execCommand('selectAll');
+      document.execCommand('removeFormat');
+      var range = currentRange();
+      if (!range) return;
+      Array.prototype.forEach.call(document.body.querySelectorAll('*'), function (el) {
+        if (!range.intersectsNode(el)) return;
+        if (UNWRAPPED.indexOf(el.tagName) !== -1) {
+          unwrap(el);
+          return;
+        }
+        STYLING_ATTRIBUTES.forEach(function (name) {
+          // An image's size is its style; clearing text leaves it alone.
+          if (el.tagName !== 'IMG') el.removeAttribute(name);
+        });
+        if (HEADINGS.indexOf(el.tagName) !== -1) {
+          var block = document.createElement('div');
+          while (el.firstChild) block.appendChild(el.firstChild);
+          el.replaceWith(block);
+        }
+      });
+      document.body.normalize();
+      window.getSelection().collapseToEnd();
+      post();
+    };
+
     // --- links -----------------------------------------------------------
     function escapeHtml(text) {
       return String(text).replace(/[&<>"']/g, function (c) {
@@ -746,6 +787,18 @@ pub fn exec(webview: &webkit::WebView, command: &str, argument: Option<&str>) {
         serde_json::to_string(command).unwrap_or_default()
     );
     webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// Strip the formatting from the selection, or from everything when
+/// nothing is selected.
+pub fn clear_formatting(webview: &webkit::WebView) {
+    webview.evaluate_javascript(
+        "window.rustleClearFormatting()",
+        None,
+        None,
+        gio::Cancellable::NONE,
+        |_| {},
+    );
 }
 
 /// Split GTK's "Cantarell 11" style font description into family and size.

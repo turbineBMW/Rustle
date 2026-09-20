@@ -53,17 +53,25 @@
 }
 
 /* Sticky day headers (Today / Yesterday / Wednesday, August 26th): opaque so
-   rows scroll under them, with the same hairline as the rows. */
-.email-list > header {
-  background: var(--view-bg-color);
-  box-shadow: inset 0 -1px var(--border-color);
+   rows scroll under them, a shade lighter than the list behind. The hairline
+   is the rows' own; `--border-color` would follow the label's dimmed text
+   colour and come out fainter. */
+.email-list > header,
+.sticky-day {
+  background: color-mix(in srgb, var(--sidebar-bg-color), white 10%);
+  box-shadow:
+    inset 0 -1px color-mix(in srgb, var(--sidebar-fg-color) var(--border-opacity), transparent),
+    inset -1px 0 var(--sidebar-border-color);
   padding: 4px 12px;
 }
 
-.sticky-day {
-  background: var(--view-bg-color);
-  box-shadow: inset 0 -1px var(--border-color);
-  padding: 4px 12px;
+/* Being opaque, they'd otherwise paint over the pane's edge line, which the
+   see-through rows leave showing; the second shadow above redraws it. */
+.email-list > header:dir(rtl),
+.sticky-day:dir(rtl) {
+  box-shadow:
+    inset 0 -1px color-mix(in srgb, var(--sidebar-fg-color) var(--border-opacity), transparent),
+    inset 1px 0 var(--sidebar-border-color);
 }
 
 .email-day-header {

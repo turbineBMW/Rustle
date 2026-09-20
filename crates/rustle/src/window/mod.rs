@@ -145,6 +145,8 @@ mod imp {
         #[template_child]
         pub sticky_day: TemplateChild<gtk::Label>,
         #[template_child]
+        pub email_overlay: TemplateChild<gtk::Overlay>,
+        #[template_child]
         pub email_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub reader_stack: TemplateChild<gtk::Stack>,
@@ -557,6 +559,13 @@ impl MainWindow {
             move |_, position| window.on_list_edge_reached(position)
         ));
         // The sticky day label tracks whichever row is at the top edge.
+        imp.email_overlay.connect_get_child_position(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            #[upgrade_or]
+            None,
+            move |_, _| Some(window.place_sticky_day())
+        ));
         imp.email_scroller
             .vadjustment()
             .connect_value_changed(glib::clone!(

@@ -17,6 +17,11 @@ sed "s|^Exec=rustle|Exec=$BIN/rustle|" data/$APP_ID.desktop.in > "$SHARE/applica
 mv "$SHARE/applications/$APP_ID.desktop.tmp" "$SHARE/applications/$APP_ID.desktop"
 install -d "$SHARE/dbus-1/services"
 sed "s|@bindir@|$BIN|" data/$APP_ID.service.in > "$SHARE/dbus-1/services/$APP_ID.service"
+# dbus-broker only notices the services directory if it existed when the bus
+# started, so a first install stays un-activatable (desktop entry and mailto:
+# do nothing) until the next login unless the bus is told to re-read it.
+[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && dbus-send --session --dest=org.freedesktop.DBus \
+  --type=method_call / org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
 install -Dm644 data/$APP_ID.metainfo.xml.in "$SHARE/metainfo/$APP_ID.metainfo.xml"
 for size in 48 64 128 256 512; do
   install -Dm644 "data/icons/hicolor/${size}x${size}/apps/$APP_ID.png" "$SHARE/icons/hicolor/${size}x${size}/apps/$APP_ID.png"

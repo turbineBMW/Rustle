@@ -92,27 +92,74 @@ impl MainWindow {
         self.imp().email_stack.set_visible_child_name(page);
     }
 
-    /// Pins the day of the topmost visible row above the list, so the date
-    /// stays readable however far down a long day you've scrolled. Hidden
-    /// when a section's own header is at the top edge, so it isn't doubled,
-    /// and when the list is empty.
+    /// The pinned day label is laid out by `place_sticky_day`; scrolling and
+    /// model changes only ask the overlay for another pass, which runs after
+    /// the list has settled at its new position.
     pub(super) fn update_sticky_day(&self) {
+        self.imp().email_overlay.queue_allocate();
+    }
+
+    /// Where the pinned day label sits this frame. It floats over the top of
+    /// the list naming the day at the top edge, so the date stays readable
+    /// however far down a long day you've scrolled, and the next day's header
+    /// pushes it out as it arrives. GTK's section headers don't stick, hence
+    /// the overlay. Parked out of sight at the very top, where the section's
+    /// own header is showing, and when the list is empty.
+    pub(super) fn place_sticky_day(&self) -> gdk::Rectangle {
         let imp = self.imp();
         let scroller = &imp.email_scroller;
-        // Just inside the top edge, past the header's own hairline.
-        let hit = scroller.pick(scroller.width() as f64 / 2.0, 1.0, gtk::PickFlags::DEFAULT);
-        let row = hit.and_then(|widget| {
-            widget
-                .ancestor(EmailRow::static_type())
-                .and_downcast::<EmailRow>()
-        });
-        match row {
-            Some(row) if scroller.vadjustment().value() > 0.0 => {
-                imp.sticky_day.set_label(&row.day_label());
-                imp.sticky_day.set_visible(true);
+        let label = &imp.sticky_day;
+        let day = self.day_at_top();
+        if let Some(day) = &day {
+            if label.label() != *day {
+                label.set_label(day);
             }
-            _ => imp.sticky_day.set_visible(false),
         }
+        let width = imp.email_overlay.width();
+        let (_, height, _, _) = label.measure(gtk::Orientation::Vertical, width);
+        let mut y = if day.is_some() && scroller.vadjustment().value() > 0.0 {
+            0
+        } else {
+            -height
+        };
+        // A header coming up underneath pushes the label off the top.
+        let mut child = imp.email_list.first_child();
+        while let Some(widget) = child {
+            // The list keeps off-screen headers around unmapped, with
+            // meaningless bounds.
+            let top = day_header_label(&widget)
+                .filter(|_| widget.is_mapped())
+                .and_then(|_| widget.compute_bounds(&**scroller))
+                .map(|bounds| bounds.y().round() as i32);
+            if let Some(top) = top.filter(|top| (1..height).contains(top)) {
+                y = y.min(top - height);
+            }
+            child = widget.next_sibling();
+        }
+        gdk::Rectangle::new(0, y, width, height)
+    }
+
+    /// The section label of whatever is at the list's top edge: a row's day,
+    /// or a header's own text.
+    fn day_at_top(&self) -> Option<String> {
+        let scroller = &self.imp().email_scroller;
+        // Pick just inside the viewport: its exact top edge can belong to
+        // the scroller instead of the first row or section header.
+        let hit = scroller.pick(scroller.width() as f64 / 2.0, 1.0, gtk::PickFlags::DEFAULT)?;
+        if let Some(row) = hit
+            .ancestor(EmailRow::static_type())
+            .and_downcast::<EmailRow>()
+        {
+            return Some(row.day_label());
+        }
+        let mut widget = Some(hit);
+        while let Some(current) = widget {
+            if let Some(label) = day_header_label(&current) {
+                return Some(label.label().into());
+            }
+            widget = current.parent();
+        }
+        None
     }
 
     /// Debounce keystrokes: query the database ~200ms after typing stops.
@@ -303,13 +350,23 @@ fn day_sections(matches: Vec<Email>) -> Vec<gio::ListStore> {
     sections
 }
 
+/// Runs at the top too: left alone, the list re-anchors on the first email
+/// and leaves that day's header scrolled just out of view.
 fn restore_scroll(vadjustment: &gtk::Adjustment, position: f64) {
-    if position <= 0.0 {
-        return;
-    }
     let vadjustment = vadjustment.clone();
     glib::idle_add_local_once(move || {
         let highest = vadjustment.upper() - vadjustment.page_size();
-        vadjustment.set_value(position.min(highest));
+        vadjustment.set_value(position.min(highest).max(0.0));
     });
+}
+
+/// The label of a section header, given the label itself or the list's header
+/// widget around it.
+fn day_header_label(widget: &gtk::Widget) -> Option<gtk::Label> {
+    let is_header = |label: &gtk::Label| label.has_css_class("email-day-header");
+    widget
+        .downcast_ref::<gtk::Label>()
+        .cloned()
+        .or_else(|| widget.first_child().and_downcast::<gtk::Label>())
+        .filter(is_header)
 }

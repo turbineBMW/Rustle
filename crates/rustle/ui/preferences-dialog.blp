@@ -47,5 +47,13 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         subtitle: _("Keep fetching older messages in every folder until the whole account is here");
       }
     }
+
+    Adw.PreferencesGroup appearance_group {
+      title: _("Appearance");
+
+      Adw.SwitchRow omarchy_row {
+        title: _("Follow Omarchy Theme");
+      }
+    }
   }
 }

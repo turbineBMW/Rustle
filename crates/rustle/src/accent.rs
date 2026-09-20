@@ -6,8 +6,13 @@
 //! "not found" and libadwaita silently falls back to blue, so when it reports
 //! no system support we read `org.gnome.desktop.interface accent-color`
 //! ourselves and override its `--accent-*` CSS variables.
+//!
+//! While Rustle follows an Omarchy theme (`omarchy.rs`), the theme's accent
+//! outranks both: the CSS side through its own provider, this side through
+//! [`set_override`].
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use adw::prelude::*;
 
@@ -15,6 +20,8 @@ const INTERFACE_SCHEMA: &str = "org.gnome.desktop.interface";
 
 thread_local! {
     static FALLBACK: RefCell<Option<Fallback>> = const { RefCell::new(None) };
+    static OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static WATCHERS: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
 }
 
 struct Fallback {
@@ -24,8 +31,11 @@ struct Fallback {
 
 /// The accent as a CSS hex colour, tracking the GNOME setting through
 /// libadwaita's style manager, or through GSettings where the portal
-/// doesn't relay it.
+/// doesn't relay it -- unless a followed Omarchy theme states its own.
 pub fn accent_hex() -> String {
+    if let Some(accent) = OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return accent;
+    }
     let manager = adw::StyleManager::default();
     let rgba = match fallback_accent() {
         Some(accent) => accent.to_standalone_rgba(manager.is_dark()),
@@ -46,7 +56,7 @@ pub fn rgba_hex(color: &gtk::gdk::RGBA) -> String {
 /// Run `on_change` now and whenever the accent or the dark/light scheme flips.
 pub fn watch(on_change: impl Fn() + 'static) {
     let manager = adw::StyleManager::default();
-    let on_change = std::rc::Rc::new(on_change);
+    let on_change: Rc<dyn Fn()> = Rc::new(on_change);
     for property in ["accent-color", "dark"] {
         let on_change = on_change.clone();
         manager.connect_notify_local(Some(property), move |_, _| on_change());
@@ -59,7 +69,27 @@ pub fn watch(on_change: impl Fn() + 'static) {
                 .connect_changed(Some("accent-color"), move |_, _| on_change());
         }
     });
+    WATCHERS.with(|cell| cell.borrow_mut().push(on_change.clone()));
     on_change();
+}
+
+/// Replace the accent with a theme's own (`None` hands it back to the
+/// system). Reports whether it changed and leaves [`notify`] to the caller,
+/// who knows if a dark/light flip is about to run the watchers anyway.
+pub fn set_override(accent: Option<String>) -> bool {
+    OVERRIDE.with(|cell| {
+        let changed = *cell.borrow() != accent;
+        cell.replace(accent);
+        changed
+    })
+}
+
+/// Run every [`watch`] callback.
+pub fn notify() {
+    let watchers = WATCHERS.with(|cell| cell.borrow().clone());
+    for on_change in watchers {
+        on_change();
+    }
 }
 
 /// Install the GSettings fallback if libadwaita can't see the system accent.

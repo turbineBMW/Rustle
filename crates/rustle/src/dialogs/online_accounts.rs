@@ -21,6 +21,8 @@ const SETTINGS_OBJECT_PATH: &str = "/org/gnome/Settings";
 const ONLINE_ACCOUNTS_PANEL: &str = "online-accounts";
 /// Settings is D-Bus activated, so the first call waits for it to start.
 const SETTINGS_TIMEOUT_MS: i32 = 30_000;
+/// The standalone accounts window, for desktops without GNOME Settings.
+const STANDALONE_SETTINGS: &str = "gnome-online-accounts-gtk";
 
 mod imp {
     use super::*;
@@ -234,7 +236,12 @@ impl OnlineAccountsDialog {
             }
             .await;
             if let Err(error) = result {
-                log::warn!("could not open the Online Accounts panel: {error}");
+                log::debug!("could not open the Online Accounts panel: {error}");
+                if let Err(error) = std::process::Command::new(STANDALONE_SETTINGS).spawn() {
+                    log::warn!("could not launch {STANDALONE_SETTINGS}: {error}");
+                } else {
+                    return;
+                }
                 if let Some(this) = this.upgrade() {
                     this.imp()
                         .toast_overlay

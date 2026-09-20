@@ -27,6 +27,11 @@
 			<summary>graphmail-bridge photo port</summary>
 			<description>The loopback port where a local graphmail-bridge serves Outlook profile pictures (its server.photo_port). Accounts whose IMAP server is a plain loopback connection ask it for sender avatars before Gravatar.</description>
 		</key>
+		<key name="follow-omarchy-theme" type="b">
+			<default>true</default>
+			<summary>Follow the Omarchy theme</summary>
+			<description>Take the window colours, accent and light/dark style from the active Omarchy desktop theme, and follow every theme switch live. Has no effect where Omarchy isn't installed.</description>
+		</key>
 		<key name="run-in-background" type="b">
 			<default>false</default>
 			<summary>Keep running in the background</summary>

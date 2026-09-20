@@ -153,22 +153,23 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                   content: Gtk.Stack email_stack {
                     StackPage {
                       name: "list";
-                      child: Gtk.Box {
-                        orientation: vertical;
+                      child: Gtk.Overlay email_overlay {
+                        overflow: hidden;
 
-                        Gtk.Label sticky_day {
-                          xalign: 0;
-                          visible: false;
-                          styles ["email-day-header", "sticky-day"]
-                        }
-
-                        Gtk.ScrolledWindow email_scroller {
+                        child: Gtk.ScrolledWindow email_scroller {
                           hscrollbar-policy: never;
                           vexpand: true;
 
                           child: Gtk.ListView email_list {
                             styles ["navigation-sidebar", "email-list"]
                           };
+                        };
+
+                        [overlay]
+                        Gtk.Label sticky_day {
+                          xalign: 0;
+                          can-target: false;
+                          styles ["email-day-header", "sticky-day"]
                         }
                       };
                     }

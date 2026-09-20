@@ -43,6 +43,7 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   address.rs, dates.rs, providers.rs, html.rs
   watch.rs     IMAP IDLE: one cancellable long-lived session per account on its inbox
   secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
+  omarchy.rs   Omarchy colors.toml -> libadwaita CSS variables (port of omarchy-theme-color)
   avatars.rs   sender pictures: local graphmail-bridge photo endpoint (loopback+plain IMAP
                accounts, port from `bridge-photo-port`), then Gravatar/favicon; on-disk cache
 crates/rustle/             the GTK layer
@@ -77,6 +78,10 @@ data/                      gschema, desktop file, metainfo, D-Bus service, icons
   `PendingMove` per account under a single Undo toast).
 - **Accent colour:** CSS uses `var(--accent-color)`; the WebKit views (reader, composer)
   get it injected via `accent::accent_hex()` and re-render on `accent::watch`.
+- **Omarchy theme:** `omarchy.rs` (GTK half; palette in `rustle_core::omarchy`) layers the
+  theme's CSS in a provider above style.css and the accent fallback, forces light/dark, and
+  feeds `accent::set_override`. Gated by `follow-omarchy-theme`; off leaves no trace. New
+  colours in style.css should come from libadwaita variables so themes reach them.
 - **Reader security:** message HTML renders with JavaScript off, a CSP that blocks every
   remote subresource except opted-in images, and a `decide-policy` handler that only
   hands http/https/mailto link clicks to the browser. Keep it that way.
