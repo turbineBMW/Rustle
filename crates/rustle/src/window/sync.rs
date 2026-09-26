@@ -530,6 +530,10 @@ impl MainWindow {
 
     fn on_sync_error(&self, account: &Account, failure: &Failure) {
         self.set_syncing(account.id, false);
+        if failure.is_auth() {
+            // The remembered password may be out of date; read the keyring next time.
+            secrets::forget_password(account.id);
+        }
         // Another account's failure can leave the open folder on the spinner.
         self.show_list_or_placeholder();
         if self.is_stale(account) {
