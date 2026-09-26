@@ -13,6 +13,7 @@ pub const STANDALONE_SETTINGS: &str = "gnome-online-accounts-gtk";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Desktop {
+    /// GNOME, or Unity: the two GNOME Settings agrees to start under.
     Gnome,
     Other,
 }
@@ -23,7 +24,7 @@ impl Desktop {
     pub fn from_current_desktop(value: &str) -> Self {
         if value
             .split(':')
-            .any(|name| name.eq_ignore_ascii_case("gnome"))
+            .any(|name| name.eq_ignore_ascii_case("gnome") || name.eq_ignore_ascii_case("unity"))
         {
             Desktop::Gnome
         } else {
@@ -268,6 +269,7 @@ mod tests {
             Desktop::from_current_desktop("ubuntu:GNOME"),
             Desktop::Gnome
         );
+        assert_eq!(Desktop::from_current_desktop("Unity"), Desktop::Gnome);
         assert_eq!(Desktop::from_current_desktop("Hyprland"), Desktop::Other);
         assert_eq!(
             Desktop::from_current_desktop("GNOME-Flashback"),
