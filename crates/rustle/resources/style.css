@@ -102,6 +102,19 @@ button.pinned {
   font-weight: bold;
 }
 
+/* The collapsed folder sidebar: a strip of icons in the sidebar's colours,
+   its first button level with the header bars' buttons. */
+.folder-rail {
+  background-color: var(--sidebar-bg-color);
+  color: var(--sidebar-fg-color);
+  box-shadow: inset -1px 0 var(--sidebar-border-color);
+  padding: 7px 6px;
+}
+
+.folder-rail:dir(rtl) {
+  box-shadow: inset 1px 0 var(--sidebar-border-color);
+}
+
 /* The account heading in the sidebar wears the same colour. */
 .account-icon {
   color: var(--account-color, var(--accent-color));

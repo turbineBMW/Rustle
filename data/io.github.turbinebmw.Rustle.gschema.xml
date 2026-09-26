@@ -75,6 +75,10 @@
 			<default>280</default>
 			<summary>Folder sidebar width</summary>
 		</key>
+		<key name="show-folder-sidebar" type="b">
+			<default>true</default>
+			<summary>Show the folder sidebar</summary>
+		</key>
 		<key name="conversation-sidebar-width" type="i">
 			<range min="220" max="600"/>
 			<default>380</default>

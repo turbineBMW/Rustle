@@ -261,6 +261,7 @@ impl RustleApplication {
             ("win.forward", &["<control><shift>f"]),
             ("win.refresh", &["F5"]),
             ("win.search", &["<control>f"]),
+            ("win.toggle-sidebar", &["F9"]),
         ] {
             self.set_accels_for_action(name, accels);
         }

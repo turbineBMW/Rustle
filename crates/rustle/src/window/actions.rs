@@ -74,6 +74,10 @@ impl MainWindow {
                 }
             });
         }
+        // Stateful, so the header's toggle button tracks the sidebar.
+        let toggle_sidebar =
+            gio::PropertyAction::new("toggle-sidebar", &*self.imp().outer_split, "show-sidebar");
+        self.add_action(&toggle_sidebar);
         // Move is the one action carrying a parameter: the destination folder id.
         let window = self.downgrade();
         register(

@@ -113,6 +113,9 @@ pub struct State {
     /// The account ids and (id, parent_id) folder pairs the tree was last
     /// built from.
     pub folder_shape: (Vec<i64>, Vec<(i64, Option<i64>)>),
+    /// The (id, email) pairs the collapsed sidebar's account icons were
+    /// built from.
+    pub rail_accounts: Vec<(i64, String)>,
     pub account_roots: HashMap<i64, Vec<Folder>>,
     pub folder_children: HashMap<i64, Vec<Folder>>,
     /// Accounts with a sync in flight. A set, not a flag: every account
@@ -193,9 +196,11 @@ mod imp {
         #[template_child]
         pub connection_banner: TemplateChild<adw::Banner>,
         #[template_child]
-        pub outer_split: TemplateChild<adw::NavigationSplitView>,
+        pub outer_split: TemplateChild<adw::OverlaySplitView>,
         #[template_child]
         pub inner_split: TemplateChild<adw::NavigationSplitView>,
+        #[template_child]
+        pub account_rail: TemplateChild<gtk::Box>,
         #[template_child]
         pub folder_resize_handle: TemplateChild<gtk::Box>,
         #[template_child]
@@ -275,18 +280,20 @@ impl MainWindow {
         // bad stored value, these stop a drag from producing one.
         window.setup_sidebar_resize(
             &imp.folder_resize_handle,
-            &imp.outer_split,
+            imp.outer_split.upcast_ref(),
             keys::FOLDER_WIDTH,
             180,
             500,
         );
         window.setup_sidebar_resize(
             &imp.email_resize_handle,
-            &imp.inner_split,
+            imp.inner_split.upcast_ref(),
             keys::EMAIL_WIDTH,
             220,
             600,
         );
+        imp.outer_split
+            .set_show_sidebar(settings.boolean(keys::SHOW_FOLDER_SIDEBAR));
 
         let _ = imp.avatars.set(AvatarLoader::new(settings.clone()));
         settings.connect_changed(
@@ -626,7 +633,7 @@ impl MainWindow {
     fn setup_sidebar_resize(
         &self,
         handle: &gtk::Box,
-        split: &adw::NavigationSplitView,
+        split: &gtk::Widget,
         key: &'static str,
         lower: i32,
         upper: i32,
@@ -648,7 +655,7 @@ impl MainWindow {
             split,
             #[strong]
             start,
-            move |gesture, _, _| start.set((split.min_sidebar_width(), pointer_x(gesture)))
+            move |gesture, _, _| start.set((sidebar_width(&split), pointer_x(gesture)))
         ));
         gesture.connect_drag_update(glib::clone!(
             #[weak]
@@ -679,6 +686,11 @@ impl MainWindow {
             keys::EMAIL_WIDTH,
             imp.inner_split.min_sidebar_width() as i32,
         );
+        // A collapsed sidebar is hidden by the breakpoint, not by choice.
+        if !imp.outer_split.is_collapsed() {
+            let _ =
+                settings.set_boolean(keys::SHOW_FOLDER_SIDEBAR, imp.outer_split.shows_sidebar());
+        }
         // Nothing on screen to render, so give the web process back.
         message_view::release_anchor();
 
@@ -739,9 +751,15 @@ impl MainWindow {
     }
 }
 
-fn pin_sidebar_width(split: &adw::NavigationSplitView, width: i32) {
-    split.set_max_sidebar_width(width as f64);
-    split.set_min_sidebar_width(width as f64);
+/// Both split view types name their sidebar bounds the same, so the resize
+/// handles go through the properties rather than either type's setters.
+fn sidebar_width(split: &gtk::Widget) -> f64 {
+    split.property("min-sidebar-width")
+}
+
+fn pin_sidebar_width(split: &gtk::Widget, width: i32) {
+    split.set_property("max-sidebar-width", width as f64);
+    split.set_property("min-sidebar-width", width as f64);
 }
 
 /// The pointer's x within the window, not within the handle: the handle
