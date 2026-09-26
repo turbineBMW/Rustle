@@ -8,6 +8,52 @@ APP_ID=io.github.turbinebmw.Rustle
 BIN="$PREFIX/bin"
 SHARE="$PREFIX/share"
 
+# Check build dependencies up front so a missing one is named, with the package
+# to install, instead of surfacing as a panic halfway through `cargo build`.
+if command -v pacman >/dev/null 2>&1; then distro=arch
+elif command -v apt-get >/dev/null 2>&1; then distro=debian
+elif command -v dnf >/dev/null 2>&1; then distro=fedora
+else distro=unknown; fi
+
+missing=""
+what=""
+# need <what> <arch pkg> <debian pkg> <fedora pkg>
+need() {
+  case $distro in
+    arch) pkg=$2 ;; debian) pkg=$3 ;; fedora) pkg=$4 ;; *) pkg=$1 ;;
+  esac
+  what="$what
+  - $1"
+  case " $missing " in *" $pkg "*) ;; *) missing="$missing $pkg" ;; esac
+}
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+# have_lib <pkg-config module> [minimum version]
+have_lib() { pkg-config --exists "$1${2:+ >= $2}" 2>/dev/null; }
+
+have_cmd cargo || need cargo rust cargo cargo
+have_cmd blueprint-compiler || need blueprint-compiler blueprint-compiler blueprint-compiler blueprint-compiler
+have_cmd glib-compile-schemas || need glib-compile-schemas glib2 libglib2.0-dev-bin glib2-devel
+if have_cmd pkg-config; then
+  have_lib gtk4 4.18 || need "gtk4 >= 4.18" gtk4 libgtk-4-dev gtk4-devel
+  have_lib libadwaita-1 1.8 || need "libadwaita >= 1.8" libadwaita libadwaita-1-dev libadwaita-devel
+  have_lib webkitgtk-6.0 || need webkitgtk-6.0 webkitgtk-6.0 libwebkitgtk-6.0-dev webkitgtk6.0-devel
+  have_lib openssl || need openssl openssl libssl-dev openssl-devel
+else
+  need pkg-config pkgconf pkg-config pkgconf-pkg-config
+fi
+
+if [ -n "$missing" ]; then
+  echo "Rustle can't be built; missing:$what" >&2
+  echo "Install them with:" >&2
+  case $distro in
+    arch) echo "  sudo pacman -S --needed$missing" >&2 ;;
+    debian) echo "  sudo apt install$missing" >&2 ;;
+    fedora) echo "  sudo dnf install$missing" >&2 ;;
+    *) echo " $missing" >&2 ;;
+  esac
+  exit 1
+fi
+
 cargo build --release
 install -Dm755 target/release/rustle "$BIN/rustle"
 install -Dm644 data/$APP_ID.gschema.xml "$SHARE/glib-2.0/schemas/$APP_ID.gschema.xml"
