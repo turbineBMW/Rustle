@@ -1,4 +1,5 @@
-//! Importing an account from GNOME Online Accounts.
+//! Importing an account from GNOME Online Accounts. When the pieces it needs
+//! aren't installed, the dialog says which and how to install them instead.
 
 use crate::i18n::{self, gettext};
 use crate::workers;
@@ -8,11 +9,14 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::db::Database;
 use rustle_core::goa::{self, OnlineAccount};
+use rustle_core::goa_setup::{self, Component, Desktop, Setup, STANDALONE_SETTINGS};
 use rustle_core::models::NewAccount;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+const PAGE_LOADING: &str = "loading";
+const PAGE_SETUP: &str = "setup";
 const PAGE_LIST: &str = "list";
 const PAGE_EMPTY: &str = "empty";
 
@@ -21,8 +25,7 @@ const SETTINGS_OBJECT_PATH: &str = "/org/gnome/Settings";
 const ONLINE_ACCOUNTS_PANEL: &str = "online-accounts";
 /// Settings is D-Bus activated, so the first call waits for it to start.
 const SETTINGS_TIMEOUT_MS: i32 = 30_000;
-/// The standalone accounts window, for desktops without GNOME Settings.
-const STANDALONE_SETTINGS: &str = "gnome-online-accounts-gtk";
+const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 
 mod imp {
     use super::*;
@@ -35,13 +38,29 @@ mod imp {
         #[template_child]
         pub accounts_stack: TemplateChild<gtk::Stack>,
         #[template_child]
+        pub setup_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub install_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub command_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub copy_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub check_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub accounts_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub settings_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub empty_page: TemplateChild<adw::StatusPage>,
+        #[template_child]
         pub empty_settings_button: TemplateChild<gtk::Button>,
         pub db: RefCell<Option<Rc<RefCell<Database>>>>,
         pub rows: RefCell<Vec<adw::ActionRow>>,
+        pub setup_rows: RefCell<Vec<adw::ActionRow>>,
+        /// Refills the list when an account is added or removed elsewhere,
+        /// such as in the Settings window this dialog opens.
+        pub subscription: RefCell<Option<gio::SignalSubscription>>,
     }
 
     #[glib::object_subclass]
@@ -76,6 +95,36 @@ mod imp {
                     move |_| dialog.on_settings_clicked()
                 ));
             }
+            self.copy_button.connect_clicked(glib::clone!(
+                #[weak]
+                dialog,
+                move |_| dialog.on_copy_clicked()
+            ));
+            self.check_button.connect_clicked(glib::clone!(
+                #[weak]
+                dialog,
+                move |_| {
+                    dialog
+                        .imp()
+                        .accounts_stack
+                        .set_visible_child_name(PAGE_LOADING);
+                    dialog.reload();
+                }
+            ));
+            dialog.watch_accounts();
+            let desktop = Desktop::detect();
+            self.accounts_group.set_title(&match desktop {
+                Desktop::Gnome => gettext("Accounts in GNOME Settings"),
+                Desktop::Other => gettext("Accounts in Online Accounts"),
+            });
+            self.empty_page.set_description(Some(&match desktop {
+                Desktop::Gnome => {
+                    gettext("Connect an account in GNOME Settings and it will show up here.")
+                }
+                Desktop::Other => gettext(
+                    "Connect an account in the Online Accounts window and it will show up here.",
+                ),
+            }));
         }
     }
     impl WidgetImpl for OnlineAccountsDialog {}
@@ -108,17 +157,102 @@ impl OnlineAccountsDialog {
         self.imp().db.borrow().clone().expect("set at construction")
     }
 
-    /// Listing walks the bus, so it runs off the main thread and fills the
-    /// dialog when it lands.
+    /// Checking and listing walk the bus, so they run off the main thread
+    /// and fill the dialog when they land.
     fn reload(&self) {
         workers::run(
-            goa::mail_accounts,
+            || {
+                let setup = goa_setup::check();
+                let accounts = if setup.is_ready() {
+                    goa::mail_accounts()
+                } else {
+                    Vec::new()
+                };
+                (setup, accounts)
+            },
             glib::clone!(
                 #[weak(rename_to = this)]
                 self,
-                move |accounts| this.populate(accounts)
+                move |(setup, accounts): (Setup, Vec<OnlineAccount>)| {
+                    if setup.is_ready() {
+                        this.populate(accounts);
+                    } else {
+                        this.show_setup(&setup);
+                    }
+                }
             ),
         );
+    }
+
+    fn watch_accounts(&self) {
+        let bus = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+            Ok(bus) => bus,
+            Err(error) => {
+                log::debug!("no session bus to watch Online Accounts on: {error}");
+                return;
+            }
+        };
+        let this = self.downgrade();
+        let subscription = bus.subscribe_to_signal(
+            None,
+            Some(OBJECT_MANAGER),
+            None,
+            Some(goa::OBJECT_PATH),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |_| {
+                if let Some(this) = this.upgrade() {
+                    this.reload();
+                }
+            },
+        );
+        self.imp().subscription.replace(Some(subscription));
+    }
+
+    fn show_setup(&self, setup: &Setup) {
+        let imp = self.imp();
+        imp.setup_group.set_description(Some(&match setup.desktop {
+            Desktop::Gnome => gettext(
+                "Rustle signs in through GNOME Online Accounts, but some of what it needs is missing.",
+            ),
+            Desktop::Other => i18n::format(
+                &gettext("Outside GNOME, Rustle signs in through GNOME Online Accounts and its standalone window, {app}. Some of what it needs is missing."),
+                &[("app", STANDALONE_SETTINGS)],
+            ),
+        }));
+        for row in imp.setup_rows.borrow_mut().drain(..) {
+            imp.setup_group.remove(&row);
+        }
+        for component in &setup.missing {
+            let row = adw::ActionRow::builder()
+                .title(component_name(*component))
+                .subtitle(component.package())
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            imp.setup_group.add(&row);
+            imp.setup_rows.borrow_mut().push(row);
+        }
+        match setup.install_command() {
+            Some(command) => {
+                imp.install_group
+                    .set_description(Some(&gettext("Run this in a terminal, then check again.")));
+                imp.command_row.set_title(&command);
+            }
+            None => {
+                imp.install_group.set_description(Some(&gettext(
+                    "Install these packages with your distribution's package manager, then check again.",
+                )));
+                imp.command_row.set_title(&setup.packages().join(" "));
+            }
+        }
+        imp.accounts_stack.set_visible_child_name(PAGE_SETUP);
+    }
+
+    fn on_copy_clicked(&self) {
+        let imp = self.imp();
+        self.clipboard().set_text(&imp.command_row.title());
+        imp.toast_overlay
+            .add_toast(adw::Toast::new(&gettext("Copied to clipboard")));
     }
 
     fn populate(&self, accounts: Vec<OnlineAccount>) {
@@ -206,9 +340,24 @@ impl OnlineAccountsDialog {
         self.emit_by_name::<()>("account-added", &[]);
     }
 
+    /// GNOME Settings' panel on GNOME, the standalone window anywhere else:
+    /// Settings refuses to run outside GNOME.
+    fn on_settings_clicked(&self) {
+        if Desktop::detect() == Desktop::Other {
+            if let Err(error) = std::process::Command::new(STANDALONE_SETTINGS).spawn() {
+                log::warn!("could not launch {STANDALONE_SETTINGS}: {error}");
+                self.imp()
+                    .toast_overlay
+                    .add_toast(adw::Toast::new(&gettext("Could not open Online Accounts.")));
+            }
+            return;
+        }
+        self.open_settings_panel();
+    }
+
     /// Called rather than fired through an action group so that a missing or
     /// unreachable Settings comes back as an error we can show.
-    fn on_settings_clicked(&self) {
+    fn open_settings_panel(&self) {
         let panel = glib::Variant::tuple_from_iter([
             ONLINE_ACCOUNTS_PANEL.to_variant(),
             Vec::<glib::Variant>::new().to_variant(),
@@ -249,5 +398,14 @@ impl OnlineAccountsDialog {
                 }
             }
         });
+    }
+}
+
+fn component_name(component: Component) -> String {
+    match component {
+        Component::Daemon => gettext("Online Accounts service"),
+        Component::GnomeSettings => gettext("GNOME Settings"),
+        Component::StandaloneSettings => gettext("Online Accounts window"),
+        Component::Keyring => gettext("Keyring"),
     }
 }

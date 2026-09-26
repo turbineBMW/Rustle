@@ -1,7 +1,7 @@
-//! The Manage Accounts dialog: the list, with remove and the two add paths.
+//! The Manage Accounts dialog: the list, with remove, and the one way in to
+//! adding an account.
 
-use super::account::AccountDialog;
-use super::online_accounts::OnlineAccountsDialog;
+use super::add_account::AddAccountDialog;
 use super::signature::SignatureDialog;
 use crate::account_colors;
 use crate::i18n::gettext;
@@ -17,6 +17,9 @@ use rustle_core::sounds::NotificationSound;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+const PAGE_LIST: &str = "list";
+const PAGE_EMPTY: &str = "empty";
+
 mod imp {
     use super::*;
 
@@ -24,11 +27,13 @@ mod imp {
     #[template(resource = "/io/github/turbinebmw/Rustle/ui/accounts-dialog.ui")]
     pub struct AccountsDialog {
         #[template_child]
+        pub accounts_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
         pub accounts_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub add_button: TemplateChild<gtk::Button>,
         #[template_child]
-        pub online_accounts_button: TemplateChild<gtk::Button>,
+        pub empty_add_button: TemplateChild<gtk::Button>,
         pub db: RefCell<Option<Rc<RefCell<Database>>>>,
         pub settings: RefCell<Option<gio::Settings>>,
         pub rows: RefCell<Vec<adw::ExpanderRow>>,
@@ -50,19 +55,22 @@ mod imp {
     }
 
     impl ObjectImpl for AccountsDialog {
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+                std::sync::OnceLock::new();
+            SIGNALS.get_or_init(|| vec![glib::subclass::Signal::builder("account-added").build()])
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             let dialog = self.obj().clone();
-            self.add_button.connect_clicked(glib::clone!(
-                #[weak]
-                dialog,
-                move |_| dialog.on_add_clicked()
-            ));
-            self.online_accounts_button.connect_clicked(glib::clone!(
-                #[weak]
-                dialog,
-                move |_| dialog.on_online_accounts_clicked()
-            ));
+            for button in [&self.add_button, &self.empty_add_button] {
+                button.connect_clicked(glib::clone!(
+                    #[weak]
+                    dialog,
+                    move |_| dialog.on_add_clicked()
+                ));
+            }
         }
     }
     impl WidgetImpl for AccountsDialog {}
@@ -84,6 +92,14 @@ impl AccountsDialog {
         dialog
     }
 
+    pub fn connect_account_added(&self, callback: impl Fn(&Self) + 'static) {
+        self.connect_local("account-added", false, move |values| {
+            let dialog = values[0].get::<Self>().expect("the emitter");
+            callback(&dialog);
+            None
+        });
+    }
+
     fn db(&self) -> Rc<RefCell<Database>> {
         self.imp().db.borrow().clone().expect("set at construction")
     }
@@ -95,6 +111,12 @@ impl AccountsDialog {
         }
         let accounts = self.db().borrow().accounts().unwrap_or_default();
         account_colors::apply(&accounts);
+        imp.accounts_stack
+            .set_visible_child_name(if accounts.is_empty() {
+                PAGE_EMPTY
+            } else {
+                PAGE_LIST
+            });
         for account in accounts {
             let row = adw::ExpanderRow::builder()
                 .title(account.name())
@@ -283,21 +305,14 @@ impl AccountsDialog {
     }
 
     fn on_add_clicked(&self) {
-        let dialog = AccountDialog::new(self.db());
+        let dialog = AddAccountDialog::new(self.db());
         dialog.connect_account_added(glib::clone!(
             #[weak(rename_to = this)]
             self,
-            move |_| this.reload()
-        ));
-        dialog.present(Some(self));
-    }
-
-    fn on_online_accounts_clicked(&self) {
-        let dialog = OnlineAccountsDialog::new(self.db());
-        dialog.connect_account_added(glib::clone!(
-            #[weak(rename_to = this)]
-            self,
-            move |_| this.reload()
+            move |_| {
+                this.reload();
+                this.emit_by_name::<()>("account-added", &[]);
+            }
         ));
         dialog.present(Some(self));
     }

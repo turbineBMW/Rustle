@@ -28,22 +28,11 @@ template $RustleMainWindow: Adw.ApplicationWindow {
           icon-name: "io.github.turbinebmw.Rustle-symbolic";
           title: _("Welcome to Rustle");
           description: _("Add a mail account to get started.");
-          child: Gtk.Box {
-            orientation: vertical;
-            spacing: 12;
+          child: Gtk.Button add_account_button {
+            label: _("Add Account");
             halign: center;
 
-            Gtk.Button add_account_button {
-              label: _("Add Account");
-
-              styles ["suggested-action", "pill"]
-            }
-
-            Gtk.Button online_accounts_button {
-              label: _("Use Online Accounts");
-
-              styles ["pill"]
-            }
+            styles ["suggested-action", "pill"]
           };
         };
       };
@@ -405,14 +394,6 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
 menu primary_menu {
   section {
-    item {
-      label: _("_Add Account");
-      action: "win.add-account";
-    }
-    item {
-      label: _("_Online Accounts");
-      action: "win.online-accounts";
-    }
     item {
       label: _("_Manage Accounts");
       action: "win.manage-accounts";

@@ -2,9 +2,8 @@
 
 use super::{MainWindow, PAGE_NO_ACCOUNT};
 use crate::composer::{ComposerWindow, Draft};
-use crate::dialogs::account::AccountDialog;
 use crate::dialogs::accounts::AccountsDialog;
-use crate::dialogs::online_accounts::OnlineAccountsDialog;
+use crate::dialogs::add_account::AddAccountDialog;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -27,6 +26,11 @@ fn original_text(parsed: Option<&ParsedMessage>) -> String {
 impl MainWindow {
     pub(super) fn on_manage_accounts(&self) {
         let dialog = AccountsDialog::new(self.db(), &self.settings());
+        dialog.connect_account_added(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| window.on_account_added()
+        ));
         dialog.connect_closed(glib::clone!(
             #[weak(rename_to = window)]
             self,
@@ -63,18 +67,10 @@ impl MainWindow {
         self.reload_folders();
     }
 
+    /// The welcome page's button; with accounts, adding goes through
+    /// Manage Accounts.
     pub(super) fn on_add_account_clicked(&self) {
-        let dialog = AccountDialog::new(self.db());
-        dialog.connect_account_added(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_| window.on_account_added()
-        ));
-        dialog.present(Some(self));
-    }
-
-    pub(super) fn on_online_accounts_clicked(&self) {
-        let dialog = OnlineAccountsDialog::new(self.db());
+        let dialog = AddAccountDialog::new(self.db());
         dialog.connect_account_added(glib::clone!(
             #[weak(rename_to = window)]
             self,
