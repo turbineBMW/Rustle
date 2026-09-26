@@ -1,0 +1,48 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $RustleAddAccountDialog: Adw.Dialog {
+    title: _("Add Account");
+    content-width: 440;
+
+    child: Adw.ToolbarView {
+        [top]
+        Adw.HeaderBar {}
+
+        content: Adw.PreferencesPage {
+            Adw.PreferencesGroup {
+                Adw.ActionRow online_row {
+                    title: _("Online Accounts");
+                    subtitle: _("Sign in through your desktop with Google, Microsoft and other providers. Rustle never sees your password.");
+                    activatable: true;
+
+                    [prefix]
+                    Gtk.Image {
+                        icon-name: "goa-panel-symbolic";
+                      }
+
+                    [suffix]
+                    Gtk.Image {
+                        icon-name: "go-next-symbolic";
+                      }
+                  }
+
+                Adw.ActionRow manual_row {
+                    title: _("Manual Setup");
+                    subtitle: _("Enter your address, password and server details yourself. Works with any IMAP and SMTP provider.");
+                    activatable: true;
+
+                    [prefix]
+                    Gtk.Image {
+                        icon-name: "document-edit-symbolic";
+                      }
+
+                    [suffix]
+                    Gtk.Image {
+                        icon-name: "go-next-symbolic";
+                      }
+                  }
+              }
+          };
+      };
+  }

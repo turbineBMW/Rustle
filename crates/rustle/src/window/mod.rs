@@ -162,8 +162,6 @@ mod imp {
         #[template_child]
         pub add_account_button: TemplateChild<gtk::Button>,
         #[template_child]
-        pub online_accounts_button: TemplateChild<gtk::Button>,
-        #[template_child]
         pub refresh_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub search_bar: TemplateChild<gtk::SearchBar>,
@@ -496,15 +494,11 @@ impl MainWindow {
 
     fn connect_widgets(&self) {
         let imp = self.imp();
+
         imp.add_account_button.connect_clicked(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |_| window.on_add_account_clicked()
-        ));
-        imp.online_accounts_button.connect_clicked(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_| window.on_online_accounts_clicked()
         ));
         imp.refresh_button.connect_clicked(glib::clone!(
             #[weak(rename_to = window)]

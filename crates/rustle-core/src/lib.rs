@@ -14,6 +14,7 @@ pub mod dates;
 pub mod db;
 pub mod folders;
 pub mod goa;
+pub mod goa_setup;
 pub mod html;
 pub mod mime;
 pub mod models;

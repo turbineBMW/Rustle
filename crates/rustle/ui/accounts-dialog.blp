@@ -10,31 +10,40 @@ template $RustleAccountsDialog: Adw.Dialog {
         [top]
         Adw.HeaderBar {}
 
-        content: Gtk.ScrolledWindow {
-            child: Adw.PreferencesPage {
-                Adw.PreferencesGroup accounts_group {
-                    title: _("Mail Accounts");
+        content: Gtk.Stack accounts_stack {
+            Gtk.StackPage {
+                name: "list";
+                child: Gtk.ScrolledWindow {
+                    child: Adw.PreferencesPage {
+                        Adw.PreferencesGroup accounts_group {
+                            title: _("Mail Accounts");
 
-                    [header-suffix]
-                    Gtk.Box {
-                        spacing: 6;
+                            [header-suffix]
+                            Gtk.Button add_button {
+                                icon-name: "list-add-symbolic";
+                                tooltip-text: _("Add Account");
 
-                        Gtk.Button online_accounts_button {
-                            icon-name: "goa-panel-symbolic";
-                            tooltip-text: _("Add from Online Accounts");
-
-                            styles ["flat"]
+                                styles ["flat"]
+                              }
                           }
+                      };
+                  };
+              }
 
-                        Gtk.Button add_button {
-                            icon-name: "list-add-symbolic";
-                            tooltip-text: _("Add Account");
+            Gtk.StackPage {
+                name: "empty";
+                child: Adw.StatusPage {
+                    icon-name: "io.github.turbinebmw.Rustle-symbolic";
+                    title: _("No Accounts");
+                    description: _("Add a mail account to get started.");
+                    child: Gtk.Button empty_add_button {
+                        label: _("Add Account");
+                        halign: center;
 
-                            styles ["flat"]
-                          }
-                      }
-                  }
-              };
+                        styles ["suggested-action", "pill"]
+                      };
+                  };
+              }
           };
       };
   }

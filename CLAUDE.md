@@ -43,6 +43,8 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   address.rs, dates.rs, providers.rs, html.rs
   watch.rs     IMAP IDLE: one cancellable long-lived session per account on its inbox
   secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
+  goa_setup.rs what Online Accounts needs on this desktop (GNOME Settings, else
+               gnome-online-accounts-gtk) and the distro's install command for what's missing
   omarchy.rs   Omarchy colors.toml -> libadwaita CSS variables (port of omarchy-theme-color)
   avatars.rs   sender pictures: local graphmail-bridge photo endpoint (loopback+plain IMAP
                accounts, port from `bridge-photo-port`), then Gravatar/favicon; on-disk cache
@@ -52,7 +54,8 @@ crates/rustle/             the GTK layer
   src/window/  one MainWindow, one impl block per concern: accounts, actions, folders,
                list, moves, reader, sync, watch (the IDLE threads)
   src/widgets/ FolderRow, EmailRow (gtk::Box subclasses), MessageView (plain struct)
-  src/dialogs/ account, accounts, online_accounts, preferences;  src/composer.rs
+  src/dialogs/ accounts (Manage Accounts, the only way in) -> add_account (chooser) ->
+               account (manual) | online_accounts;  preferences;  src/composer.rs
   src/workers.rs  the threading model (below);  src/accent.rs  accent colour helpers
 data/                      gschema, desktop file, metainfo, D-Bus service, icons
 ```
