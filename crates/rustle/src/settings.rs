@@ -18,6 +18,7 @@ pub const WINDOW_WIDTH: &str = "window-width";
 pub const WINDOW_HEIGHT: &str = "window-height";
 pub const WINDOW_MAXIMIZED: &str = "window-maximized";
 pub const FOLDER_WIDTH: &str = "folder-sidebar-width";
+pub const SHOW_FOLDER_SIDEBAR: &str = "show-folder-sidebar";
 // Retain the persisted key so existing sidebar widths survive the rename.
 pub const EMAIL_WIDTH: &str = "conversation-sidebar-width";
 

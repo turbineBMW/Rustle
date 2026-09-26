@@ -51,58 +51,95 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
     StackPage {
       name: "mail";
-      child: Adw.NavigationSplitView outer_split {
+      // An overlay split, not a navigation one: only it can hide an
+      // uncollapsed sidebar (win.toggle-sidebar).
+      child: Adw.OverlaySplitView outer_split {
         // px, not the default sp: the drag gesture reports pixel offsets.
-        // The widths themselves are pinned from GSettings in window.py.
+        // The widths themselves are pinned from GSettings in window/mod.rs.
         sidebar-width-unit: px;
 
-        sidebar: Adw.NavigationPage {
-          title: _("Folders");
-          child: Gtk.Overlay {
-            [overlay]
-            Gtk.Box folder_resize_handle {
-              halign: end;
-              width-request: 5;
+        sidebar: Gtk.Overlay {
+          [overlay]
+          Gtk.Box folder_resize_handle {
+            halign: end;
+            width-request: 5;
 
-              accessibility {
-                label: _("Resize folder sidebar");
+            accessibility {
+              label: _("Resize folder sidebar");
+            }
+          }
+
+          child: Adw.ToolbarView {
+            [top]
+            Adw.HeaderBar {
+              title-widget: Adw.WindowTitle {
+                title: _("Folders");
+              };
+
+              [start]
+              Gtk.ToggleButton {
+                icon-name: "sidebar-show-symbolic";
+                tooltip-text: _("Hide Folders");
+                action-name: "win.toggle-sidebar";
+              }
+
+              [end]
+              Gtk.MenuButton {
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
               }
             }
 
-            child: Adw.ToolbarView {
-              [top]
-              Adw.HeaderBar {
-                [start]
-                Gtk.Button compose_button {
-                  icon-name: "mail-message-new-symbolic";
-                  tooltip-text: _("New Message");
+            content: Gtk.ScrolledWindow {
+              hscrollbar-policy: never;
 
-                  styles ["suggested-action"]
-                }
-
-                [end]
-                Gtk.MenuButton {
-                  primary: true;
-                  icon-name: "open-menu-symbolic";
-                  tooltip-text: _("Main Menu");
-                  menu-model: primary_menu;
-                }
-              }
-
-              content: Gtk.ScrolledWindow {
-                hscrollbar-policy: never;
-
-                child: Gtk.ListView folder_list {
-                  styles ["navigation-sidebar"]
-                };
+              child: Gtk.ListView folder_list {
+                styles ["navigation-sidebar"]
               };
             };
           };
         };
 
-        content: Adw.NavigationPage {
-          title: _("Rustle");
-          child: Adw.NavigationSplitView inner_split {
+        content: Gtk.Box {
+          // With the sidebar hidden, a rail of icons stands in for it.
+          Gtk.WindowHandle {
+            visible: bind outer_split.show-sidebar inverted;
+
+            child: Gtk.Box {
+              orientation: vertical;
+              spacing: 6;
+
+              styles ["folder-rail"]
+
+              Gtk.ToggleButton {
+                icon-name: "sidebar-show-symbolic";
+                tooltip-text: _("Show Folders");
+                action-name: "win.toggle-sidebar";
+
+                styles ["flat"]
+              }
+
+              Gtk.MenuButton {
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+
+                styles ["flat"]
+              }
+
+              Gtk.Separator {}
+
+              Gtk.Box account_rail {
+                orientation: vertical;
+                spacing: 6;
+              }
+            };
+          }
+
+          Adw.NavigationSplitView inner_split {
+            hexpand: true;
             sidebar-width-unit: px;
 
             sidebar: Adw.NavigationPage {
@@ -131,6 +168,14 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                     Gtk.ToggleButton unread_button {
                       icon-name: "unread-only-symbolic";
                       tooltip-text: _("Show Unread Only");
+                    }
+
+                    [end]
+                    Gtk.Button compose_button {
+                      icon-name: "mail-message-new-symbolic";
+                      tooltip-text: _("New Message");
+
+                      styles ["suggested-action"]
                     }
 
                     [end]
@@ -337,7 +382,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                 };
               };
             };
-          };
+          }
         };
       };
     }
@@ -345,19 +390,14 @@ template $RustleMainWindow: Adw.ApplicationWindow {
     };
   };
 
+  // Below this the list and reader no longer fit beside each other, and the
+  // folder sidebar floats over them instead of taking a column.
   Adw.Breakpoint {
     condition ("max-width: 700sp")
 
     setters {
       outer_split.collapsed: true;
-    }
-  }
-
-  Adw.Breakpoint {
-    condition ("max-width: 400sp")
-
-    setters {
-      outer_split.collapsed: true;
+      outer_split.show-sidebar: false;
       inner_split.collapsed: true;
     }
   }

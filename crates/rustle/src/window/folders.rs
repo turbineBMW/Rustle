@@ -254,6 +254,11 @@ impl MainWindow {
             SidebarKind::UnifiedInbox => View::UnifiedInbox,
             SidebarKind::Folder(folder) => View::Folder(folder),
         };
+        // A collapsed sidebar floats over the list it just changed.
+        let split = &self.imp().outer_split;
+        if split.is_collapsed() {
+            split.set_show_sidebar(false);
+        }
         let previous = self.state_mut().view.replace(new_view.clone());
         self.update_move_menu();
         self.update_archive_button();
@@ -343,6 +348,7 @@ impl MainWindow {
         if needs_rebuild {
             self.rebuild_folder_tree(&accounts);
         }
+        self.rebuild_account_rail(&accounts);
 
         // SQLite reuses the rowid of a deleted folder, so anything keyed by
         // folder id has to go when the folder does.
@@ -437,6 +443,70 @@ impl MainWindow {
             None => {}
         }
         self.state_mut().is_folder_refresh_suppressed = false;
+    }
+
+    /// One icon per account for the collapsed sidebar, in the tree's order.
+    fn rebuild_account_rail(&self, accounts: &[Account]) {
+        let shape: Vec<(i64, String)> = accounts.iter().map(|a| (a.id, a.email.clone())).collect();
+        if self.state().rail_accounts == shape {
+            return;
+        }
+        self.state_mut().rail_accounts = shape;
+        let rail = &self.imp().account_rail;
+        while let Some(child) = rail.first_child() {
+            rail.remove(&child);
+        }
+        for account in accounts {
+            let button = gtk::Button::builder()
+                .icon_name("avatar-default-symbolic")
+                .tooltip_text(&account.email)
+                .css_classes(["flat", "account-icon"])
+                .build();
+            crate::account_colors::tag(&button, Some(account.id));
+            let account_id = account.id;
+            button.connect_clicked(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_| window.select_account(account_id)
+            ));
+            rail.append(&button);
+        }
+    }
+
+    /// Open an account's inbox (or its first folder) from the rail, and
+    /// bring the sidebar back with that account expanded.
+    fn select_account(&self, account_id: i64) {
+        let imp = self.imp();
+        let account_row = self
+            .sidebar_positions()
+            .into_iter()
+            .find(|(_, item)| {
+                matches!(item.kind(), SidebarKind::Account(account) if account.id == account_id)
+            })
+            .and_then(|(position, _)| imp.folder_tree_model.get()?.row(position));
+        if let Some(row) = account_row {
+            row.set_expanded(true);
+        }
+        let target = {
+            let state = self.state();
+            state.account_roots.get(&account_id).and_then(|roots| {
+                roots
+                    .iter()
+                    .find(|f| folders::role_for_folder(&f.name) == FolderRole::Inbox)
+                    .or_else(|| roots.first())
+                    .map(|f| f.id)
+            })
+        };
+        if let Some(folder_id) = target {
+            self.select_folder_by_id(folder_id);
+        }
+        // After selecting: a collapsed split hides its sidebar on selection.
+        imp.outer_split.set_show_sidebar(true);
+        let selected = imp.folder_selection.get().expect("built").selected();
+        if selected != gtk::INVALID_LIST_POSITION {
+            imp.folder_list
+                .scroll_to(selected, gtk::ListScrollFlags::FOCUS, None);
+        }
     }
 
     pub(super) fn select_folder_by_id(&self, folder_id: i64) {
