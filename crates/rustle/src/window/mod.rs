@@ -8,6 +8,8 @@ mod backfill;
 mod folders;
 mod list;
 mod moves;
+#[cfg(feature = "phone")]
+mod phone;
 mod reader;
 mod sync;
 mod watch;
@@ -199,6 +201,21 @@ mod imp {
         pub inner_split: TemplateChild<adw::NavigationSplitView>,
         #[template_child]
         pub account_rail: TemplateChild<gtk::Box>,
+        // The phone layout (window/phone.rs) rearranges these.
+        #[template_child]
+        pub folder_header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub folder_rail: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub list_toolbar: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub list_header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub search_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub reader_toolbar: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub reader_header: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub folder_resize_handle: TemplateChild<gtk::Box>,
         #[template_child]
@@ -322,6 +339,8 @@ impl MainWindow {
         window.setup_actions();
         window.connect_widgets();
         window.setup_message_handlers();
+        #[cfg(feature = "phone")]
+        window.setup_phone();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();

@@ -60,7 +60,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
           child: Adw.ToolbarView {
             [top]
-            Adw.HeaderBar {
+            Adw.HeaderBar folder_header {
               title-widget: Adw.WindowTitle {
                 title: _("Folders");
               };
@@ -96,7 +96,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
           Gtk.WindowHandle {
             visible: bind outer_split.show-sidebar inverted;
 
-            child: Gtk.Box {
+            child: Gtk.Box folder_rail {
               orientation: vertical;
               spacing: 6;
 
@@ -144,9 +144,9 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                   }
                 }
 
-                child: Adw.ToolbarView {
+                child: Adw.ToolbarView list_toolbar {
                   [top]
-                  Adw.HeaderBar {
+                  Adw.HeaderBar list_header {
                     [start]
                     Gtk.Button refresh_button {
                       icon-name: "view-refresh-symbolic";
@@ -236,9 +236,9 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
             content: Adw.NavigationPage {
               title: _("Reader");
-              child: Adw.ToolbarView {
+              child: Adw.ToolbarView reader_toolbar {
                 [top]
-                Adw.HeaderBar {
+                Adw.HeaderBar reader_header {
                   [start]
                   Gtk.Box {
                     styles ["linked"]
