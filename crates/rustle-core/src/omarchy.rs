@@ -65,12 +65,69 @@ pub fn load(home: &Path) -> Option<Theme> {
         Ok(css) => css,
         Err(_) => palette.to_css(),
     };
+    // A phone build (omarchy-mobile) also takes the theme's corners, as the
+    // phone's own apps do: the radius its hyprland.lua gives the windows.
+    let css = if cfg!(feature = "phone") {
+        let radius = fs::read_to_string(dir.join("hyprland.lua")).map_or(0, |lua| rounding(&lua));
+        css + &corners_css(radius)
+    } else {
+        css
+    };
     let accent = palette.get("accent", "blue");
     Some(Theme {
         css,
         light: palette.light,
         accent: rgb(&accent).map(|_| accent),
     })
+}
+
+/// The rounding a theme's `hyprland.lua` gives Hyprland's windows: the first
+/// `rounding = N` outside a comment (not `rounding_power`), at most 64; 0
+/// when there is none (Omarchy's square look).
+pub fn rounding(lua: &str) -> u32 {
+    for line in lua.lines() {
+        let code = line.split("--").next().unwrap_or("");
+        let mut rest = code;
+        while let Some(i) = rest.find("rounding") {
+            let before = rest[..i].chars().next_back();
+            rest = &rest[i + "rounding".len()..];
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let Some(value) = rest.trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let digits: String = value
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            if let Ok(n) = digits.parse::<u32>() {
+                return n.min(64);
+            }
+        }
+    }
+    0
+}
+
+/// Corners for the controls, cards and pop-overs at the theme's radius
+/// (omarchy-mobile's apps do the same); rows stay square, but a boxed list's
+/// ends.
+pub fn corners_css(radius: u32) -> String {
+    let inner = radius.saturating_sub(3);
+    format!(
+        "/* Corners: the theme's Hyprland rounding. */
+button, entry, spinbutton, dropdown > button, menubutton > button,
+list.boxed-list, .card, toast, popover > contents, searchbar > revealer > box,
+textview, .osd, dialog.floating sheet, switch, scale > trough, scale > trough > slider {{
+  border-radius: {radius}px;
+}}
+switch > slider {{ border-radius: {inner}px; }}
+row {{ border-radius: 0; }}
+list.boxed-list > row:first-child {{ border-top-left-radius: {radius}px; border-top-right-radius: {radius}px; }}
+list.boxed-list > row:last-child {{ border-bottom-left-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
+"
+    )
 }
 
 struct Palette {
@@ -752,7 +809,26 @@ bright_red = "#db9f9c"
         fs::write(dir.join("rustle.css"), ":root { --accent-color: red; }").unwrap();
         fs::write(dir.join("colors.toml"), "accent = \"rgb(1, 2, 3)\"\n").unwrap();
         let theme = load(home.path()).unwrap();
-        assert_eq!(theme.css, ":root { --accent-color: red; }");
+        // Used as written; a phone build adds the corners after it.
+        if cfg!(feature = "phone") {
+            assert!(theme.css.starts_with(":root { --accent-color: red; }"));
+        } else {
+            assert_eq!(theme.css, ":root { --accent-color: red; }");
+        }
         assert_eq!(theme.accent, None);
+    }
+
+    #[test]
+    fn rounding_comes_from_the_themes_hyprland_lua() {
+        assert_eq!(
+            rounding("hl.config({\n  decoration = {\n    rounding = 8,\n  },\n})\n"),
+            8
+        );
+        assert_eq!(
+            rounding("hl.config({ decoration = { rounding_power = 2, rounding = 12 } })"),
+            12
+        );
+        assert_eq!(rounding("-- rounding = 4\nlocal c = \"#fff\""), 0);
+        assert!(corners_css(8).contains("border-radius: 8px;"));
     }
 }

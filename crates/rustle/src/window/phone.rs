@@ -7,10 +7,13 @@
 //! - The list and the reader are always collapsed into one page at a time,
 //!   and the folders float over them. The header bars show only the title:
 //!   no buttons, no back arrow, no window buttons; the folder rail goes.
-//! - The list has the search field and New Message floating at the bottom;
+//! - The list has the search field and New Message in a bar at the bottom;
 //!   the reader has Reply, Reply All, Forward, Archive and Delete, and the
-//!   rest under a More menu. The buttons drive the (hidden) header buttons
-//!   and their actions, so sensitivity and behaviour follow the desktop's.
+//!   rest under a More menu. The bars are the colour of the shell's bars.
+//!   The buttons drive the (hidden) header buttons and their actions, so
+//!   sensitivity and behaviour follow the desktop's.
+//! - Selecting a message opens the reader (the desktop shows both); back
+//!   to the list clears the selection, so the same message opens again.
 //! - Refresh, Unread Only, Folders, accounts and preferences are the app's
 //!   menu (the menubar, which the phone shell shows from its home bar).
 //! - `app.go-back`, the shell's back gesture, closes the folders, then
@@ -21,19 +24,11 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
-/// Floating controls stay opaque over the page that scrolls under them; the
-/// header bar is the colour of the shell's bars.
+/// The header and the bottom bars are the colour of the shell's bars (the
+/// theme's dark background, libadwaita's header bar colour).
 const CSS: &str = "
-.phone-floating { padding: 8px 12px; }
-.phone-floating entry,
-.phone-floating button:not(.suggested-action):not(.destructive-action):not(.flat) {
-  background-color: color-mix(in srgb, var(--window-fg-color) 10%, var(--window-bg-color));
-}
-.phone-floating button:not(.suggested-action):not(.destructive-action):not(.flat):active,
-.phone-floating menubutton > button:checked {
-  background-color: color-mix(in srgb, var(--window-fg-color) 30%, var(--window-bg-color));
-}
-.phone-floating button { min-height: 44px; min-width: 44px; }
+.phone-bar { padding: 8px 12px; background-color: var(--headerbar-bg-color); }
+.phone-bar button { min-height: 44px; min-width: 44px; }
 toolbarview > .top-bar { background-color: var(--headerbar-bg-color); }
 ";
 
@@ -68,18 +63,10 @@ fn title_only(header: &adw::HeaderBar) {
     header.set_show_back_button(false);
 }
 
-/// A row of controls floating at the bottom of `toolbar`; the content runs
-/// under it, with room at its end (`scrolled`'s bottom margin) to clear it.
-fn float(toolbar: &adw::ToolbarView, row: &gtk::Box, scrolled: &impl IsA<gtk::Widget>) {
-    row.add_css_class("phone-floating");
+/// A bar of controls docked at the bottom of `toolbar`.
+fn dock(toolbar: &adw::ToolbarView, row: &gtk::Box) {
+    row.add_css_class("phone-bar");
     toolbar.add_bottom_bar(row);
-    toolbar.set_extend_content_to_bottom_edge(true);
-    let scrolled = scrolled.as_ref().clone();
-    let base = scrolled.margin_bottom();
-    row.connect_map(move |row| {
-        let height = row.measure(gtk::Orientation::Vertical, -1).1;
-        scrolled.set_margin_bottom(base + height);
-    });
 }
 
 impl MainWindow {
@@ -158,7 +145,7 @@ impl MainWindow {
         imp.search_entry.set_hexpand(true);
         list_row.append(&*imp.search_entry);
         list_row.append(&compose);
-        float(&imp.list_toolbar, &list_row, &*imp.email_list);
+        dock(&imp.list_toolbar, &list_row);
 
         // The reader: the common actions, then More.
         let reader_row = gtk::Box::builder()
@@ -197,7 +184,7 @@ impl MainWindow {
             .menu_model(&more_menu)
             .build();
         reader_row.append(&more);
-        float(&imp.reader_toolbar, &reader_row, &*imp.message_box);
+        dock(&imp.reader_toolbar, &reader_row);
         let move_action = gio::SimpleAction::new("phone-move", None);
         let move_button = imp.move_button.downgrade();
         move_action.connect_activate(move |_, _| {
@@ -216,6 +203,29 @@ impl MainWindow {
             .sync_create()
             .build();
         self.add_action(&move_action);
+
+        // Selecting a message opens it; back to the list clears the
+        // selection, so tapping the same one opens it again.
+        self.selection().connect_selection_changed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |selection, _, _| {
+                if !selection.selection().is_empty()
+                    && !window.state().is_selection_update_in_progress
+                {
+                    window.imp().inner_split.set_show_content(true);
+                }
+            }
+        ));
+        imp.inner_split.connect_show_content_notify(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |split| {
+                if !split.shows_content() {
+                    window.selection().unselect_all();
+                }
+            }
+        ));
 
         self.setup_phone_menu();
         self.setup_phone_back();
