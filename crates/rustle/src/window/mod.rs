@@ -217,6 +217,8 @@ mod imp {
         #[template_child]
         pub reader_header: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub welcome_page: TemplateChild<adw::StatusPage>,
+        #[template_child]
         pub folder_resize_handle: TemplateChild<gtk::Box>,
         #[template_child]
         pub email_resize_handle: TemplateChild<gtk::Box>,

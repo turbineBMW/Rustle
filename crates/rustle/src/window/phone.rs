@@ -16,6 +16,8 @@
 //!   to the list clears the selection, so the same message opens again.
 //! - Refresh, Unread Only, Folders, accounts and preferences are the app's
 //!   menu (the menubar, which the phone shell shows from its home bar).
+//! - It is called Mail (the window, the welcome page, About); Rustle is the
+//!   codename.
 //! - `app.go-back`, the shell's back gesture, closes the folders, then
 //!   leaves the reader; on the list it is disabled and the shell goes home.
 
@@ -72,6 +74,8 @@ fn dock(toolbar: &adw::ToolbarView, row: &gtk::Box) {
 impl MainWindow {
     pub(super) fn setup_phone(&self) {
         let imp = self.imp();
+        self.set_title(Some("Mail"));
+        imp.welcome_page.set_title("Welcome to Mail");
         let provider = gtk::CssProvider::new();
         provider.load_from_string(CSS);
         gtk::style_context_add_provider_for_display(
@@ -257,7 +261,7 @@ impl MainWindow {
         menu.append_section(None, &mail);
         let app_section = gio::Menu::new();
         app_section.append(Some("Manage Accounts"), Some("win.manage-accounts"));
-        app_section.append(Some("About Rustle"), Some("app.about"));
+        app_section.append(Some("About Mail"), Some("app.about"));
         menu.append_section(None, &app_section);
         let settings = gio::Menu::new();
         settings.append(Some("Settings"), Some("app.preferences"));

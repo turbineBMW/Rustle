@@ -27,7 +27,12 @@ fn main() -> glib::ExitCode {
 
     gio::resources_register_include!("rustle.gresource")
         .expect("the resource bundle is compiled in");
-    glib::set_application_name("Rustle");
+    // A phone build is the phone's Mail app; Rustle is its codename.
+    glib::set_application_name(if cfg!(feature = "phone") {
+        "Mail"
+    } else {
+        "Rustle"
+    });
 
     let app = application::RustleApplication::new();
     app.run()
