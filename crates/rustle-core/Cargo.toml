@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Built for a phone shell (rustle's `phone` feature): Online Accounts are the
+# phone's own settings' (goa_setup.rs).
+phone = []
+
 [dependencies]
 log.workspace = true
 thiserror.workspace = true

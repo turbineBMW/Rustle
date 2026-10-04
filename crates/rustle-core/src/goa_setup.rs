@@ -1,6 +1,7 @@
 //! What Online Accounts needs on this machine, and how to install what's
 //! missing. On GNOME accounts are managed in Settings; anywhere else the
-//! standalone gnome-online-accounts-gtk window stands in for it.
+//! standalone gnome-online-accounts-gtk window stands in for it; on a phone
+//! (the `phone` feature) the phone's own settings do.
 
 use log::debug;
 use std::path::Path;
@@ -15,6 +16,9 @@ pub const STANDALONE_SETTINGS: &str = "gnome-online-accounts-gtk";
 pub enum Desktop {
     Gnome,
     Other,
+    /// A phone shell (the `phone` feature): its settings add the accounts,
+    /// and an app in its sandbox keeps its keyring through the Secret portal.
+    Phone,
 }
 
 impl Desktop {
@@ -32,6 +36,9 @@ impl Desktop {
     }
 
     pub fn detect() -> Self {
+        if cfg!(feature = "phone") {
+            return Desktop::Phone;
+        }
         Self::from_current_desktop(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default())
     }
 }
@@ -60,12 +67,20 @@ impl Component {
         }
     }
 
-    pub fn required_on(desktop: Desktop) -> [Component; 3] {
-        let settings = match desktop {
-            Desktop::Gnome => Component::GnomeSettings,
-            Desktop::Other => Component::StandaloneSettings,
-        };
-        [Component::Daemon, settings, Component::Keyring]
+    pub fn required_on(desktop: Desktop) -> Vec<Component> {
+        match desktop {
+            Desktop::Gnome => vec![
+                Component::Daemon,
+                Component::GnomeSettings,
+                Component::Keyring,
+            ],
+            Desktop::Other => vec![
+                Component::Daemon,
+                Component::StandaloneSettings,
+                Component::Keyring,
+            ],
+            Desktop::Phone => vec![Component::Daemon],
+        }
     }
 }
 
@@ -279,6 +294,10 @@ mod tests {
     #[test]
     fn needs_the_settings_app_of_the_desktop() {
         assert!(Component::required_on(Desktop::Gnome).contains(&Component::GnomeSettings));
+        assert_eq!(
+            Component::required_on(Desktop::Phone),
+            vec![Component::Daemon]
+        );
         assert!(Component::required_on(Desktop::Other).contains(&Component::StandaloneSettings));
     }
 
