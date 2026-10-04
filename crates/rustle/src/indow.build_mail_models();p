@@ -339,6 +339,8 @@ impl MainWindow {
         window.setup_actions();
         window.connect_widgets();
         window.setup_message_handlers();
+        #[cfg(feature = "phone")]
+        window.setup_phone();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();
@@ -350,9 +352,6 @@ impl MainWindow {
         let _ = imp.network.set(network);
 
         window.build_mail_models();
-        // After the models: the phone layout follows the list's selection.
-        #[cfg(feature = "phone")]
-        window.setup_phone();
 
         // The WebKit views carry the accent in their own stylesheet, so a
         // change in Settings re-renders the open message with the new colour.
