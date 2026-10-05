@@ -8,6 +8,8 @@ mod backfill;
 mod folders;
 mod list;
 mod moves;
+#[cfg(feature = "phone")]
+mod phone;
 mod reader;
 mod sync;
 mod watch;
@@ -199,6 +201,23 @@ mod imp {
         pub inner_split: TemplateChild<adw::NavigationSplitView>,
         #[template_child]
         pub account_rail: TemplateChild<gtk::Box>,
+        // The phone layout (window/phone.rs) rearranges these.
+        #[template_child]
+        pub folder_header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub folder_rail: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub list_toolbar: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub list_header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub search_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub reader_toolbar: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub reader_header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub welcome_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub folder_resize_handle: TemplateChild<gtk::Box>,
         #[template_child]
@@ -333,6 +352,9 @@ impl MainWindow {
         let _ = imp.network.set(network);
 
         window.build_mail_models();
+        // After the models: the phone layout follows the list's selection.
+        #[cfg(feature = "phone")]
+        window.setup_phone();
 
         // The WebKit views carry the accent in their own stylesheet, so a
         // change in Settings re-renders the open message with the new colour.

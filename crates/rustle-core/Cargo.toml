@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Built for a phone shell (rustle's `phone` feature): Online Accounts are the
+# phone's own settings' (goa_setup.rs).
+phone = []
+
 [dependencies]
 log.workspace = true
 thiserror.workspace = true
@@ -20,7 +25,10 @@ native-tls = "0.2"
 mail-parser = "0.11"
 base64 = "0.22"
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
+# The keyring: the Secret Service on the desktop, the Secret portal inside a
+# sandbox (Flatpak, omarchy-mobile), on async-io as the rest of the I/O.
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
+futures-lite = "2"
 html-escape = "0.2"
 sha2 = "0.10"
 hex = "0.4"

@@ -116,6 +116,7 @@ mod imp {
             self.accounts_group.set_title(&match desktop {
                 Desktop::Gnome => gettext("Accounts in GNOME Settings"),
                 Desktop::Other => gettext("Accounts in Online Accounts"),
+                Desktop::Phone => gettext("Accounts in Settings"),
             });
             self.empty_page.set_description(Some(&match desktop {
                 Desktop::Gnome => {
@@ -123,6 +124,9 @@ mod imp {
                 }
                 Desktop::Other => gettext(
                     "Connect an account in the Online Accounts window and it will show up here.",
+                ),
+                Desktop::Phone => gettext(
+                    "Connect an account in Settings, under Online Accounts, and it will show up here.",
                 ),
             }));
         }
@@ -218,6 +222,9 @@ impl OnlineAccountsDialog {
             Desktop::Other => i18n::format(
                 &gettext("Outside GNOME, Rustle signs in through GNOME Online Accounts and its standalone window, {app}. Some of what it needs is missing."),
                 &[("app", STANDALONE_SETTINGS)],
+            ),
+            Desktop::Phone => gettext(
+                "Rustle signs in through GNOME Online Accounts, which isn't running.",
             ),
         }));
         for row in imp.setup_rows.borrow_mut().drain(..) {
@@ -343,6 +350,10 @@ impl OnlineAccountsDialog {
     /// GNOME Settings' panel on GNOME, the standalone window anywhere else:
     /// Settings refuses to run outside GNOME.
     fn on_settings_clicked(&self) {
+        if Desktop::detect() == Desktop::Phone {
+            self.open_phone_settings();
+            return;
+        }
         if Desktop::detect() == Desktop::Other {
             if let Err(error) = std::process::Command::new(STANDALONE_SETTINGS).spawn() {
                 log::warn!("could not launch {STANDALONE_SETTINGS}: {error}");
@@ -353,6 +364,25 @@ impl OnlineAccountsDialog {
             return;
         }
         self.open_settings_panel();
+    }
+
+    /// The phone's settings, at its Online Accounts: a link the phone build
+    /// names (`RUSTLE_ACCOUNTS_URI` at build time, such as omarchy-mobile's
+    /// `omarchy-settings:accounts`), opened through the portal.
+    fn open_phone_settings(&self) {
+        let toast = gettext("Open Settings and add the account under Online Accounts.");
+        let Some(uri) = option_env!("RUSTLE_ACCOUNTS_URI") else {
+            self.imp().toast_overlay.add_toast(adw::Toast::new(&toast));
+            return;
+        };
+        let this = self.downgrade();
+        let window = self.root().and_downcast::<gtk::Window>();
+        gtk::UriLauncher::new(uri).launch(window.as_ref(), gio::Cancellable::NONE, move |result| {
+            if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                log::warn!("could not open the phone's settings ({uri}): {error}");
+                this.imp().toast_overlay.add_toast(adw::Toast::new(&toast));
+            }
+        });
     }
 
     /// Called rather than fired through an action group so that a missing or
