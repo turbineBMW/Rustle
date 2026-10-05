@@ -12,8 +12,8 @@ use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 use rustle_core::db::Database;
 use rustle_core::models::Account;
-use rustle_core::secrets;
 use rustle_core::sounds::NotificationSound;
+use rustle_core::{eds, secrets};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -149,17 +149,23 @@ impl AccountsDialog {
                 move |button| dialog.on_color_picked(account_id, &button.rgba())
             ));
             row.add_suffix(&color_button);
+            // Only accounts Rustle created leave EDS with it; others (Online
+            // Accounts, graphmail-bridge) stay for the apps that use them.
             let remove_button = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .valign(gtk::Align::Center)
-                .tooltip_text(gettext("Remove Account"))
+                .tooltip_text(if account.is_own() {
+                    gettext("Remove Account")
+                } else {
+                    gettext("Remove from Rustle")
+                })
                 .css_classes(["flat"])
                 .build();
-            let account_id = account.id;
+            let removed = account.clone();
             remove_button.connect_clicked(glib::clone!(
                 #[weak(rename_to = dialog)]
                 self,
-                move |_| dialog.on_remove_clicked(account_id)
+                move |_| dialog.on_remove_clicked(&removed)
             ));
             row.add_suffix(&remove_button);
             imp.accounts_group.add(&row);
@@ -286,22 +292,49 @@ impl AccountsDialog {
         account_colors::apply(&accounts);
     }
 
-    fn on_remove_clicked(&self, account_id: i64) {
-        if let Err(error) = self.db().borrow_mut().delete_account(account_id) {
-            log::error!("could not delete account {account_id}: {error}");
+    fn on_remove_clicked(&self, account: &Account) {
+        let account_id = account.id;
+        if !account.is_own() {
+            if let Err(error) = self.db().borrow_mut().hide_account(account_id) {
+                log::error!("could not remove account {account_id}: {error}");
+                return;
+            }
+            self.reload();
             return;
         }
+        let root = account.eds_root_uid.clone();
+        let uids = [
+            account.eds_root_uid.clone(),
+            account.eds_uid.clone(),
+            account.eds_smtp_uid.clone(),
+        ];
         workers::run(
-            move || secrets::clear_password(account_id),
-            move |result| {
-                if let Err(error) = result {
-                    log::warn!(
-                        "could not clear the keyring entry of account {account_id}: {error}"
-                    );
+            move || {
+                eds::remove_source(&root).map_err(|error| error.to_string())?;
+                for uid in uids {
+                    if let Err(error) = secrets::clear_source_password(&uid) {
+                        log::warn!("could not clear the keyring entry of {uid}: {error}");
+                    }
                 }
+                Ok::<_, String>(())
             },
+            glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |result: Result<(), String>| {
+                    if let Err(error) = result {
+                        log::error!(
+                            "could not remove account {account_id} from Evolution Data Server: {error}"
+                        );
+                        return;
+                    }
+                    if let Err(error) = dialog.db().borrow_mut().delete_account(account_id) {
+                        log::error!("could not delete account {account_id}: {error}");
+                    }
+                    dialog.reload();
+                }
+            ),
         );
-        self.reload();
     }
 
     fn on_add_clicked(&self) {

@@ -75,6 +75,33 @@ impl fmt::Display for Security {
     }
 }
 
+/// How an account signs in. Persisted as its lowercase name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Auth {
+    /// A password from the keyring.
+    #[default]
+    Password,
+    /// A short-lived token from Evolution Data Server (GNOME Online
+    /// Accounts or EDS's own OAuth services), fetched for every connection.
+    OAuth2,
+}
+
+impl Auth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Auth::Password => "password",
+            Auth::OAuth2 => "oauth2",
+        }
+    }
+
+    pub fn parse(text: &str) -> Auth {
+        match text {
+            "oauth2" => Auth::OAuth2,
+            _ => Auth::Password,
+        }
+    }
+}
+
 /// A port number from user input, or None when it isn't one. Returns None
 /// rather than an error: the caller is validating a text entry, so "not a port
 /// yet" is an expected state.
@@ -94,9 +121,21 @@ pub struct Account {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_security: Security,
-    /// Set when the account came from GNOME Online Accounts, which is then
-    /// where its credentials live instead of the keyring.
+    /// GNOME Online Accounts' id when the account comes from there; only
+    /// used to recognise the account across the move to EDS.
     pub goa_id: String,
+    /// The account's mail account source in Evolution Data Server, where its
+    /// servers and sign-in live. Empty only for an account not moved there yet.
+    pub eds_uid: String,
+    /// The SMTP transport source, which signs in separately.
+    pub eds_smtp_uid: String,
+    /// The top of the account's source tree: removed with the account, and
+    /// where a password stored once for the whole account is kept.
+    pub eds_root_uid: String,
+    pub imap_user: String,
+    pub imap_auth: Auth,
+    pub smtp_user: String,
+    pub smtp_auth: Auth,
     /// The colour that marks this account's mail, as a CSS hex string
     /// (`#rrggbb`). Empty until the user picks one; see [`Account::color_hex`].
     pub color: String,
@@ -176,8 +215,16 @@ pub fn is_hex_color(text: &str) -> bool {
 }
 
 impl Account {
+    /// Signs in with OAuth (Online Accounts and the like) rather than a
+    /// password.
     pub fn is_online_account(&self) -> bool {
-        !self.goa_id.is_empty()
+        self.imap_auth == Auth::OAuth2 || !self.goa_id.is_empty()
+    }
+
+    /// Created by this app in EDS, so removing it deletes it there too;
+    /// any other account is only hidden.
+    pub fn is_own(&self) -> bool {
+        self.eds_root_uid.starts_with(crate::eds::OWN_PREFIX)
     }
 }
 
@@ -193,6 +240,65 @@ pub struct NewAccount {
     pub smtp_port: u16,
     pub smtp_security: Security,
     pub goa_id: String,
+    pub eds_uid: String,
+    pub eds_smtp_uid: String,
+    pub eds_root_uid: String,
+    pub imap_user: String,
+    pub imap_auth: Auth,
+    pub smtp_user: String,
+    pub smtp_auth: Auth,
+}
+
+impl NewAccount {
+    /// The server and sign-in part of a stored account, to compare against
+    /// what EDS reports.
+    pub fn from_row(account: &Account) -> Self {
+        NewAccount {
+            email: account.email.clone(),
+            display_name: account.display_name.clone(),
+            imap_host: account.imap_host.clone(),
+            imap_port: account.imap_port,
+            imap_security: account.imap_security,
+            smtp_host: account.smtp_host.clone(),
+            smtp_port: account.smtp_port,
+            smtp_security: account.smtp_security,
+            goa_id: account.goa_id.clone(),
+            eds_uid: account.eds_uid.clone(),
+            eds_smtp_uid: account.eds_smtp_uid.clone(),
+            eds_root_uid: account.eds_root_uid.clone(),
+            imap_user: account.imap_user.clone(),
+            imap_auth: account.imap_auth,
+            smtp_user: account.smtp_user.clone(),
+            smtp_auth: account.smtp_auth,
+        }
+    }
+}
+
+impl From<&crate::eds::MailAccount> for NewAccount {
+    fn from(account: &crate::eds::MailAccount) -> Self {
+        NewAccount {
+            email: account.email.clone(),
+            display_name: if account.name.is_empty() {
+                account.email.split('@').next().unwrap_or("").to_string()
+            } else {
+                account.name.clone()
+            },
+            imap_host: account.imap.host.clone(),
+            imap_port: account.imap.port,
+            imap_security: account.imap.security,
+            smtp_host: account.smtp.host.clone(),
+            smtp_port: account.smtp.port,
+            smtp_security: account.smtp.security,
+            goa_id: account.goa_id.clone(),
+            eds_uid: account.uid.clone(),
+            eds_smtp_uid: account.smtp.uid.clone(),
+            eds_root_uid: account.root_uid.clone(),
+            imap_user: account.imap.user.clone(),
+            imap_auth: account.imap.auth,
+            smtp_user: account.smtp.user.clone(),
+            smtp_auth: account.smtp.auth,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -225,6 +225,10 @@ mod imp {
 
         pub db: OnceCell<Rc<RefCell<Database>>>,
         pub settings: OnceCell<gio::Settings>,
+        /// Evolution Data Server's registry signals, which re-read accounts.
+        pub eds_subscription: RefCell<Option<gio::SignalSubscription>>,
+        /// A re-read waiting for the registry's signals to settle.
+        pub eds_refresh: RefCell<Option<glib::SourceId>>,
         pub state: RefCell<State>,
         pub folder_root_store: OnceCell<gio::ListStore>,
         pub folder_tree_model: OnceCell<gtk::TreeListModel>,
@@ -376,6 +380,10 @@ impl MainWindow {
         if !window.state().is_online {
             window.show_offline_banner();
         }
+
+        // Accounts live in Evolution Data Server; what the database holds
+        // shows at once and catches up when the registry answers.
+        window.watch_eds();
 
         let has_accounts = window
             .db()

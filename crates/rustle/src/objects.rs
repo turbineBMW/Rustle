@@ -13,7 +13,7 @@ pub enum SidebarKind {
     /// Every account's inbox, merged.
     UnifiedInbox,
     /// A heading over an account's folders; not selectable.
-    Account(Account),
+    Account(Box<Account>),
     Folder(Folder),
 }
 
@@ -75,7 +75,7 @@ impl SidebarItem {
 
     pub fn account(&self) -> Option<Account> {
         match self.kind() {
-            SidebarKind::Account(account) => Some(account),
+            SidebarKind::Account(account) => Some(*account),
             _ => None,
         }
     }

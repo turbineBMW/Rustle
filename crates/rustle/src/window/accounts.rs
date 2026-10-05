@@ -4,11 +4,14 @@ use super::{MainWindow, PAGE_NO_ACCOUNT};
 use crate::composer::{ComposerWindow, Draft};
 use crate::dialogs::accounts::AccountsDialog;
 use crate::dialogs::add_account::AddAccountDialog;
+use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use gtk::gio;
 use gtk::glib;
 use rustle_core::address;
 use rustle_core::compose;
+use rustle_core::eds;
 use rustle_core::mime::ParsedMessage;
 use rustle_core::models::Account;
 
@@ -23,7 +26,141 @@ fn original_text(parsed: Option<&ParsedMessage>) -> String {
     }
 }
 
+/// How long registry signals are left to settle before accounts are re-read:
+/// one account arrives as several sources.
+const EDS_SETTLE_MS: u64 = 500;
+
 impl MainWindow {
+    /// Re-read accounts from Evolution Data Server whenever its registry
+    /// changes, and once now.
+    pub(super) fn watch_eds(&self) {
+        let bus = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+            Ok(bus) => bus,
+            Err(error) => {
+                log::warn!("no session bus to read accounts from: {error}");
+                return;
+            }
+        };
+        let window = self.downgrade();
+        let subscription = bus.subscribe_to_signal(
+            Some(eds::BUS_NAME),
+            None,
+            None,
+            None,
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |signal| {
+                // Sources announce themselves, vanish, and rewrite their
+                // key files (Data); status chatter is not an account change.
+                let is_change = match signal.signal_name {
+                    "InterfacesAdded" | "InterfacesRemoved" => true,
+                    "PropertiesChanged" => {
+                        signal.parameters.n_children() > 1
+                            && glib::VariantDict::new(Some(&signal.parameters.child_value(1)))
+                                .contains("Data")
+                    }
+                    _ => false,
+                };
+                if let (true, Some(window)) = (is_change, window.upgrade()) {
+                    window.schedule_eds_refresh();
+                }
+            },
+        );
+        self.imp().eds_subscription.replace(Some(subscription));
+        self.refresh_accounts_from_eds();
+    }
+
+    fn schedule_eds_refresh(&self) {
+        if let Some(pending) = self.imp().eds_refresh.take() {
+            pending.remove();
+        }
+        let window = self.downgrade();
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(EDS_SETTLE_MS),
+            move || {
+                if let Some(window) = window.upgrade() {
+                    window.imp().eds_refresh.take();
+                    window.refresh_accounts_from_eds();
+                }
+            },
+        );
+        self.imp().eds_refresh.replace(Some(source));
+    }
+
+    /// Bring the accounts in line with EDS. Accounts Rustle still kept
+    /// itself are moved there first, password and all.
+    pub(super) fn refresh_accounts_from_eds(&self) {
+        let outside = self
+            .db()
+            .borrow()
+            .accounts_outside_eds()
+            .unwrap_or_default();
+        workers::run(
+            move || {
+                let mut accounts = eds::mail_accounts().map_err(|error| error.to_string())?;
+                for account in outside {
+                    let is_in_eds = accounts.iter().any(|found| {
+                        (!account.goa_id.is_empty() && found.goa_id == account.goa_id)
+                            || (found.email.eq_ignore_ascii_case(&account.email)
+                                && found.imap.host.eq_ignore_ascii_case(&account.imap_host))
+                    });
+                    // Online Accounts ones are EDS's to create.
+                    if is_in_eds || !account.goa_id.is_empty() {
+                        continue;
+                    }
+                    match move_to_eds(&account) {
+                        Ok(updated) => accounts = updated,
+                        Err(error) => log::error!(
+                            "could not move account {} to Evolution Data Server: {error}",
+                            account.email
+                        ),
+                    }
+                }
+                Ok::<_, String>(accounts)
+            },
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |result: Result<Vec<eds::MailAccount>, String>| {
+                    let accounts = match result {
+                        Ok(accounts) => accounts,
+                        Err(error) => {
+                            log::warn!(
+                                "could not read accounts from Evolution Data Server: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    let reconciled = match window.db().borrow_mut().reconcile_eds(&accounts) {
+                        Ok(reconciled) => reconciled,
+                        Err(error) => {
+                            log::error!(
+                                "could not update accounts from Evolution Data Server: {error}"
+                            );
+                            return;
+                        }
+                    };
+                    if !reconciled.is_changed {
+                        return;
+                    }
+                    let had_view = window.state().view.is_some();
+                    window.reload_accounts();
+                    // A first view syncs everything itself.
+                    if had_view {
+                        let added: Vec<Account> = reconciled
+                            .added
+                            .iter()
+                            .filter_map(|id| window.db().borrow().account(*id).ok().flatten())
+                            .collect();
+                        for account in added {
+                            window.start_sync(&account, true, None, 0);
+                        }
+                    }
+                }
+            ),
+        );
+    }
+
     pub(super) fn on_manage_accounts(&self) {
         let dialog = AccountsDialog::new(self.db(), &self.settings());
         dialog.connect_account_added(glib::clone!(
@@ -87,14 +224,20 @@ impl MainWindow {
             return;
         }
         self.reload_folders();
-        // Highest id sorts last, so this is the one just added.
-        let newest = self
-            .db()
-            .borrow()
-            .accounts()
-            .ok()
-            .and_then(|a| a.last().cloned());
-        if let Some(account) = newest {
+        // A new account, or one shown again, has no folders yet.
+        let fresh: Vec<Account> = {
+            let db = self.db();
+            let db = db.borrow();
+            db.accounts()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|account| {
+                    db.folders_for_account(account.id)
+                        .is_ok_and(|folders| folders.is_empty())
+                })
+                .collect()
+        };
+        for account in fresh {
             self.start_sync(&account, true, None, 0);
         }
     }
@@ -250,4 +393,22 @@ impl MainWindow {
             self.drain_outbox(&account);
         }
     }
+}
+
+/// Move an account Rustle kept itself into EDS, with its password. Runs on a
+/// worker; returns the registry's accounts once the new one is listed.
+fn move_to_eds(account: &Account) -> Result<Vec<eds::MailAccount>, String> {
+    let password = rustle_core::secrets::legacy_password(account.id)
+        .map_err(|error| format!("could not read its password: {error}"))?
+        .ok_or("it has no password in the keyring")?;
+    let accounts =
+        eds::create_password_account(&eds::NewMailAccount::from_account(account), &password)?;
+    if let Err(error) = rustle_core::secrets::clear_legacy_password(account.id) {
+        log::warn!(
+            "could not remove the old keyring entry of {}: {error}",
+            account.email
+        );
+    }
+    log::info!("moved account {} to Evolution Data Server", account.email);
+    Ok(accounts)
 }

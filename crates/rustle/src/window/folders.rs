@@ -423,7 +423,9 @@ impl MainWindow {
             root_store.append(&SidebarItem::new(SidebarKind::UnifiedInbox));
         }
         for account in accounts {
-            root_store.append(&SidebarItem::new(SidebarKind::Account(account.clone())));
+            root_store.append(&SidebarItem::new(SidebarKind::Account(Box::new(
+                account.clone(),
+            ))));
         }
         match keep {
             Some(View::Folder(folder)) => self.select_folder_by_id(folder.id),

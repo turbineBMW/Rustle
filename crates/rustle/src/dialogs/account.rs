@@ -1,13 +1,17 @@
 //! The Add Account dialog: a typed-in IMAP/SMTP account, with the server
-//! fields filled in from the address for the providers we know.
+//! fields filled in from the address for the providers we know. The account
+//! is created in Evolution Data Server, so other apps see it too; an iCloud
+//! account brings its calendars and contacts along.
 
+use crate::i18n::gettext;
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use rustle_core::db::Database;
-use rustle_core::models::{parse_port, NewAccount, Security};
-use rustle_core::{providers, secrets};
+use rustle_core::eds;
+use rustle_core::models::{parse_port, Security};
+use rustle_core::providers;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -226,38 +230,64 @@ impl AccountDialog {
         ) else {
             return;
         };
-        let new_account = NewAccount {
-            email: imp.email_row.text().trim().to_string(),
-            display_name: imp.display_name_row.text().trim().to_string(),
+        let email = imp.email_row.text().trim().to_string();
+        let account = eds::NewMailAccount {
+            dav: eds::is_icloud(&email).then(|| {
+                (
+                    eds::ICLOUD_CALDAV.to_string(),
+                    eds::ICLOUD_CARDDAV.to_string(),
+                )
+            }),
+            email,
+            name: imp.display_name_row.text().trim().to_string(),
             imap_host: imp.imap_host_row.text().trim().to_string(),
             imap_port,
             imap_security: Security::from_index(imp.imap_security_row.selected()),
             smtp_host: imp.smtp_host_row.text().trim().to_string(),
             smtp_port,
             smtp_security: Security::from_index(imp.smtp_security_row.selected()),
-            goa_id: String::new(),
         };
-        let db = imp.db.borrow().clone().expect("set at construction");
-        let account = match db.borrow().save_account(&new_account) {
-            Ok(account) => account,
-            Err(error) => {
-                log::error!("could not save account {}: {error}", new_account.email);
-                return;
-            }
-        };
-        // The keyring blocks on IPC and may prompt to unlock; keep the main
-        // loop responsive while it does.
         let password = imp.password_row.text().to_string();
-        let email = account.email.clone();
+        imp.add_button.set_sensitive(false);
+        // EDS and the keyring block on IPC, and the keyring may prompt to
+        // unlock; keep the main loop responsive while they do.
         workers::run(
-            move || secrets::store_password(account.id, &password),
-            move |result| {
-                if let Err(error) = result {
-                    log::error!("could not store the password for {email}: {error}");
-                }
+            move || {
+                let created = eds::create_password_account(&account, &password);
+                (account.email, created)
             },
+            glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |(email, created): (String, Result<Vec<eds::MailAccount>, String>)| {
+                    let accounts = match created {
+                        Ok(accounts) => accounts,
+                        Err(error) => {
+                            log::error!("could not add account {email}: {error}");
+                            dialog.imp().add_button.set_sensitive(true);
+                            let alert = adw::AlertDialog::builder()
+                                .heading(gettext("Could Not Add Account"))
+                                .body(error)
+                                .build();
+                            alert.add_response("close", &gettext("Close"));
+                            alert.present(Some(&dialog));
+                            return;
+                        }
+                    };
+                    let db = dialog
+                        .imp()
+                        .db
+                        .borrow()
+                        .clone()
+                        .expect("set at construction");
+                    if let Err(error) = db.borrow_mut().reconcile_eds(&accounts) {
+                        log::error!("could not save account {email}: {error}");
+                        return;
+                    }
+                    dialog.emit_by_name::<()>("account-added", &[]);
+                    dialog.close();
+                }
+            ),
         );
-        self.emit_by_name::<()>("account-added", &[]);
-        self.close();
     }
 }
