@@ -12,6 +12,11 @@
 //! opening its own session at launch was enough to abort gnome-keyring-daemon
 //! (it loses track of short-lived clients). EDS's entries are only there, so
 //! this never uses a sandbox's private keyring file.
+//!
+//! A sandbox can't reach the keyring. On omarchy-mobile the phone's bridge
+//! keeps EDS's entries for it (`dev.omarchy.Accounts`, one source at a time),
+//! and when that name is on the bus the EDS passwords go through it instead.
+//! The pre-EDS passwords were never there, so a sandbox has none to move.
 
 // oo7's error is large: the calls in here keep it, and the public API boxes
 // it (`Result`).
@@ -86,7 +91,11 @@ fn source_password(uid: &str) -> Result<Option<String>> {
     if let Some(password) = lock(&PASSWORDS).as_ref().and_then(|p| p.get(uid)) {
         return Ok(Some(password.clone()));
     }
-    let password = find(&HashMap::from([("e-source-uid", uid)]))?;
+    let password = if keeper::available() {
+        keeper::lookup(uid)?
+    } else {
+        find(&HashMap::from([("e-source-uid", uid)]))?
+    };
     if let Some(password) = &password {
         lock(&PASSWORDS)
             .get_or_insert_with(HashMap::new)
@@ -100,6 +109,9 @@ pub fn store_source_password(uid: &str, label: &str, password: &str) -> Result<(
     lock(&PASSWORDS)
         .get_or_insert_with(HashMap::new)
         .remove(uid);
+    if keeper::available() {
+        return keeper::store(uid, label, password);
+    }
     let attributes = HashMap::from([
         ("xdg:schema", EDS_SCHEMA),
         ("e-source-uid", uid),
@@ -123,6 +135,9 @@ pub fn clear_source_password(uid: &str) -> Result<()> {
     lock(&PASSWORDS)
         .get_or_insert_with(HashMap::new)
         .remove(uid);
+    if keeper::available() {
+        return keeper::clear(uid);
+    }
     with_keyring(|keyring| {
         block_on(async {
             for item in keyring
@@ -138,6 +153,9 @@ pub fn clear_source_password(uid: &str) -> Result<()> {
 
 /// The password Rustle stored for an account before EDS, if any.
 pub fn legacy_password(account_id: i64) -> Result<Option<String>> {
+    if keeper::available() {
+        return Ok(None);
+    }
     let id = account_id.to_string();
     find(&HashMap::from([
         ("xdg:schema", LEGACY_SCHEMA),
@@ -146,6 +164,9 @@ pub fn legacy_password(account_id: i64) -> Result<Option<String>> {
 }
 
 pub fn clear_legacy_password(account_id: i64) -> Result<()> {
+    if keeper::available() {
+        return Ok(());
+    }
     let id = account_id.to_string();
     with_keyring(|keyring| {
         block_on(async {
@@ -274,5 +295,80 @@ fn credential(account: &Account, uid: &str, user: &str, auth: Auth) -> Option<Cr
             warn!("no password in the keyring for account {}", account.email);
             None
         }
+    }
+}
+
+/// omarchy-mobile's keeper of EDS's passwords, for sandboxed apps: the
+/// phone's bridge, `dev.omarchy.Accounts`, which reads and writes only the
+/// keyring entries EDS keeps per source.
+mod keeper {
+    use super::Result;
+    use crate::net::NET_TIMEOUT;
+    use gio::prelude::*;
+    use glib::Variant;
+    use std::sync::OnceLock;
+
+    const NAME: &str = "dev.omarchy.Accounts";
+    const PATH: &str = "/dev/omarchy/Accounts";
+
+    fn failed(error: glib::Error) -> Box<oo7::dbus::Error> {
+        Box::new(oo7::dbus::Error::IO(std::io::Error::other(
+            error.to_string(),
+        )))
+    }
+
+    /// Whether the keeper is on the bus; asked once.
+    pub fn available() -> bool {
+        static AVAILABLE: OnceLock<bool> = OnceLock::new();
+        *AVAILABLE.get_or_init(|| {
+            let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+                return false;
+            };
+            bus.call_sync(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                Some(&(NAME,).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                -1,
+                gio::Cancellable::NONE,
+            )
+            .ok()
+            .and_then(|reply| reply.child_value(0).get::<bool>())
+            .unwrap_or(false)
+        })
+    }
+
+    fn call(method: &str, parameters: Variant) -> Result<Variant> {
+        let bus =
+            gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).map_err(failed)?;
+        bus.call_sync(
+            Some(NAME),
+            PATH,
+            NAME,
+            method,
+            Some(&parameters),
+            None,
+            gio::DBusCallFlags::NONE,
+            NET_TIMEOUT.as_millis() as i32,
+            gio::Cancellable::NONE,
+        )
+        .map_err(failed)
+    }
+
+    pub fn lookup(uid: &str) -> Result<Option<String>> {
+        let reply = call("LookupPassword", (uid,).to_variant())?;
+        let password = reply.child_value(0).str().unwrap_or("").to_string();
+        Ok(Some(password).filter(|password| !password.is_empty()))
+    }
+
+    pub fn store(uid: &str, label: &str, password: &str) -> Result<()> {
+        call("StorePassword", (uid, label, password).to_variant()).map(|_| ())
+    }
+
+    pub fn clear(uid: &str) -> Result<()> {
+        call("ClearPassword", (uid,).to_variant()).map(|_| ())
     }
 }
