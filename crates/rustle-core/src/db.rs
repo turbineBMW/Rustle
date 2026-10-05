@@ -1,8 +1,11 @@
 //! All SQLite access. One connection, main thread only: the worker threads
 //! do network and hand results back here.
 
+use crate::eds;
 use crate::folders;
-use crate::models::{is_hex_color, Account, Email, Folder, MessageHeader, NewAccount, Security};
+use crate::models::{
+    is_hex_color, Account, Auth, Email, Folder, MessageHeader, NewAccount, Security,
+};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::path::Path;
@@ -34,7 +37,31 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE emails DROP COLUMN conversation_id;
      ALTER TABLE emails DROP COLUMN in_reply_to;
      ALTER TABLE emails DROP COLUMN reference_ids",
+    "ALTER TABLE accounts ADD COLUMN eds_uid TEXT NOT NULL DEFAULT '';
+     ALTER TABLE accounts ADD COLUMN eds_smtp_uid TEXT NOT NULL DEFAULT '';
+     ALTER TABLE accounts ADD COLUMN eds_root_uid TEXT NOT NULL DEFAULT '';
+     ALTER TABLE accounts ADD COLUMN imap_user TEXT NOT NULL DEFAULT '';
+     ALTER TABLE accounts ADD COLUMN imap_auth TEXT NOT NULL DEFAULT 'password';
+     ALTER TABLE accounts ADD COLUMN smtp_user TEXT NOT NULL DEFAULT '';
+     ALTER TABLE accounts ADD COLUMN smtp_auth TEXT NOT NULL DEFAULT 'password';
+     ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+     UPDATE accounts SET imap_auth = 'oauth2', smtp_auth = 'oauth2' WHERE goa_id <> '';",
 ];
+
+/// `accounts.hidden`: shown, removed by the user (EDS still has it), or
+/// gone from EDS (kept so its mail returns if the account does).
+const VISIBLE: i64 = 0;
+const HIDDEN_BY_USER: i64 = 1;
+const MISSING_FROM_EDS: i64 = 2;
+
+/// What `reconcile_eds` changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Accounts EDS has that Rustle didn't; they need a first sync.
+    pub added: Vec<i64>,
+    /// Anything about the visible accounts changed.
+    pub is_changed: bool,
+}
 
 /// Turn free text into a safe FTS5 query: each word matched as a prefix.
 fn fts_query(text: &str) -> String {
@@ -162,6 +189,13 @@ impl Database {
             smtp_port: row.get::<_, i64>("smtp_port")? as u16,
             smtp_security: Security::parse(&row.get::<_, String>("smtp_security")?),
             goa_id: row.get("goa_id")?,
+            eds_uid: row.get("eds_uid")?,
+            eds_smtp_uid: row.get("eds_smtp_uid")?,
+            eds_root_uid: row.get("eds_root_uid")?,
+            imap_user: row.get("imap_user")?,
+            imap_auth: Auth::parse(&row.get::<_, String>("imap_auth")?),
+            smtp_user: row.get("smtp_user")?,
+            smtp_auth: Auth::parse(&row.get::<_, String>("smtp_auth")?),
             color: row.get("color")?,
             signature: row.get("signature")?,
             label: row.get("label")?,
@@ -170,9 +204,31 @@ impl Database {
     }
 
     pub fn accounts(&self) -> Result<Vec<Account>> {
-        let mut statement = self.conn.prepare("SELECT * FROM accounts ORDER BY id")?;
-        let rows = statement.query_map([], Self::account_from_row)?;
+        self.accounts_where(VISIBLE)
+    }
+
+    /// Accounts the user removed from Rustle that EDS still has, so they
+    /// can be shown again.
+    pub fn hidden_accounts(&self) -> Result<Vec<Account>> {
+        self.accounts_where(HIDDEN_BY_USER)
+    }
+
+    fn accounts_where(&self, hidden: i64) -> Result<Vec<Account>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT * FROM accounts WHERE hidden = ?1 ORDER BY id")?;
+        let rows = statement.query_map([hidden], Self::account_from_row)?;
         rows.collect()
+    }
+
+    /// Accounts still set up the way Rustle kept them before EDS; they are
+    /// moved there once and then read from it like any other.
+    pub fn accounts_outside_eds(&self) -> Result<Vec<Account>> {
+        Ok(self
+            .accounts()?
+            .into_iter()
+            .filter(|account| account.eds_uid.is_empty())
+            .collect())
     }
 
     pub fn account(&self, account_id: i64) -> Result<Option<Account>> {
@@ -188,7 +244,9 @@ impl Database {
     pub fn save_account(&self, account: &NewAccount) -> Result<Account> {
         self.conn.execute(
             "INSERT INTO accounts (email, display_name, imap_host, imap_port, smtp_host, smtp_port,
-                imap_security, smtp_security, goa_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                imap_security, smtp_security, goa_id, eds_uid, eds_smtp_uid, eds_root_uid,
+                imap_user, imap_auth, smtp_user, smtp_auth)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 account.email,
                 account.display_name,
@@ -199,10 +257,175 @@ impl Database {
                 account.imap_security.as_str(),
                 account.smtp_security.as_str(),
                 account.goa_id,
+                account.eds_uid,
+                account.eds_smtp_uid,
+                account.eds_root_uid,
+                account.imap_user,
+                account.imap_auth.as_str(),
+                account.smtp_user,
+                account.smtp_auth.as_str(),
             ],
         )?;
         let id = self.conn.last_insert_rowid();
         Ok(self.account(id)?.expect("the row was just inserted"))
+    }
+
+    /// Bring the accounts in line with Evolution Data Server's. An EDS account
+    /// is matched to a row by its source, else (once, when moving to EDS) by
+    /// its Online Accounts id, else by address and IMAP server; a match keeps
+    /// its mail, colour, label and signature and takes EDS's servers and
+    /// sign-in. Unmatched EDS accounts are added. Rows whose source is gone
+    /// are set aside with their mail rather than deleted, so a registry that
+    /// is briefly away costs nothing. Only call with a list EDS returned.
+    pub fn reconcile_eds(&mut self, accounts: &[eds::MailAccount]) -> Result<Reconciled> {
+        let transaction = self.conn.transaction()?;
+        let rows: Vec<(Account, i64)> = {
+            let mut statement = transaction.prepare("SELECT * FROM accounts ORDER BY id")?;
+            let rows = statement.query_map([], |row| {
+                Ok((Self::account_from_row(row)?, row.get::<_, i64>("hidden")?))
+            })?;
+            rows.collect::<Result<_>>()?
+        };
+        let mut used: HashSet<i64> = HashSet::new();
+        let mut reconciled = Reconciled::default();
+        for found in accounts {
+            let unlinked =
+                |row: &&(Account, i64)| row.0.eds_uid.is_empty() && !used.contains(&row.0.id);
+            let matched = rows
+                .iter()
+                .find(|(row, _)| row.eds_uid == found.uid)
+                .or_else(|| {
+                    rows.iter()
+                        .filter(unlinked)
+                        .find(|(row, _)| !found.goa_id.is_empty() && row.goa_id == found.goa_id)
+                })
+                .or_else(|| {
+                    rows.iter().filter(unlinked).find(|(row, _)| {
+                        row.email.eq_ignore_ascii_case(&found.email)
+                            && row.imap_host.eq_ignore_ascii_case(&found.imap.host)
+                    })
+                });
+            let wanted = NewAccount::from(found);
+            match matched {
+                Some((row, hidden)) => {
+                    used.insert(row.id);
+                    let was_visible = *hidden == VISIBLE;
+                    let hidden = if *hidden == MISSING_FROM_EDS {
+                        VISIBLE
+                    } else {
+                        *hidden
+                    };
+                    let is_same =
+                        NewAccount::from_row(row) == wanted && hidden == VISIBLE && was_visible;
+                    transaction.execute(
+                        "UPDATE accounts SET email = ?2, display_name = ?3, imap_host = ?4,
+                            imap_port = ?5, smtp_host = ?6, smtp_port = ?7, imap_security = ?8,
+                            smtp_security = ?9, goa_id = ?10, eds_uid = ?11, eds_smtp_uid = ?12,
+                            eds_root_uid = ?13, imap_user = ?14, imap_auth = ?15,
+                            smtp_user = ?16, smtp_auth = ?17, hidden = ?18
+                         WHERE id = ?1",
+                        params![
+                            row.id,
+                            wanted.email,
+                            wanted.display_name,
+                            wanted.imap_host,
+                            wanted.imap_port,
+                            wanted.smtp_host,
+                            wanted.smtp_port,
+                            wanted.imap_security.as_str(),
+                            wanted.smtp_security.as_str(),
+                            wanted.goa_id,
+                            wanted.eds_uid,
+                            wanted.eds_smtp_uid,
+                            wanted.eds_root_uid,
+                            wanted.imap_user,
+                            wanted.imap_auth.as_str(),
+                            wanted.smtp_user,
+                            wanted.smtp_auth.as_str(),
+                            hidden,
+                        ],
+                    )?;
+                    if hidden == VISIBLE && !is_same {
+                        reconciled.is_changed = true;
+                        if !was_visible {
+                            reconciled.added.push(row.id);
+                        }
+                    }
+                }
+                None => {
+                    transaction.execute(
+                        "INSERT INTO accounts (email, display_name, imap_host, imap_port,
+                            smtp_host, smtp_port, imap_security, smtp_security, goa_id, eds_uid,
+                            eds_smtp_uid, eds_root_uid, imap_user, imap_auth, smtp_user,
+                            smtp_auth, label)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                            ?15, ?16, ?17)",
+                        params![
+                            wanted.email,
+                            wanted.display_name,
+                            wanted.imap_host,
+                            wanted.imap_port,
+                            wanted.smtp_host,
+                            wanted.smtp_port,
+                            wanted.imap_security.as_str(),
+                            wanted.smtp_security.as_str(),
+                            wanted.goa_id,
+                            wanted.eds_uid,
+                            wanted.eds_smtp_uid,
+                            wanted.eds_root_uid,
+                            wanted.imap_user,
+                            wanted.imap_auth.as_str(),
+                            wanted.smtp_user,
+                            wanted.smtp_auth.as_str(),
+                            // EDS names Online Accounts ones ("Gmail"); its
+                            // default is the address, which needs no label.
+                            if found.label.eq_ignore_ascii_case(&found.email) {
+                                ""
+                            } else {
+                                found.label.as_str()
+                            },
+                        ],
+                    )?;
+                    reconciled.added.push(transaction.last_insert_rowid());
+                    reconciled.is_changed = true;
+                }
+            }
+        }
+        for (row, hidden) in &rows {
+            // An Online Accounts row EDS has no mail account for is gone (or
+            // has mail off); a password row not moved to EDS yet is left be.
+            let is_known_to_eds = !row.eds_uid.is_empty() || !row.goa_id.is_empty();
+            if is_known_to_eds && !used.contains(&row.id) && *hidden == VISIBLE {
+                transaction.execute(
+                    "UPDATE accounts SET hidden = ?2 WHERE id = ?1",
+                    params![row.id, MISSING_FROM_EDS],
+                )?;
+                reconciled.is_changed = true;
+            }
+        }
+        transaction.commit()?;
+        Ok(reconciled)
+    }
+
+    /// Take an account out of Rustle while EDS keeps it: its mail goes, the
+    /// row stays so the account isn't added straight back.
+    pub fn hide_account(&mut self, account_id: i64) -> Result<()> {
+        let transaction = self.conn.transaction()?;
+        Self::delete_mail(&transaction, account_id)?;
+        transaction.execute(
+            "UPDATE accounts SET hidden = ?2 WHERE id = ?1",
+            params![account_id, HIDDEN_BY_USER],
+        )?;
+        transaction.commit()
+    }
+
+    /// Bring back an account the user hid; it syncs from scratch.
+    pub fn show_account(&self, account_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET hidden = ?2 WHERE id = ?1",
+            params![account_id, VISIBLE],
+        )?;
+        Ok(())
     }
 
     /// Stores the colour that marks this account's mail; anything that isn't
@@ -244,6 +467,12 @@ impl Database {
 
     pub fn delete_account(&mut self, account_id: i64) -> Result<()> {
         let transaction = self.conn.transaction()?;
+        Self::delete_mail(&transaction, account_id)?;
+        transaction.execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
+        transaction.commit()
+    }
+
+    fn delete_mail(transaction: &rusqlite::Transaction, account_id: i64) -> Result<()> {
         // Flatten the tree first: the parent_id FK rejects deleting a parent
         // while a child still points at it.
         transaction.execute(
@@ -255,8 +484,7 @@ impl Database {
             [account_id],
         )?;
         transaction.execute("DELETE FROM folders WHERE account_id = ?1", [account_id])?;
-        transaction.execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
-        transaction.commit()
+        Ok(())
     }
 
     // --- folders ----------------------------------------------------------
@@ -778,6 +1006,13 @@ mod tests {
             smtp_port: 587,
             smtp_security: Security::StartTls,
             goa_id: String::new(),
+            eds_uid: String::new(),
+            eds_smtp_uid: String::new(),
+            eds_root_uid: String::new(),
+            imap_user: String::new(),
+            imap_auth: Auth::Password,
+            smtp_user: String::new(),
+            smtp_auth: Auth::Password,
         }
     }
 
@@ -846,20 +1081,145 @@ mod tests {
         assert!(db.accounts().unwrap().is_empty());
     }
 
+    fn eds_account(uid: &str, email: &str, imap_host: &str, goa_id: &str) -> eds::MailAccount {
+        let server = |uid: &str, host: &str, port| eds::Server {
+            uid: uid.into(),
+            host: host.into(),
+            port,
+            security: Security::Tls,
+            user: email.into(),
+            auth: if goa_id.is_empty() {
+                Auth::Password
+            } else {
+                Auth::OAuth2
+            },
+        };
+        eds::MailAccount {
+            uid: uid.into(),
+            root_uid: format!("{uid}-root"),
+            goa_id: goa_id.into(),
+            email: email.into(),
+            name: "Ada".into(),
+            label: "Gmail".into(),
+            imap: server(uid, imap_host, 993),
+            smtp: server(&format!("{uid}-smtp"), "smtp.example.com", 465),
+        }
+    }
+
+    #[test]
+    fn moving_to_eds_keeps_accounts_and_their_mail() {
+        let mut db = Database::open_in_memory().unwrap();
+        // Before EDS: one Online Accounts row and one typed-in bridge row.
+        let online = db
+            .save_account(&NewAccount {
+                email: "ada@gmail.com".into(),
+                imap_host: "imap.gmail.com".into(),
+                goa_id: "account_1".into(),
+                imap_auth: Auth::OAuth2,
+                ..account()
+            })
+            .unwrap();
+        let bridge = db
+            .save_account(&NewAccount {
+                email: "ada@work.com".into(),
+                imap_host: "127.0.0.1".into(),
+                ..account()
+            })
+            .unwrap();
+        db.set_account_color(online.id, "#e62d42").unwrap();
+        let inbox = db
+            .get_or_create_folder(bridge.id, "INBOX", "mail-unread-symbolic")
+            .unwrap();
+        let from_eds = [
+            eds_account("gmail-mail", "ada@gmail.com", "imap.gmail.com", "account_1"),
+            eds_account("bridge-mail", "Ada@Work.com", "127.0.0.1", ""),
+        ];
+        let reconciled = db.reconcile_eds(&from_eds).unwrap();
+        assert!(reconciled.added.is_empty());
+        assert!(reconciled.is_changed);
+        let accounts = db.accounts().unwrap();
+        assert_eq!(accounts.len(), 2);
+        let online = db.account(online.id).unwrap().unwrap();
+        assert_eq!(online.eds_uid, "gmail-mail");
+        assert_eq!(online.eds_smtp_uid, "gmail-mail-smtp");
+        assert_eq!(online.smtp_auth, Auth::OAuth2);
+        assert_eq!(online.color, "#e62d42", "local settings stay");
+        let bridge = db.account(bridge.id).unwrap().unwrap();
+        assert_eq!(bridge.eds_uid, "bridge-mail");
+        assert_eq!(db.folders_for_account(bridge.id).unwrap(), vec![inbox]);
+        assert!(db.accounts_outside_eds().unwrap().is_empty());
+        // Nothing to do the second time.
+        assert_eq!(db.reconcile_eds(&from_eds).unwrap(), Reconciled::default());
+    }
+
+    #[test]
+    fn eds_accounts_come_go_and_stay_hidden_when_removed_here() {
+        let mut db = Database::open_in_memory().unwrap();
+        let gmail = eds_account("gmail-mail", "ada@gmail.com", "imap.gmail.com", "account_1");
+        let reconciled = db.reconcile_eds(std::slice::from_ref(&gmail)).unwrap();
+        assert_eq!(reconciled.added.len(), 1);
+        let id = reconciled.added[0];
+        let added = db.account(id).unwrap().unwrap();
+        assert_eq!(added.label, "Gmail");
+        assert_eq!(added.display_name, "Ada");
+
+        // Gone from EDS: set aside, and back with its id when it returns.
+        db.reconcile_eds(&[]).unwrap();
+        assert!(db.accounts().unwrap().is_empty());
+        let back = db.reconcile_eds(std::slice::from_ref(&gmail)).unwrap();
+        assert_eq!(back.added, vec![id]);
+        assert_eq!(db.accounts().unwrap().len(), 1);
+
+        // Removed in Rustle: hidden until shown again, whatever EDS says.
+        db.hide_account(id).unwrap();
+        let reconciled = db.reconcile_eds(std::slice::from_ref(&gmail)).unwrap();
+        assert!(!reconciled.is_changed);
+        assert!(db.accounts().unwrap().is_empty());
+        assert_eq!(db.hidden_accounts().unwrap().len(), 1);
+        db.show_account(id).unwrap();
+        assert_eq!(db.accounts().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn online_accounts_rows_without_eds_mail_are_set_aside() {
+        let mut db = Database::open_in_memory().unwrap();
+        db.save_account(&NewAccount {
+            goa_id: "account_9".into(),
+            ..account()
+        })
+        .unwrap();
+        let typed = db.save_account(&account()).unwrap();
+        db.reconcile_eds(&[]).unwrap();
+        // The typed-in one waits to be moved to EDS rather than vanishing.
+        assert_eq!(db.accounts().unwrap(), vec![typed]);
+    }
+
     #[test]
     fn existing_mail_survives_removal_of_grouping_columns() {
         let old = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
         old.create_tables().unwrap();
-        for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        let removal = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("DROP COLUMN conversation_id"))
+            .unwrap();
+        for sql in &MIGRATIONS[..removal] {
             old.conn.execute_batch(sql).unwrap();
         }
         old.conn
-            .pragma_update(None, "user_version", (MIGRATIONS.len() - 1) as i64)
+            .pragma_update(None, "user_version", removal as i64)
             .unwrap();
-        let account = old.save_account(&account()).unwrap();
-        let inbox = old.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        // That schema predates columns save_account writes today.
+        old.conn
+            .execute(
+                "INSERT INTO accounts (email, display_name, imap_host, imap_port, smtp_host, smtp_port)
+                 VALUES ('me@example.com', 'Me', 'imap.example.com', 993, 'smtp.example.com', 587)",
+                [],
+            )
+            .unwrap();
+        let account_id = old.conn.last_insert_rowid();
+        let inbox = old.get_or_create_folder(account_id, "INBOX", "i").unwrap();
         old.save_incoming_email(
             inbox.id,
             &header("1", "Topic", "2026-01-01T00:00:00Z", "Ada"),

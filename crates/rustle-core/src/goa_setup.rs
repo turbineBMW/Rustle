@@ -10,6 +10,9 @@ const DBUS_NAME: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const SETTINGS_BUS_NAME: &str = "org.gnome.Settings";
 const SECRETS_BUS_NAME: &str = "org.freedesktop.secrets";
+pub const GOA_BUS_NAME: &str = "org.gnome.OnlineAccounts";
+/// Where GNOME Online Accounts publishes its accounts, watched for changes.
+pub const GOA_OBJECT_PATH: &str = "/org/gnome/OnlineAccounts";
 pub const STANDALONE_SETTINGS: &str = "gnome-online-accounts-gtk";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ impl Desktop {
 pub enum Component {
     /// goa-daemon, which holds the accounts and hands out tokens.
     Daemon,
+    /// Evolution Data Server's registry, where Rustle reads every account.
+    DataServer,
     /// GNOME Settings, whose Online Accounts panel adds them on GNOME.
     GnomeSettings,
     /// The standalone window that adds them elsewhere.
@@ -62,6 +67,7 @@ impl Component {
     pub fn package(self) -> &'static str {
         match self {
             Component::Daemon => "gnome-online-accounts",
+            Component::DataServer => "evolution-data-server",
             Component::GnomeSettings => "gnome-control-center",
             Component::StandaloneSettings => STANDALONE_SETTINGS,
             Component::Keyring => "gnome-keyring",
@@ -72,15 +78,17 @@ impl Component {
         match desktop {
             Desktop::Gnome => vec![
                 Component::Daemon,
+                Component::DataServer,
                 Component::GnomeSettings,
                 Component::Keyring,
             ],
             Desktop::Other => vec![
                 Component::Daemon,
+                Component::DataServer,
                 Component::StandaloneSettings,
                 Component::Keyring,
             ],
-            Desktop::Phone => vec![Component::Daemon],
+            Desktop::Phone => vec![Component::Daemon, Component::DataServer],
         }
     }
 }
@@ -216,7 +224,8 @@ pub fn check() -> Setup {
     let missing = Component::required_on(desktop)
         .into_iter()
         .filter(|component| match component {
-            Component::Daemon => !has_name(crate::goa::BUS_NAME),
+            Component::Daemon => !has_name(GOA_BUS_NAME),
+            Component::DataServer => !has_name(crate::eds::BUS_NAME),
             Component::GnomeSettings => {
                 !has_name(SETTINGS_BUS_NAME) && !is_on_path("gnome-control-center")
             }
@@ -298,7 +307,7 @@ mod tests {
         assert!(Component::required_on(Desktop::Gnome).contains(&Component::GnomeSettings));
         assert_eq!(
             Component::required_on(Desktop::Phone),
-            vec![Component::Daemon]
+            vec![Component::Daemon, Component::DataServer]
         );
         assert!(Component::required_on(Desktop::Other).contains(&Component::StandaloneSettings));
     }

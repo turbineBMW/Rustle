@@ -2,7 +2,9 @@
 
 A native GTK 4 / libadwaita email client for GNOME, written in Rust.
 
-- Multiple IMAP/SMTP accounts, or accounts imported from GNOME Online Accounts (OAuth)
+- Every mail account on the desktop, from Evolution Data Server: GNOME Online Accounts
+  (OAuth), graphmail-bridge, Evolution's, or typed in here (iCloud brings its calendars
+  and contacts along)
 - A unified inbox across every account, plus each account's own folder tree
 - Individual emails, full-text search, load-on-scroll history
 - Pinned emails stay at the top of the list, in sync with Outlook through graphmail-bridge (the `$Pinned` keyword)
@@ -13,7 +15,8 @@ A native GTK 4 / libadwaita email client for GNOME, written in Rust.
 ## Build
 
 Needs `cargo`, GTK 4 ≥ 4.18, libadwaita ≥ 1.8, WebKitGTK 6.0, `blueprint-compiler`,
-`glib-compile-schemas` (glib2), sqlite is bundled.
+`glib-compile-schemas` (glib2), sqlite is bundled. At runtime, Evolution Data Server
+(`evolution-data-server`) and a Secret Service keyring.
 
 ```
 cargo run -p rustle      # run from the checkout — no install needed
@@ -22,7 +25,23 @@ sh install.sh            # install to ~/.local (PREFIX=/usr for system-wide)
 ```
 
 `RUSTLE_LOG=debug` turns on logging. Data lives in `$XDG_DATA_HOME/rustle/rustle.db`,
-passwords in the system keyring, settings under the `io.github.turbinebmw.Rustle` schema.
+settings under the `io.github.turbinebmw.Rustle` schema.
+
+## Accounts
+
+Rustle reads its accounts from Evolution Data Server (EDS), the registry GNOME Online
+Accounts, Evolution and graphmail-bridge (`graphmail-bridge eds-setup`) already keep
+theirs in, and watches it: an account added there appears in Rustle by itself.
+Servers and sign-in come from EDS — OAuth tokens through its registry, passwords from
+the keyring entry EDS keeps for the account. Rustle keeps only what EDS has no place
+for: colour, label, signature, notification sound.
+
+*Add Account → Manual Setup* creates an account in EDS (so Evolution and other apps
+see it too); for iCloud (use an app-specific password) it also registers iCloud's
+calendars and contacts. Removing an account Rustle created deletes it from EDS;
+removing any other only takes it out of Rustle, and *Online Accounts* lists it to show
+again. Accounts Rustle kept itself before EDS are moved there on first start, password
+and all, keeping their mail.
 
 ## Omarchy themes
 

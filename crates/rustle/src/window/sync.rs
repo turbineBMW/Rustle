@@ -532,7 +532,7 @@ impl MainWindow {
         self.set_syncing(account.id, false);
         if failure.is_auth() {
             // The remembered password may be out of date; read the keyring next time.
-            secrets::forget_password(account.id);
+            secrets::forget_password(account);
         }
         // Another account's failure can leave the open folder on the spinner.
         self.show_list_or_placeholder();
@@ -677,7 +677,7 @@ fn outbox_job(
     account: &Account,
     jobs: Vec<(i64, String, Vec<String>, Vec<u8>)>,
 ) -> Vec<OutboxResult> {
-    let Some(credential) = secrets::credential_for(account) else {
+    let Some(credential) = secrets::smtp_credential_for(account) else {
         log::warn!(
             "could not sign in to {}; the Outbox stays queued",
             account.email

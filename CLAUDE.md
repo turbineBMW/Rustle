@@ -42,7 +42,11 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
   folders.rs   FolderRole classification by name, display names, modified UTF-7
   address.rs, dates.rs, providers.rs, html.rs
   watch.rs     IMAP IDLE: one cancellable long-lived session per account on its inbox
-  secrets.rs   secret-service keyring + credential_for; goa.rs GNOME Online Accounts (D-Bus)
+  eds.rs       Evolution Data Server, the one source of accounts: reads mail account /
+               identity / transport sources off the registry (raw D-Bus), OAuth tokens,
+               creates and removes password accounts (`rustle-` UIDs are ours)
+  secrets.rs   credential_for (IMAP) / smtp_credential_for: EDS token, or the password
+               EDS keeps in the Secret Service under `e-source-uid`
   goa_setup.rs what Online Accounts needs on this desktop (GNOME Settings, else
                gnome-online-accounts-gtk) and the distro's install command for what's missing
   omarchy.rs   Omarchy colors.toml -> libadwaita CSS variables (port of omarchy-theme-color)
@@ -92,4 +96,10 @@ data/                      gschema, desktop file, metainfo, D-Bus service, icons
   resource (`could not move 3 message(s) from INBOX to Trash (account x)`).
 - No account is a real state: `State::view` is `None` on an empty database; anything
   per-account reads it through a guard.
+- **Accounts come from EDS.** `window/accounts.rs` re-reads the registry at start and on
+  its signals and `Database::reconcile_eds` folds it into `accounts`, matching rows by
+  EDS UID so the integer `accounts.id` (which everything keys on) never changes. Only
+  call `reconcile_eds` with a list EDS returned: a row whose source is missing is set
+  aside (`hidden = 2`). Removing in Rustle deletes from EDS only when `is_own()`;
+  otherwise it hides (`hidden = 1`).
 - Commits: Conventional Commits, terse, no AI/co-author trailers.

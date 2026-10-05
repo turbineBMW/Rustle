@@ -1260,7 +1260,7 @@ fn send_job(
     recipients: &[String],
     raw: &[u8],
 ) -> Result<(), String> {
-    let Some(credential) = secrets::credential_for(account) else {
+    let Some(credential) = secrets::smtp_credential_for(account) else {
         log::warn!("could not sign in to account {}", account.email);
         return Err(gettext("Could not sign in to this account."));
     };
