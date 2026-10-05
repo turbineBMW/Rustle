@@ -4,6 +4,7 @@
 
 use crate::accent;
 use crate::i18n::gettext;
+use crate::settings as keys;
 use adw::prelude::*;
 use gtk::gdk;
 use gtk::gio;
@@ -76,7 +77,30 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
       };
     }
 
+    // Quoted text and signatures aren't the user's to spell: other
+    // people's typos would fill a reply with red underlines. The attribute
+    // only steers the checker and is stripped before the HTML leaves the
+    // page, so it never reaches the sent message or a saved signature.
+    var UNCHECKED = 'blockquote:not([spellcheck]), .signature:not([spellcheck])';
+
+    function skipSpelling() {
+      document.querySelectorAll(UNCHECKED).forEach(function (el) {
+        el.spellcheck = false;
+      });
+    }
+
+    function bodyHtml() {
+      if (!document.body.querySelector('[spellcheck]')) return document.body.innerHTML;
+      var copy = document.body.cloneNode(true);
+      copy.querySelectorAll('[spellcheck]').forEach(function (el) {
+        el.removeAttribute('spellcheck');
+      });
+      return copy.innerHTML;
+    }
+
     function post() {
+      // A pasted quote or a swapped-in signature is caught here.
+      skipSpelling();
       var states = {};
       COMMANDS.forEach(function (name) {
         states[name] = document.queryCommandState(name);
@@ -84,7 +108,7 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
       var range = currentRange();
       var link = range ? linkAt(range.commonAncestorContainer) : null;
       window.webkit.messageHandlers.editor.postMessage(JSON.stringify({
-        html: document.body.innerHTML,
+        html: bodyHtml(),
         states: states,
         colors: {
           text: document.queryCommandValue('foreColor'),
@@ -432,6 +456,7 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
     // <div> separators inherit no margin, so a sent message keeps the spacing
     // it was typed with even in clients that apply their own stylesheet.
     document.execCommand('defaultParagraphSeparator', false, 'div');
+    skipSpelling();
     document.body.focus();
 
     var first = document.body.firstChild;
@@ -777,6 +802,46 @@ pub fn build_webview(body_html: &str, on_message: impl Fn(&str) + 'static) -> we
     webview
 }
 
+/// Keep WebKit's spell checker in step with the `spell-check` key. It is a
+/// setting of the shared web context, so it reaches every editor, open ones
+/// included; the reader shares the context but has nothing editable to check.
+/// WebKit checks nothing until it has been given languages, so it gets the
+/// locale's; Enchant skips any without an installed dictionary.
+pub fn follow_spell_check(settings: &gio::Settings) {
+    fn apply(settings: &gio::Settings) {
+        let Some(context) = webkit::WebContext::default() else {
+            return;
+        };
+        let enabled = settings.boolean(keys::SPELL_CHECK);
+        if enabled {
+            let names = glib::language_names();
+            let languages = spell_languages(names.iter().map(|name| name.as_str()));
+            let languages: Vec<&str> = languages.iter().map(String::as_str).collect();
+            log::debug!("spell checking in {languages:?}");
+            context.set_spell_checking_languages(&languages);
+        }
+        context.set_spell_checking_enabled(enabled);
+    }
+    apply(settings);
+    settings.connect_changed(Some(keys::SPELL_CHECK), |settings, _| apply(settings));
+}
+
+/// The dictionary names in a locale list such as `g_get_language_names`
+/// gives ("en_US.UTF-8", "en_US", "en", "C"): codeset and modifier
+/// variants dropped, and "C"/"POSIX", which have no dictionary.
+fn spell_languages<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut languages: Vec<String> = Vec::new();
+    for name in names {
+        if name.contains(['.', '@']) || name == "C" || name == "POSIX" {
+            continue;
+        }
+        if !languages.iter().any(|language| language == name) {
+            languages.push(name.to_string());
+        }
+    }
+    languages
+}
+
 /// Run one `document.execCommand` in the editor.
 pub fn exec(webview: &webkit::WebView, command: &str, argument: Option<&str>) {
     let argument = argument
@@ -812,5 +877,31 @@ pub fn gtk_font() -> (String, String) {
             (family.to_string(), size.to_string())
         }
         _ => (description, "11".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spell_languages_keep_dictionary_names() {
+        let names = ["en_US.UTF-8", "en_US", "en.UTF-8", "en", "sr_RS@latin", "C"];
+        assert_eq!(spell_languages(names), ["en_US", "en"]);
+    }
+
+    #[test]
+    fn spell_languages_follow_the_language_list() {
+        let names = [
+            "fr_CA.UTF-8",
+            "fr_CA",
+            "fr",
+            "en_US",
+            "en",
+            "C.UTF-8",
+            "C",
+            "POSIX",
+        ];
+        assert_eq!(spell_languages(names), ["fr_CA", "fr", "en_US", "en"]);
     }
 }

@@ -16,7 +16,8 @@ A native GTK 4 / libadwaita email client for GNOME, written in Rust.
 
 Needs `cargo`, GTK 4 ≥ 4.18, libadwaita ≥ 1.8, WebKitGTK 6.0, `blueprint-compiler`,
 `glib-compile-schemas` (glib2), sqlite is bundled. At runtime, Evolution Data Server
-(`evolution-data-server`) and a Secret Service keyring.
+(`evolution-data-server`) and a Secret Service keyring; spell checking in the composer
+needs a Hunspell dictionary for your language (e.g. `hunspell-en_us`).
 
 ```
 cargo run -p rustle      # run from the checkout — no install needed
