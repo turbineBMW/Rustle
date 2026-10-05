@@ -33,7 +33,9 @@ Rustle reads its accounts from Evolution Data Server (EDS), the registry GNOME O
 Accounts, Evolution and graphmail-bridge (`graphmail-bridge eds-setup`) already keep
 theirs in, and watches it: an account added there appears in Rustle by itself.
 Servers and sign-in come from EDS — OAuth tokens through its registry, passwords from
-the keyring entry EDS keeps for the account. Rustle keeps only what EDS has no place
+the keyring entry EDS keeps for the account (in omarchy-mobile's sandbox, which can't
+reach the keyring, through the phone's `dev.omarchy.Accounts`, which keeps only those
+entries). Rustle keeps only what EDS has no place
 for: colour, label, signature, notification sound.
 
 *Add Account → Manual Setup* creates an account in EDS (so Evolution and other apps

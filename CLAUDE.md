@@ -46,7 +46,8 @@ crates/rustle-core/src/    no widgets; everything here is unit-tested (`cargo te
                identity / transport sources off the registry (raw D-Bus), OAuth tokens,
                creates and removes password accounts (`rustle-` UIDs are ours)
   secrets.rs   credential_for (IMAP) / smtp_credential_for: EDS token, or the password
-               EDS keeps in the Secret Service under `e-source-uid`
+               EDS keeps in the Secret Service under `e-source-uid`; in an omarchy-mobile
+               sandbox, through the phone bridge's `dev.omarchy.Accounts` (`keeper`)
   goa_setup.rs what Online Accounts needs on this desktop (GNOME Settings, else
                gnome-online-accounts-gtk) and the distro's install command for what's missing
   omarchy.rs   Omarchy colors.toml -> libadwaita CSS variables (port of omarchy-theme-color)
