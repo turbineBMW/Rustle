@@ -1,17 +1,18 @@
 using Gtk 4.0;
 using Adw 1;
 
-template $RustleComposerWindow: Adw.Window {
-  title: _("New Message");
-  default-width: 540;
-  default-height: 740;
-
-  content: Adw.ToastOverlay toast_overlay {
+// The composer itself, hosted either in the main window's reader pane or
+// in a window of its own (composer.rs); the pop-out button moves it from
+// the one to the other.
+template $RustleComposer: Adw.Bin {
+  child: Adw.ToastOverlay toast_overlay {
     child: Adw.ToolbarView {
       [top]
-      Adw.HeaderBar {
+      Adw.HeaderBar header {
         show-start-title-buttons: false;
         show-end-title-buttons: false;
+
+        title-widget: Adw.Bin {};
 
         [start]
         Gtk.Button cancel_button {
@@ -33,6 +34,13 @@ template $RustleComposerWindow: Adw.Window {
           sensitive: false;
 
           styles ["suggested-action"]
+        }
+
+        [end]
+        Gtk.Button pop_out_button {
+          icon-name: "window-new-symbolic";
+          tooltip-text: _("Open in New Window");
+          visible: false;
         }
 
         [end]
