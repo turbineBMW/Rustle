@@ -589,7 +589,12 @@ impl MessageView {
         }
         // Clearing the accelerated surface avoids a black frame before WebKit
         // paints; the CSS class supplies the white canvas email HTML expects.
-        webview.set_background_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
+        // In dark mode the surface takes the scheme's canvas outright: an
+        // Omarchy theme's isn't the stylesheet's fixed one.
+        let canvas = is_dark()
+            .then(|| gdk::RGBA::parse(accent::reader_scheme().canvas_css()).ok())
+            .flatten();
+        webview.set_background_color(&canvas.unwrap_or(gdk::RGBA::new(0.0, 0.0, 0.0, 0.0)));
         webview.add_css_class(if is_dark() {
             "message-html-dark"
         } else {
@@ -619,12 +624,13 @@ impl MessageView {
         // canvases go dark, dark ink goes light, hues stay. The defaults an
         // unstyled message inherits follow suit.
         let html = if is_dark() {
+            let scheme = accent::reader_scheme();
             style.push_str(&format!(
                 " :root {{ color-scheme: dark; }} body {{ background-color: {}; color: {}; }}",
-                darkmode::CANVAS,
-                darkmode::TEXT
+                scheme.canvas_css(),
+                scheme.text_css()
             ));
-            std::borrow::Cow::Owned(darkmode::adapt(html))
+            std::borrow::Cow::Owned(darkmode::adapt_with(html, &scheme))
         } else {
             std::borrow::Cow::Borrowed(html)
         };

@@ -89,6 +89,9 @@ impl Inner {
         let manager = adw::StyleManager::default();
         let was_dark = manager.is_dark();
         let accent_changed = accent::set_override(theme.as_ref().and_then(|t| t.accent.clone()));
+        let scheme_changed =
+            accent::set_reader_scheme(theme.as_ref().and_then(|t| t.reader.clone()));
+        let accent_changed = accent_changed || scheme_changed;
         manager.set_color_scheme(match &theme {
             Some(theme) if theme.light => adw::ColorScheme::ForceLight,
             Some(_) => adw::ColorScheme::ForceDark,

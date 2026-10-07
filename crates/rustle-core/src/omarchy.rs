@@ -51,6 +51,9 @@ pub struct Theme {
     /// The accent as `#rrggbb`, for the WebKit views CSS can't reach. `None`
     /// when the theme states it some other way.
     pub accent: Option<String>,
+    /// A dark theme's background and foreground as `#rrggbb`, which the
+    /// reader adapts dark mail to. `None` for a light theme.
+    pub reader: Option<(String, String)>,
 }
 
 /// Resolve the active theme into CSS, or `None` when omarchy isn't installed
@@ -74,10 +77,17 @@ pub fn load(home: &Path) -> Option<Theme> {
         css
     };
     let accent = palette.get("accent", "blue");
+    let (background, foreground) = (
+        palette.get("background", "black"),
+        palette.get("foreground", "white"),
+    );
+    let reader = (!palette.light && rgb(&background).is_some() && rgb(&foreground).is_some())
+        .then_some((background, foreground));
     Some(Theme {
         css,
         light: palette.light,
         accent: rgb(&accent).map(|_| accent),
+        reader,
     })
 }
 
