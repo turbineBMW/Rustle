@@ -229,7 +229,45 @@ impl ImapSession {
                 self.host
             )));
         }
-        Ok(outcome? == WaitOutcome::MailboxChanged)
+        let changed = outcome? == WaitOutcome::MailboxChanged;
+        // What arrived between the end of the wait and DONE's reply lands in
+        // the unsolicited queue, where the next IDLE would never see it.
+        Ok(self.drain_changes() || changed)
+    }
+
+    /// Empty the queue of responses the server sent unasked, and say whether
+    /// any of them reported a change to the selected mailbox.
+    pub fn drain_changes(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        // The whole queue is taken up front, so stopping at the first change
+        // still empties it.
+        session.take_all_unsolicited().any(|response| {
+            matches!(
+                response,
+                UnsolicitedResponse::Exists(_)
+                    | UnsolicitedResponse::Expunge(_)
+                    | UnsolicitedResponse::Recent(_)
+                    | UnsolicitedResponse::Fetch { .. }
+            )
+        })
+    }
+
+    /// A round trip that does nothing: proof the connection still works.
+    pub fn noop(&mut self) -> Result<()> {
+        self.require()?.noop()?;
+        Ok(())
+    }
+
+    /// Drop the connection without a goodbye: for one that may be dead,
+    /// where LOGOUT would only wait out the timeout.
+    pub fn discard(mut self) {
+        if let Some(socket) = self.socket.take() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        self.session = None;
+        self.client = None;
     }
 
     /// Every listed mailbox, containers included so the caller can rebuild

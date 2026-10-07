@@ -8,7 +8,7 @@ use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::{classify, Failure, NetError};
 use crate::net::imap::{ImapSession, FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
-use crate::sync::open_imap;
+use crate::sync::{open_imap, release};
 use std::collections::HashSet;
 
 /// What a queued operation does to its messages.
@@ -93,7 +93,7 @@ pub fn replay(account: &Account, credential: &Credential, ops: &[PendingOp]) -> 
             }
         }
     }
-    session.logout();
+    release(account, credential, session);
     replay
 }
 

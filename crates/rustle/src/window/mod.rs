@@ -142,6 +142,13 @@ pub struct State {
     pub inbox_settle: HashMap<i64, glib::SourceId>,
     /// Accounts whose inbox changed while a sync was already running.
     pub inbox_resync_pending: HashSet<i64>,
+    /// The IDLE thread on the open folder, when that isn't an inbox.
+    pub folder_watcher: Option<(Folder, Account, Arc<rustle_core::watch::InboxWatch>)>,
+    pub folder_settle: Option<glib::SourceId>,
+    /// The open folder changed while its account was already syncing.
+    pub folder_resync_pending: Option<i64>,
+    /// logind's PrepareForSleep, for reconnecting on resume.
+    pub resume_subscription: Option<gio::SignalSubscription>,
     pub is_online: bool,
     pub message_handlers: Option<Rc<Handlers>>,
     /// The Smart Search the list shows, once the assistant has answered.
@@ -395,6 +402,7 @@ impl MainWindow {
             move |_, is_available| window.on_network_changed(is_available)
         ));
         let _ = imp.network.set(network);
+        window.watch_for_resume();
 
         window.build_mail_models();
         // After the models: the phone layout follows the list's selection.

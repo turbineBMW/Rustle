@@ -262,6 +262,7 @@ impl MainWindow {
         let previous = self.state_mut().view.replace(new_view.clone());
         self.update_move_menu();
         self.update_archive_button();
+        self.sync_folder_watcher();
         if self.state().is_folder_refresh_suppressed {
             return;
         }
