@@ -11,6 +11,7 @@ mod list;
 mod moves;
 #[cfg(feature = "phone")]
 mod phone;
+mod queue;
 mod reader;
 mod smart_search;
 mod sync;
@@ -104,6 +105,10 @@ pub struct State {
     pub pending_toast: Option<adw::Toast>,
     pub pending_timeout: Option<glib::SourceId>,
     pub move_tombstones: HashMap<(i64, String), Tombstone>,
+    /// Accounts with a queue flush in flight, and those that asked for
+    /// another while it ran.
+    pub flushing_account_ids: HashSet<i64>,
+    pub flush_again: HashSet<i64>,
     /// Load-on-scroll paging state, keyed by folder id.
     pub loaded_counts: HashMap<i64, u32>,
     pub folders_with_more_mail: HashMap<i64, bool>,
@@ -732,6 +737,8 @@ impl MainWindow {
     }
 
     fn on_close_request(&self) -> glib::Propagation {
+        // Queued, so a move still in its undo window outlives the window.
+        self.commit_pending_moves();
         let imp = self.imp();
         let settings = self.settings();
         let (width, height) = self.default_size();

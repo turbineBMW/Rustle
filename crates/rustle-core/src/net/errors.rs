@@ -47,6 +47,28 @@ pub enum Failure {
     NoCredential,
 }
 
+impl NetError {
+    /// Whether trying the same thing later could succeed: the connection or
+    /// the sign-in failed, not the command. A queued change stays queued
+    /// through these and is dropped only when the server refuses it outright.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            NetError::Io(_) | NetError::Tls(_) | NetError::NoCredential(_) => true,
+            NetError::Smtp(_) | NetError::Protocol(_) => false,
+            NetError::Imap(imap) => match imap {
+                ::imap::Error::Io(_)
+                | ::imap::Error::Tls(_)
+                | ::imap::Error::TlsHandshake(_)
+                | ::imap::Error::ConnectionLost
+                | ::imap::Error::Bye(_) => true,
+                ::imap::Error::No(no) => is_auth_text(&no.to_string()),
+                ::imap::Error::Bad(bad) => is_auth_text(&bad.to_string()),
+                _ => false,
+            },
+        }
+    }
+}
+
 impl Failure {
     pub fn is_auth(&self) -> bool {
         matches!(self, Failure::Auth)
@@ -204,6 +226,15 @@ mod tests {
             classify(&NetError::Protocol("nope".into()), "h"),
             Failure::Server("nope".into())
         );
+    }
+
+    #[test]
+    fn only_connection_failures_are_transient() {
+        let timeout = NetError::Io(io::Error::new(io::ErrorKind::TimedOut, "x"));
+        assert!(timeout.is_transient());
+        assert!(NetError::Imap(::imap::Error::ConnectionLost).is_transient());
+        assert!(NetError::NoCredential("me".into()).is_transient());
+        assert!(!NetError::Protocol("no such mailbox".into()).is_transient());
     }
 
     #[test]

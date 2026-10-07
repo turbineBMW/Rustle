@@ -219,7 +219,16 @@ impl RustleApplication {
             .activate(|app: &Self, _, _| app.show_shortcuts())
             .build();
         let quit = gio::ActionEntry::builder("quit")
-            .activate(|app: &Self, _, _| app.quit())
+            .activate(|app: &Self, _, _| {
+                // A move still in its undo window goes to the change queue,
+                // which sends it on the next launch if not before.
+                for window in app.windows() {
+                    if let Ok(window) = window.downcast::<MainWindow>() {
+                        window.commit_pending_moves();
+                    }
+                }
+                app.quit()
+            })
             .build();
         let focus_mail = gio::ActionEntry::builder("focus-mail")
             .activate(|app: &Self, _, _| app.activate())

@@ -7,6 +7,7 @@ use crate::folders;
 use crate::models::{
     is_hex_color, Account, Auth, Email, Folder, MessageHeader, NewAccount, Security,
 };
+use crate::queue::{Change, PendingOp};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::path::Path;
@@ -48,6 +49,19 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
      UPDATE accounts SET imap_auth = 'oauth2', smtp_auth = 'oauth2' WHERE goa_id <> '';",
     "ALTER TABLE accounts ADD COLUMN picture TEXT NOT NULL DEFAULT ''",
+    "CREATE TABLE pending_ops (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL,
+        folder_id INTEGER NOT NULL,
+        folder TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        uids TEXT NOT NULL,
+        email_ids TEXT NOT NULL DEFAULT '',
+        flag TEXT NOT NULL DEFAULT '',
+        is_add INTEGER NOT NULL DEFAULT 0,
+        dest_id INTEGER NOT NULL DEFAULT 0,
+        dest TEXT NOT NULL DEFAULT ''
+     )",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -497,6 +511,10 @@ impl Database {
             [account_id],
         )?;
         transaction.execute("DELETE FROM folders WHERE account_id = ?1", [account_id])?;
+        transaction.execute(
+            "DELETE FROM pending_ops WHERE account_id = ?1",
+            [account_id],
+        )?;
         Ok(())
     }
 
@@ -1041,6 +1059,149 @@ impl Database {
     pub fn delete_email(&self, email_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM emails WHERE id = ?1", [email_id])?;
+        Ok(())
+    }
+
+    // --- the change queue -------------------------------------------------
+
+    fn pending_op_from_row(row: &Row) -> Result<PendingOp> {
+        let list = |text: String| -> Vec<String> {
+            text.split(',')
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let uids = list(row.get("uids")?);
+        let change = if row.get::<_, String>("kind")? == "move" {
+            Change::Move {
+                email_ids: list(row.get("email_ids")?)
+                    .iter()
+                    .filter_map(|id| id.parse().ok())
+                    .collect(),
+                uids,
+                dest_id: row.get("dest_id")?,
+                dest: row.get("dest")?,
+            }
+        } else {
+            Change::Flag {
+                uids,
+                flag: row.get("flag")?,
+                add: row.get("is_add")?,
+            }
+        };
+        Ok(PendingOp {
+            id: row.get("id")?,
+            account_id: row.get("account_id")?,
+            folder_id: row.get("folder_id")?,
+            folder: row.get("folder")?,
+            change,
+        })
+    }
+
+    /// Queue a change for the server; `op.id` is ignored. Returns the new id.
+    pub fn enqueue_op(&self, op: &PendingOp) -> Result<i64> {
+        let join = |items: &[String]| items.join(",");
+        let (kind, uids, email_ids, flag, is_add, dest_id, dest) = match &op.change {
+            Change::Flag { uids, flag, add } => (
+                "flag",
+                join(uids),
+                String::new(),
+                flag.as_str(),
+                *add,
+                0,
+                "",
+            ),
+            Change::Move {
+                email_ids,
+                uids,
+                dest_id,
+                dest,
+            } => (
+                "move",
+                join(uids),
+                email_ids
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                "",
+                false,
+                *dest_id,
+                dest.as_str(),
+            ),
+        };
+        self.conn.execute(
+            "INSERT INTO pending_ops (account_id, folder_id, folder, kind, uids, email_ids, flag,
+                is_add, dest_id, dest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                op.account_id,
+                op.folder_id,
+                op.folder,
+                kind,
+                uids,
+                email_ids,
+                flag,
+                is_add,
+                dest_id,
+                dest
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// An account's queued changes, oldest first: the order they replay in.
+    pub fn pending_ops(&self, account_id: i64) -> Result<Vec<PendingOp>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT * FROM pending_ops WHERE account_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map([account_id], Self::pending_op_from_row)?;
+        rows.collect()
+    }
+
+    /// The queued changes to one mailbox, oldest first.
+    pub fn pending_ops_for_folder(&self, folder_id: i64) -> Result<Vec<PendingOp>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT * FROM pending_ops WHERE folder_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map([folder_id], Self::pending_op_from_row)?;
+        rows.collect()
+    }
+
+    pub fn finish_op(&self, op_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM pending_ops WHERE id = ?1", [op_id])?;
+        Ok(())
+    }
+
+    /// A move the connection cut short: the first `done` messages reached the
+    /// destination, so only the rest stay queued.
+    pub fn trim_move_op(&self, op_id: i64, done: usize) -> Result<()> {
+        let op = self
+            .conn
+            .query_row(
+                "SELECT * FROM pending_ops WHERE id = ?1",
+                [op_id],
+                Self::pending_op_from_row,
+            )
+            .optional()?;
+        let Some(PendingOp {
+            change: Change::Move {
+                email_ids, uids, ..
+            },
+            ..
+        }) = op
+        else {
+            return Ok(());
+        };
+        if done >= uids.len() {
+            return self.finish_op(op_id);
+        }
+        let rest_ids: Vec<String> = email_ids.iter().skip(done).map(i64::to_string).collect();
+        self.conn.execute(
+            "UPDATE pending_ops SET uids = ?2, email_ids = ?3 WHERE id = ?1",
+            params![op_id, uids[done..].join(","), rest_ids.join(",")],
+        )?;
         Ok(())
     }
 
@@ -1661,5 +1822,65 @@ mod tests {
         let rows = db.emails_in_folder(gmail.id).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].server_id.as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn queued_changes_round_trip_in_order() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let flag = PendingOp {
+            id: 0,
+            account_id: account.id,
+            folder_id: 4,
+            folder: "INBOX".into(),
+            change: Change::Flag {
+                uids: vec!["1".into(), "2".into()],
+                flag: "\\Seen".into(),
+                add: true,
+            },
+        };
+        let mv = PendingOp {
+            change: Change::Move {
+                email_ids: vec![10, 11, 12],
+                uids: vec!["5".into(), "6".into(), "7".into()],
+                dest_id: 9,
+                dest: "Archive".into(),
+            },
+            ..flag.clone()
+        };
+        let flag_id = db.enqueue_op(&flag).unwrap();
+        let move_id = db.enqueue_op(&mv).unwrap();
+        let ops = db.pending_ops(account.id).unwrap();
+        assert_eq!(
+            ops,
+            [
+                PendingOp {
+                    id: flag_id,
+                    ..flag
+                },
+                PendingOp { id: move_id, ..mv }
+            ]
+        );
+        assert_eq!(db.pending_ops_for_folder(4).unwrap().len(), 2);
+
+        db.trim_move_op(move_id, 2).unwrap();
+        let trimmed = db.pending_ops_for_folder(4).unwrap().pop().unwrap();
+        assert_eq!(
+            trimmed.change,
+            Change::Move {
+                email_ids: vec![12],
+                uids: vec!["7".into()],
+                dest_id: 9,
+                dest: "Archive".into(),
+            }
+        );
+        db.finish_op(flag_id).unwrap();
+        db.trim_move_op(move_id, 1).unwrap();
+        assert!(db.pending_ops(account.id).unwrap().is_empty());
+
+        db.enqueue_op(&ops[0]).unwrap();
+        let mut db = db;
+        db.delete_account(account.id).unwrap();
+        assert!(db.pending_ops(account.id).unwrap().is_empty());
     }
 }
