@@ -27,6 +27,24 @@ template $RustleAddAccountDialog: Adw.Dialog {
                       }
                   }
 
+                // Only in a build with the built-in bridge (the graph feature).
+                Adw.ActionRow microsoft_row {
+                    title: _("Microsoft 365 Through Rustle");
+                    subtitle: _("For a work account your organisation won't let other mail apps reach. Rustle signs in as Microsoft Office and serves the mailbox itself.");
+                    activatable: true;
+                    visible: false;
+
+                    [prefix]
+                    Gtk.Image {
+                        icon-name: "mail-send-receive-symbolic";
+                      }
+
+                    [suffix]
+                    Gtk.Image {
+                        icon-name: "go-next-symbolic";
+                      }
+                  }
+
                 Adw.ActionRow manual_row {
                     title: _("Manual Setup");
                     subtitle: _("Enter your address, password and server details yourself. Works with any IMAP and SMTP provider.");

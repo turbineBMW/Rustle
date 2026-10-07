@@ -21,6 +21,8 @@ mod imp {
         pub online_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub manual_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub microsoft_row: TemplateChild<adw::ActionRow>,
         pub db: RefCell<Option<Rc<RefCell<Database>>>>,
         pub has_added: Cell<bool>,
     }
@@ -60,6 +62,15 @@ mod imp {
                 dialog,
                 move |_| dialog.on_manual_activated()
             ));
+            #[cfg(feature = "graph")]
+            {
+                self.microsoft_row.set_visible(true);
+                self.microsoft_row.connect_activated(glib::clone!(
+                    #[weak]
+                    dialog,
+                    move |_| dialog.on_microsoft_activated()
+                ));
+            }
         }
     }
     impl WidgetImpl for AddAccountDialog {}
@@ -107,6 +118,22 @@ impl AddAccountDialog {
 
     fn on_online_activated(&self) {
         let dialog = OnlineAccountsDialog::new(self.db());
+        dialog.connect_account_added(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.on_account_added()
+        ));
+        dialog.connect_closed(glib::clone!(
+            #[weak(rename_to = this)]
+            self,
+            move |_| this.after_child_closed()
+        ));
+        dialog.present(Some(self));
+    }
+
+    #[cfg(feature = "graph")]
+    fn on_microsoft_activated(&self) {
+        let dialog = super::bridge_account::BridgeAccountDialog::new();
         dialog.connect_account_added(glib::clone!(
             #[weak(rename_to = this)]
             self,
