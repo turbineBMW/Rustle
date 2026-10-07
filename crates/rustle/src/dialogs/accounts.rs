@@ -4,6 +4,7 @@
 use super::add_account::AddAccountDialog;
 use super::signature::SignatureDialog;
 use crate::account_colors;
+use crate::account_pictures;
 use crate::i18n::gettext;
 use crate::widgets::sound_row;
 use crate::workers;
@@ -126,7 +127,17 @@ impl AccountsDialog {
                     &account.email
                 })
                 .build();
+            let avatar = adw::Avatar::builder()
+                .size(32)
+                .text(account.name())
+                .show_initials(true)
+                .css_classes(["account-avatar"])
+                .build();
+            account_colors::tag(&avatar, Some(account.id));
+            avatar.set_custom_image(account_pictures::texture(&account).as_ref());
+            row.add_prefix(&avatar);
             row.add_row(&self.name_row(&account));
+            row.add_row(&self.picture_row(&account, &avatar));
             row.add_row(&self.signature_row(&account));
             row.add_row(&self.sound_row(&account));
             let color_button = gtk::ColorDialogButton::builder()
@@ -188,6 +199,132 @@ impl AccountsDialog {
             move |row| dialog.on_label_changed(account_id, &row.text())
         ));
         row.upcast()
+    }
+
+    /// The picture that stands for the account in the sidebar and, in the
+    /// unified inbox, on its mail; without one its colour does. Changes show
+    /// at once in `avatar`, the expander's own.
+    fn picture_row(&self, account: &Account, avatar: &adw::Avatar) -> gtk::Widget {
+        let row = adw::ActionRow::builder()
+            .title(gettext("Picture"))
+            .activatable(true)
+            .build();
+        let remove = gtk::Button::builder()
+            .icon_name("edit-clear-symbolic")
+            .tooltip_text(gettext("Remove Picture"))
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .visible(account.picture_file().is_some())
+            .build();
+        let choose = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text(gettext("Choose Picture…"))
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        row.add_suffix(&remove);
+        row.add_suffix(&choose);
+        row.set_activatable_widget(Some(&choose));
+        let picture = PictureRow {
+            account: Rc::new(RefCell::new(account.clone())),
+            row: row.clone(),
+            avatar: avatar.clone(),
+            remove: remove.clone(),
+        };
+        choose.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            #[strong]
+            picture,
+            move |_| dialog.on_choose_picture(&picture)
+        ));
+        remove.connect_clicked(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            #[strong]
+            picture,
+            move |_| dialog.on_picture_changed(&picture, String::new())
+        ));
+        row.upcast()
+    }
+
+    fn on_choose_picture(&self, picture: &PictureRow) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some(&gettext("Images")));
+        filter.add_pixbuf_formats();
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let chooser = gtk::FileDialog::builder()
+            .title(gettext("Choose Account Picture"))
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&filter)
+            .build();
+        let parent = self.root().and_downcast::<gtk::Window>();
+        let picture = picture.clone();
+        chooser.open(
+            parent.as_ref(),
+            gio::Cancellable::NONE,
+            glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |result| {
+                    // An error here is the user cancelling.
+                    let Some(path) = result.ok().and_then(|file| file.path()) else {
+                        return;
+                    };
+                    dialog.import_picture(picture, path);
+                }
+            ),
+        );
+    }
+
+    fn import_picture(&self, picture: PictureRow, source: std::path::PathBuf) {
+        let account_id = picture.account.borrow().id;
+        let dir = account_pictures::dir();
+        let shown = source.clone();
+        workers::run(
+            move || account_pictures::import(&source, &dir, account_id),
+            glib::clone!(
+                #[weak(rename_to = dialog)]
+                self,
+                move |result: Result<String, String>| match result {
+                    Ok(name) => dialog.on_picture_changed(&picture, name),
+                    Err(error) => {
+                        log::error!(
+                            "could not use {} as the picture of account {account_id}: {error}",
+                            shown.display()
+                        );
+                        picture
+                            .row
+                            .set_subtitle(&gettext("Could not open that image"));
+                    }
+                }
+            ),
+        );
+    }
+
+    /// Store the account's new picture file name ("" for none), drop the old
+    /// file and show the change.
+    fn on_picture_changed(&self, picture: &PictureRow, name: String) {
+        let account_id = picture.account.borrow().id;
+        if let Err(error) = self.db().borrow().set_account_picture(account_id, &name) {
+            log::error!("could not save the picture of account {account_id}: {error}");
+            return;
+        }
+        let old = {
+            let mut account = picture.account.borrow_mut();
+            let old = account.picture_file().map(str::to_owned);
+            account.picture = name;
+            old
+        };
+        if let Some(old) = old {
+            account_pictures::remove(&old);
+        }
+        let texture = account_pictures::texture(&picture.account.borrow());
+        picture.avatar.set_custom_image(texture.as_ref());
+        picture.remove.set_visible(texture.is_some());
+        picture.row.set_subtitle("");
     }
 
     /// One line of the signature and a button into the editor.
@@ -328,8 +465,12 @@ impl AccountsDialog {
                         );
                         return;
                     }
+                    // The picture may have changed since `account` was read.
+                    let stored = dialog.db().borrow().account(account_id).ok().flatten();
                     if let Err(error) = dialog.db().borrow_mut().delete_account(account_id) {
                         log::error!("could not delete account {account_id}: {error}");
+                    } else if let Some(name) = stored.as_ref().and_then(Account::picture_file) {
+                        account_pictures::remove(name);
                     }
                     dialog.reload();
                 }
@@ -349,4 +490,14 @@ impl AccountsDialog {
         ));
         dialog.present(Some(self));
     }
+}
+
+/// What the picture row's buttons share: the account as last saved, and the
+/// widgets that show its picture.
+#[derive(Clone)]
+struct PictureRow {
+    account: Rc<RefCell<Account>>,
+    row: adw::ActionRow,
+    avatar: adw::Avatar,
+    remove: gtk::Button,
 }

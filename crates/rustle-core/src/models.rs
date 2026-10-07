@@ -149,6 +149,10 @@ pub struct Account {
     /// The new-mail sound, in the form `sounds::NotificationSound` stores;
     /// empty means the app-wide default.
     pub notification_sound: String,
+    /// The file name of the picture the user gave this account, inside the
+    /// app's `account-pictures` data directory; empty for none. See
+    /// [`Account::picture_file`].
+    pub picture: String,
 }
 
 /// The GNOME accent palette, handed out to accounts that haven't chosen a
@@ -206,6 +210,19 @@ impl Account {
         } else {
             self.email.split('@').next().unwrap_or(&self.email)
         }
+    }
+}
+
+impl Account {
+    /// The account picture's file name, if it has one that stays inside the
+    /// pictures directory: a bare name, never a path.
+    pub fn picture_file(&self) -> Option<&str> {
+        let name = self.picture.as_str();
+        let is_bare = !name.is_empty()
+            && !name.starts_with('.')
+            && !name.contains(['/', '\\'])
+            && !name.contains('\0');
+        is_bare.then_some(name)
     }
 }
 

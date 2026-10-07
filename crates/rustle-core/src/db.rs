@@ -47,6 +47,7 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE accounts ADD COLUMN smtp_auth TEXT NOT NULL DEFAULT 'password';
      ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
      UPDATE accounts SET imap_auth = 'oauth2', smtp_auth = 'oauth2' WHERE goa_id <> '';",
+    "ALTER TABLE accounts ADD COLUMN picture TEXT NOT NULL DEFAULT ''",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -201,6 +202,7 @@ impl Database {
             signature: row.get("signature")?,
             label: row.get("label")?,
             notification_sound: row.get("notification_sound")?,
+            picture: row.get("picture")?,
         })
     }
 
@@ -436,6 +438,16 @@ impl Database {
         self.conn.execute(
             "UPDATE accounts SET color = ?1 WHERE id = ?2",
             params![color, account_id],
+        )?;
+        Ok(())
+    }
+
+    /// Stores the file name of the account's picture; "" clears it. The
+    /// file itself is the caller's to write and remove.
+    pub fn set_account_picture(&self, account_id: i64, picture: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET picture = ?1 WHERE id = ?2",
+            params![picture, account_id],
         )?;
         Ok(())
     }
@@ -1122,6 +1134,19 @@ mod tests {
         );
         db.set_account_color(saved.id, "red").unwrap();
         assert_eq!(db.account(saved.id).unwrap().unwrap().color, "");
+        assert_eq!(saved.picture_file(), None);
+        db.set_account_picture(saved.id, "1-42.png").unwrap();
+        assert_eq!(
+            db.account(saved.id).unwrap().unwrap().picture_file(),
+            Some("1-42.png")
+        );
+        for unsafe_name in ["../rustle.db", "/etc/passwd", "a\\b.png", ".hidden"] {
+            db.set_account_picture(saved.id, unsafe_name).unwrap();
+            let stored = db.account(saved.id).unwrap().unwrap();
+            assert_eq!(stored.picture_file(), None, "{unsafe_name}");
+        }
+        db.set_account_picture(saved.id, "").unwrap();
+        assert_eq!(db.account(saved.id).unwrap().unwrap().picture, "");
         assert_eq!(saved.signature_html(), "");
         db.set_account_signature(saved.id, "Cheers,\nMe\n").unwrap();
         assert_eq!(
@@ -1206,6 +1231,7 @@ mod tests {
             })
             .unwrap();
         db.set_account_color(online.id, "#e62d42").unwrap();
+        db.set_account_picture(online.id, "2-1.png").unwrap();
         let inbox = db
             .get_or_create_folder(bridge.id, "INBOX", "mail-unread-symbolic")
             .unwrap();
@@ -1223,6 +1249,7 @@ mod tests {
         assert_eq!(online.eds_smtp_uid, "gmail-mail-smtp");
         assert_eq!(online.smtp_auth, Auth::OAuth2);
         assert_eq!(online.color, "#e62d42", "local settings stay");
+        assert_eq!(online.picture, "2-1.png");
         let bridge = db.account(bridge.id).unwrap().unwrap();
         assert_eq!(bridge.eds_uid, "bridge-mail");
         assert_eq!(db.folders_for_account(bridge.id).unwrap(), vec![inbox]);

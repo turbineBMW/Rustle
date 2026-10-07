@@ -1,6 +1,7 @@
 //! One row of the email list.
 
 use crate::account_colors;
+use crate::account_pictures;
 use crate::avatar_loader::AvatarLoader;
 use crate::i18n;
 use adw::prelude::*;
@@ -21,7 +22,10 @@ mod imp {
         pub date: gtk::Label,
         pub subject: gtk::Label,
         pub preview: gtk::Label,
-        pub account: gtk::Box,
+        /// The unified inbox's mark of which account a message is in, on the
+        /// sender's avatar: the account's picture, else a dot in its colour.
+        pub account_picture: adw::Avatar,
+        pub account_dot: gtk::Box,
         pub address: RefCell<String>,
         pub date_value: RefCell<String>,
         pub pinned: Cell<bool>,
@@ -55,11 +59,19 @@ mod imp {
                     .build(),
                 subject: label(&["email-subject"]),
                 preview: label(&["email-preview", "dim-label"]),
-                account: gtk::Box::builder()
-                    .width_request(10)
-                    .height_request(10)
-                    .valign(gtk::Align::Center)
-                    .css_classes(["account-dot"])
+                account_picture: adw::Avatar::builder()
+                    .size(18)
+                    .halign(gtk::Align::End)
+                    .valign(gtk::Align::End)
+                    .css_classes(["account-chip"])
+                    .visible(false)
+                    .build(),
+                account_dot: gtk::Box::builder()
+                    .width_request(12)
+                    .height_request(12)
+                    .halign(gtk::Align::End)
+                    .valign(gtk::Align::End)
+                    .css_classes(["account-dot", "account-chip"])
                     .visible(false)
                     .build(),
                 address: RefCell::new(String::new()),
@@ -86,7 +98,13 @@ mod imp {
             // Padding rather than margins, so an unread row's tint runs
             // edge to edge (see .email-row in style.css).
             row.add_css_class("email-row");
-            row.append(&self.avatar);
+            let face = gtk::Overlay::builder()
+                .child(&self.avatar)
+                .valign(gtk::Align::Center)
+                .build();
+            face.add_overlay(&self.account_dot);
+            face.add_overlay(&self.account_picture);
+            row.append(&face);
 
             let text = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
@@ -97,7 +115,6 @@ mod imp {
 
             let top = gtk::Box::builder().spacing(6).build();
             self.sender.set_hexpand(true);
-            top.append(&self.account);
             top.append(&self.sender);
             top.append(&self.star);
             top.append(&self.pin);
@@ -128,8 +145,9 @@ impl EmailRow {
     /// Fill this row from a email. In an outgoing folder the sender of
     /// every message is the account itself, so the row names the recipient
     /// instead. `account` is given in the unified inbox, where the account a
-    /// message belongs to is otherwise invisible: the row then carries a dot
-    /// in that account's colour before the sender.
+    /// message belongs to is otherwise invisible: the sender's avatar then
+    /// wears a chip in its corner, the account's picture or a dot in its
+    /// colour.
     pub fn bind(&self, email: &Email, is_outgoing: bool, account: Option<&Account>) {
         let imp = self.imp();
         let (name, address) = if is_outgoing && !email.recipient.is_empty() {
@@ -148,13 +166,20 @@ impl EmailRow {
         imp.date_value.replace(email.date.to_string());
         imp.subject.set_label(&email.subject);
         imp.preview.set_label(&email.preview);
-        match account {
-            Some(account) => {
-                imp.account.set_tooltip_text(Some(&account.email));
-                account_colors::tag(&imp.account, Some(account.id));
-                imp.account.set_visible(true);
+        let picture = account.and_then(account_pictures::texture);
+        imp.account_picture.set_custom_image(picture.as_ref());
+        imp.account_picture.set_visible(picture.is_some());
+        imp.account_dot
+            .set_visible(account.is_some() && picture.is_none());
+        if let Some(account) = account {
+            imp.account_picture.set_text(Some(account.name()));
+            for chip in [
+                imp.account_picture.upcast_ref::<gtk::Widget>(),
+                imp.account_dot.upcast_ref(),
+            ] {
+                chip.set_tooltip_text(Some(&account.email));
             }
-            None => imp.account.set_visible(false),
+            account_colors::tag(&imp.account_dot, Some(account.id));
         }
         // The list's own row widget wraps this box; tag it too so the
         // highlight covers the full row, edge to edge.

@@ -1,6 +1,8 @@
 //! One row of the folder sidebar: an icon, a name, a sync spinner and an
-//! unread badge. The same widget draws account headings and the unified inbox.
+//! unread badge. The same widget draws account headings and the unified inbox;
+//! an account with a picture shows it in place of the icon.
 
+use crate::account_pictures;
 use crate::i18n::gettext;
 use crate::objects::SidebarItem;
 use adw::prelude::*;
@@ -15,6 +17,7 @@ mod imp {
 
     pub struct FolderRow {
         pub icon: gtk::Image,
+        pub picture: adw::Avatar,
         pub name: gtk::Label,
         pub spinner: adw::Spinner,
         pub badge: gtk::Label,
@@ -27,6 +30,7 @@ mod imp {
         fn default() -> Self {
             FolderRow {
                 icon: gtk::Image::new(),
+                picture: adw::Avatar::builder().size(20).visible(false).build(),
                 name: gtk::Label::builder()
                     .xalign(0.0)
                     .hexpand(true)
@@ -57,6 +61,7 @@ mod imp {
             row.set_margin_start(6);
             row.set_margin_end(6);
             row.append(&self.icon);
+            row.append(&self.picture);
             row.append(&self.name);
             row.append(&self.spinner);
             row.append(&self.badge);
@@ -100,6 +105,7 @@ impl FolderRow {
         let imp = self.imp();
         imp.icon.set_icon_name(Some(&folder.icon_name));
         crate::account_colors::tag(&imp.icon, None);
+        self.show_picture(None);
         imp.name.set_label(&folders::display_name_for_folder(
             &folder.name,
             folder.display_delimiter(),
@@ -114,6 +120,7 @@ impl FolderRow {
         let imp = self.imp();
         imp.icon.set_icon_name(Some("mail-inbox-symbolic"));
         crate::account_colors::tag(&imp.icon, None);
+        self.show_picture(None);
         imp.name.set_label(&gettext("All Inboxes"));
         imp.name.remove_css_class("heading");
         imp.expandable.replace(None);
@@ -125,13 +132,29 @@ impl FolderRow {
         let imp = self.imp();
         imp.expandable.replace(Some(tree_row.clone()));
         imp.icon.set_icon_name(Some("avatar-default-symbolic"));
-        crate::account_colors::tag(&imp.icon, Some(account.id));
         imp.icon.add_css_class("account-icon");
-        imp.name.set_label(account.name());
-        imp.name.set_tooltip_text(Some(&account.email));
         imp.name.add_css_class("heading");
+        self.update_account(account);
         self.set_syncing(is_syncing);
         imp.badge.set_visible(false);
+    }
+
+    /// Refresh an account row's name, colour and picture in place, after
+    /// the user changed them.
+    pub fn update_account(&self, account: &Account) {
+        let imp = self.imp();
+        crate::account_colors::tag(&imp.icon, Some(account.id));
+        imp.picture.set_text(Some(account.name()));
+        imp.name.set_label(account.name());
+        imp.name.set_tooltip_text(Some(&account.email));
+        self.show_picture(account_pictures::texture(account).as_ref());
+    }
+
+    fn show_picture(&self, texture: Option<&gtk::gdk::Texture>) {
+        let imp = self.imp();
+        imp.picture.set_custom_image(texture);
+        imp.picture.set_visible(texture.is_some());
+        imp.icon.set_visible(texture.is_none());
     }
 
     fn set_badge(&self, unread_count: i64) {
