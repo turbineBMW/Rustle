@@ -7,6 +7,7 @@
 //! `goa`, which need a session bus.
 
 pub mod address;
+pub mod address_book;
 pub mod assistant;
 pub mod avatars;
 pub mod compose;

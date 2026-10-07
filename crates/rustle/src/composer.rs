@@ -473,7 +473,9 @@ impl Composer {
 
         window.setup_assistant();
 
-        let known = Rc::new(db.borrow().contact_addresses().unwrap_or_default());
+        let ranked = db.borrow().ranked_contacts().unwrap_or_default();
+        let book = rustle_core::address_book::eds_contacts();
+        let known = Rc::new(compose::merge_suggestions(&ranked, &book));
         let suggestions = [&imp.to_row, &imp.cc_row, &imp.bcc_row]
             .into_iter()
             .map(|row| AddressSuggestions::attach(row, known.clone()))
@@ -1823,7 +1825,7 @@ impl Composer {
             .flat_map(|text| rustle_core::address::parse_list(text))
             .map(|mailbox| (mailbox.name, mailbox.address))
             .collect();
-        if let Err(error) = self.db().borrow_mut().save_contacts(&contacts) {
+        if let Err(error) = self.db().borrow_mut().record_sent_contacts(&contacts) {
             log::warn!("could not remember the recipients: {error}");
         }
 
