@@ -635,19 +635,7 @@ impl MessageView {
         if let Some(settings) = WebViewExt::settings(&view) {
             settings.set_enable_javascript(false);
         }
-        // Nothing may navigate this view but its own load.
-        view.connect_decide_policy(|_, decision, _| {
-            let is_link = decision
-                .downcast_ref::<webkit::NavigationPolicyDecision>()
-                .and_then(|navigation| navigation.navigation_action())
-                .is_some_and(|action| {
-                    action.navigation_type() == webkit::NavigationType::LinkClicked
-                });
-            if is_link {
-                decision.ignore();
-            }
-            is_link
-        });
+        view.connect_decide_policy(|_, decision, _| decide_print_policy(decision));
         // The view has no parent to keep it, so this does until it's printed.
         let keep: Rc<RefCell<Option<webkit::WebView>>> = Rc::new(RefCell::new(Some(view.clone())));
         let parent = parent.clone();
@@ -949,27 +937,40 @@ fn set_label_scale(label: &gtk::Label, zoom: f64) {
     label.set_attributes(Some(&attributes));
 }
 
-/// The webview only ever renders the message body: the one navigation it may
-/// perform is the load_html document itself. A click goes to the browser, and
-/// anything else the body asks for is refused outright.
-fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
-    let Some(navigation) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else {
-        return false;
-    };
-    let Some(action) = navigation.navigation_action() else {
-        return false;
-    };
+/// A navigation's type and URI; None for a decision that isn't one.
+fn navigation_of(decision: &webkit::PolicyDecision) -> Option<(webkit::NavigationType, String)> {
+    let navigation = decision.downcast_ref::<webkit::NavigationPolicyDecision>()?;
+    let action = navigation.navigation_action()?;
     let uri = action
         .request()
         .and_then(|request| request.uri())
         .map(|uri| uri.to_string())
         .unwrap_or_default();
-    let scheme = uri.split(':').next().unwrap_or("").to_lowercase();
+    Some((action.navigation_type(), uri))
+}
 
-    if action.navigation_type() != webkit::NavigationType::LinkClicked {
-        // load_html has no base URI, so its own document arrives as
-        // about:blank -- or with no URI at all. Neither can leak anything.
-        if scheme == "about" || scheme.is_empty() {
+fn scheme_of(uri: &str) -> String {
+    uri.split(':').next().unwrap_or("").to_lowercase()
+}
+
+/// load_html has no base URI, so a view's own document arrives as
+/// about:blank -- or with no URI at all. Neither can leak anything.
+fn is_own_document(uri: &str) -> bool {
+    let scheme = scheme_of(uri);
+    scheme == "about" || scheme.is_empty()
+}
+
+/// The webview only ever renders the message body: the one navigation it may
+/// perform is the load_html document itself. A click goes to the browser, and
+/// anything else the body asks for is refused outright.
+fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
+    let Some((kind, uri)) = navigation_of(decision) else {
+        return false;
+    };
+    let scheme = scheme_of(&uri);
+
+    if kind != webkit::NavigationType::LinkClicked {
+        if is_own_document(&uri) {
             return false;
         }
         decision.ignore();
@@ -984,6 +985,21 @@ fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
     }
     let window = root.root().and_downcast::<gtk::Window>();
     invitation::open_link(window.as_ref(), &uri);
+    true
+}
+
+/// The print view is never shown, so nothing in it is followed: not a link,
+/// and not a meta refresh or anything else that would take it off its own
+/// document.
+fn decide_print_policy(decision: &webkit::PolicyDecision) -> bool {
+    let Some((kind, uri)) = navigation_of(decision) else {
+        return false;
+    };
+    if kind != webkit::NavigationType::LinkClicked && is_own_document(&uri) {
+        return false;
+    }
+    decision.ignore();
+    log::warn!("blocked navigation from a printed message to {uri}");
     true
 }
 
