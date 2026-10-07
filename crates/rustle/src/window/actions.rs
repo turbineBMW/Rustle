@@ -94,6 +94,15 @@ impl MainWindow {
 
     fn set_actions_enabled(&self, names: &[&str], is_enabled: bool) {
         for name in names {
+            // Held off for the inline composer: it gets this state back.
+            let is_held = {
+                let mut state = self.state_mut();
+                let wanted = state.held_actions.get_mut(*name);
+                wanted.map(|wanted| *wanted = is_enabled).is_some()
+            };
+            if is_held {
+                continue;
+            }
             if let Some(action) = self.lookup_action(name).and_downcast::<gio::SimpleAction>() {
                 action.set_enabled(is_enabled);
             }

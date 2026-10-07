@@ -1,7 +1,7 @@
-//! Accounts, and opening the composer.
+//! Accounts, and what the composer opens with (window/composer.rs hosts it).
 
 use super::{MainWindow, PAGE_NO_ACCOUNT};
-use crate::composer::{ComposerWindow, Draft};
+use crate::composer::Draft;
 use crate::dialogs::accounts::AccountsDialog;
 use crate::dialogs::add_account::AddAccountDialog;
 use crate::workers;
@@ -244,7 +244,7 @@ impl MainWindow {
 
     /// The account a new message is written from: the one owning the
     /// selected email, else the open folder's, else the first.
-    fn compose_account(&self) -> Option<Account> {
+    pub(super) fn compose_account(&self) -> Option<Account> {
         if let Some(selected) = self.selected_email() {
             if let Some((account, _)) = self.account_for_folder(selected.with(|c| c.folder_id)) {
                 return Some(account);
@@ -357,41 +357,6 @@ impl MainWindow {
         let view = self.state().message_view.clone()?;
         let parsed = view.parsed()?;
         Some((view, parsed))
-    }
-
-    /// Open the composer for a mailto: link handed to us by the desktop.
-    pub fn open_mailto(&self, uri: &str) {
-        let Some(account) = self.compose_account() else {
-            return;
-        };
-        let composer =
-            ComposerWindow::for_mailto(self.application().as_ref(), self.db(), &account, uri);
-        composer.connect_finished(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_| window.on_composer_finished()
-        ));
-        composer.present();
-    }
-
-    fn open_composer(&self, account: &Account, draft: Draft) {
-        let composer = ComposerWindow::new(self.application().as_ref(), self.db(), account, draft);
-        composer.connect_finished(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |_| window.on_composer_finished()
-        ));
-        composer.present();
-    }
-
-    fn on_composer_finished(&self) {
-        let keep_id = self.selected_email().map(|c| c.id());
-        self.reload_folders();
-        self.refresh_emails(keep_id);
-        let accounts: Vec<Account> = self.state().accounts.values().cloned().collect();
-        for account in accounts {
-            self.drain_outbox(&account);
-        }
     }
 }
 
