@@ -98,6 +98,10 @@ pub struct ImapSession {
     /// A second handle on the socket under the TLS layer, so a wait can be
     /// cut short from another thread and the read timeout put back.
     socket: Option<TcpStream>,
+    /// A command failed part-way through its reply (a timeout, a dropped or
+    /// garbled response): what the server sends next may answer the command
+    /// before, so nothing more is sent on this connection.
+    is_broken: bool,
 }
 
 impl ImapSession {
@@ -110,6 +114,7 @@ impl ImapSession {
             client: None,
             capabilities: HashSet::new(),
             socket: None,
+            is_broken: false,
         }
     }
 
@@ -179,7 +184,13 @@ impl ImapSession {
     /// raises over the error already on its way out. A server hanging up
     /// first is normal, not a problem.
     pub fn logout(&mut self) {
-        if let Some(mut session) = self.session.take() {
+        if self.is_broken {
+            // LOGOUT's reply could not be told from a late one: just hang up.
+            if let Some(socket) = self.socket.take() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            self.session = None;
+        } else if let Some(mut session) = self.session.take() {
             if let Err(error) = session.logout() {
                 debug!("IMAP logout from {} failed: {error}", self.host);
             }
@@ -195,6 +206,33 @@ impl ImapSession {
         self.session
             .as_mut()
             .ok_or_else(|| NetError::Protocol(format!("not signed in to {host}:{port}")))
+    }
+
+    /// Run one command on the signed-in session. Every command goes through
+    /// here, so a failure that leaves the reply half read marks the session
+    /// broken no matter who sent it; a clean NO or BAD from the server does
+    /// not, the exchange is over.
+    fn command<T>(
+        &mut self,
+        run: impl FnOnce(&mut Session<::imap::Connection>) -> ::imap::Result<T>,
+    ) -> Result<T> {
+        if self.is_broken {
+            return Err(NetError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                format!("the connection to {} is out of step", self.host),
+            )));
+        }
+        let result = run(self.require()?);
+        if let Err(error) = &result {
+            self.is_broken |= leaves_stream_dirty(error);
+        }
+        Ok(result?)
+    }
+
+    /// Signed in, and nothing has left the connection out of step: safe to
+    /// hand to the next job.
+    pub fn is_usable(&self) -> bool {
+        self.session.is_some() && !self.is_broken
     }
 
     pub fn has_capability(&self, name: &str) -> bool {
@@ -240,6 +278,7 @@ impl ImapSession {
             }
             outcome
         };
+        self.is_broken |= server_left || outcome.is_err();
         if server_left {
             return Err(NetError::Protocol(format!(
                 "{} closed the connection",
@@ -273,8 +312,7 @@ impl ImapSession {
 
     /// A round trip that does nothing: proof the connection still works.
     pub fn noop(&mut self) -> Result<()> {
-        self.require()?.noop()?;
-        Ok(())
+        self.command(|session| session.noop())
     }
 
     /// Drop the connection without a goodbye: for one that may be dead,
@@ -290,7 +328,7 @@ impl ImapSession {
     /// Every listed mailbox, containers included so the caller can rebuild
     /// the hierarchy.
     pub fn list_folders(&mut self) -> Result<Vec<MailboxInfo>> {
-        let names = self.require()?.list(None, Some("*"))?;
+        let names = self.command(|session| session.list(None, Some("*")))?;
         Ok(names
             .iter()
             .map(|name| MailboxInfo {
@@ -304,18 +342,19 @@ impl ImapSession {
     /// Open a mailbox; return how many messages it holds. Read-only by default
     /// keeps us non-destructive and never marks mail as read.
     pub fn select(&mut self, mailbox: &str, is_writable: bool) -> Result<u32> {
-        let session = self.require()?;
-        let info = if is_writable {
-            session.select(mailbox)?
-        } else {
-            session.examine(mailbox)?
-        };
+        let info = self.command(|session| {
+            if is_writable {
+                session.select(mailbox)
+            } else {
+                session.examine(mailbox)
+            }
+        })?;
         Ok(info.exists)
     }
 
     /// How many unread messages a mailbox holds, without selecting it.
     pub fn unseen_count(&mut self, mailbox: &str) -> Result<u32> {
-        let status = self.require()?.status(mailbox, "(UNSEEN)")?;
+        let status = self.command(|session| session.status(mailbox, "(UNSEEN)"))?;
         status
             .unseen
             .ok_or_else(|| NetError::Protocol(format!("no UNSEEN in the status of {mailbox}")))
@@ -324,20 +363,19 @@ impl ImapSession {
     /// Upload a message into a mailbox, stored `\Seen`: this is our own copy
     /// of something we just sent, and arriving as unread would be wrong.
     pub fn append(&mut self, mailbox: &str, raw: &[u8]) -> Result<()> {
-        self.require()?
-            .append(mailbox, raw)
-            .flag(Flag::Seen)
-            .finish()?;
+        self.command(|session| session.append(mailbox, raw).flag(Flag::Seen).finish())?;
         Ok(())
     }
 
     /// Upload a draft: `\Draft` so any client offers to finish it, `\Seen`
     /// so it never counts as unread.
     pub fn append_draft(&mut self, mailbox: &str, raw: &[u8]) -> Result<()> {
-        self.require()?
-            .append(mailbox, raw)
-            .flags([Flag::Draft, Flag::Seen])
-            .finish()?;
+        self.command(|session| {
+            session
+                .append(mailbox, raw)
+                .flags([Flag::Draft, Flag::Seen])
+                .finish()
+        })?;
         Ok(())
     }
 
@@ -346,28 +384,23 @@ impl ImapSession {
     /// already marked deleted there, which is what it was marked for.
     /// CREATE, RENAME and DELETE a mailbox, by its name on the wire.
     pub fn create_mailbox(&mut self, name: &str) -> Result<()> {
-        self.require()?.create(name)?;
-        Ok(())
+        self.command(|session| session.create(name))
     }
 
     pub fn rename_mailbox(&mut self, from: &str, to: &str) -> Result<()> {
-        self.require()?.rename(from, to)?;
-        Ok(())
+        self.command(|session| session.rename(from, to))
     }
 
     pub fn delete_mailbox(&mut self, name: &str) -> Result<()> {
-        self.require()?.delete(name)?;
-        Ok(())
+        self.command(|session| session.delete(name))
     }
 
     pub fn delete_uids(&mut self, uids: &str) -> Result<()> {
-        let has_uidplus = self.has_capability("UIDPLUS");
-        let session = self.require()?;
-        session.uid_store(uids, "+FLAGS (\\Deleted)")?;
-        if has_uidplus {
-            session.uid_expunge(uids)?;
+        self.command(|session| session.uid_store(uids, "+FLAGS (\\Deleted)"))?;
+        if self.has_capability("UIDPLUS") {
+            self.command(|session| session.uid_expunge(uids))?;
         } else {
-            session.expunge()?;
+            self.command(|session| session.expunge())?;
         }
         Ok(())
     }
@@ -375,20 +408,19 @@ impl ImapSession {
     /// Add or remove flags on a UID set: "7" or "7,9,20".
     pub fn store_flags(&mut self, uids: &str, flag: &str, should_add: bool) -> Result<()> {
         let command = if should_add { "+FLAGS" } else { "-FLAGS" };
-        self.require()?
-            .uid_store(uids, format!("{command} ({flag})"))?;
+        self.command(|session| session.uid_store(uids, format!("{command} ({flag})")))?;
         Ok(())
     }
 
     /// Every UID in the currently selected mailbox.
     pub fn search_all_uids(&mut self) -> Result<HashSet<String>> {
-        let uids = self.require()?.uid_search("ALL")?;
+        let uids = self.command(|session| session.uid_search("ALL"))?;
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
     /// The UIDs in the selected mailbox matching a SEARCH `criteria`.
     pub fn search_uids(&mut self, criteria: &str) -> Result<Vec<String>> {
-        let uids = self.require()?.uid_search(criteria)?;
+        let uids = self.command(|session| session.uid_search(criteria))?;
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
@@ -397,9 +429,8 @@ impl ImapSession {
     /// implementing RFC 6851. Both arrive on the tagged OK line, which the
     /// crate's own `uid_mv` discards, so the command is run raw.
     pub fn r#move(&mut self, uid: &str, destination: &str) -> Result<Option<String>> {
-        let session = self.require()?;
         let command = format!("UID MOVE {uid} {}", quote_mailbox(destination));
-        let (data, _done_at) = session.run(&command)?;
+        let (data, _done_at) = self.command(|session| session.run(&command))?;
         let text = String::from_utf8_lossy(&data);
         Ok(destination_uid(&text))
     }
@@ -426,10 +457,12 @@ impl ImapSession {
     /// Just the conversation headers of some messages, for filling in the
     /// keys of mail fetched before they were kept.
     pub fn fetch_thread_headers(&mut self, uid_set: &str) -> Result<Vec<ThreadHeaders>> {
-        let fetches = self.require()?.uid_fetch(
-            uid_set,
-            "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX)])",
-        )?;
+        let fetches = self.command(|session| {
+            session.uid_fetch(
+                uid_set,
+                "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX)])",
+            )
+        })?;
         Ok(fetches
             .iter()
             .filter_map(|fetch| {
@@ -462,12 +495,13 @@ impl ImapSession {
     }
 
     fn fetch_header_set(&mut self, set: &str, by_uid: bool) -> Result<Vec<FetchedHeader>> {
-        let session = self.require()?;
-        let fetches = if by_uid {
-            session.uid_fetch(set, HEADER_FETCH_QUERY)?
-        } else {
-            session.fetch(set, HEADER_FETCH_QUERY)?
-        };
+        let fetches = self.command(|session| {
+            if by_uid {
+                session.uid_fetch(set, HEADER_FETCH_QUERY)
+            } else {
+                session.fetch(set, HEADER_FETCH_QUERY)
+            }
+        })?;
         Ok(fetches
             .iter()
             .filter_map(|fetch| {
@@ -495,7 +529,7 @@ impl ImapSession {
 
     /// Fetch one full message (headers + body) by its stable UID.
     pub fn fetch_message(&mut self, uid: &str) -> Result<Vec<u8>> {
-        let fetches = self.require()?.uid_fetch(uid, "(BODY.PEEK[])")?;
+        let fetches = self.command(|session| session.uid_fetch(uid, "(BODY.PEEK[])"))?;
         fetches
             .iter()
             .find_map(|fetch| fetch.body().map(|body| body.to_vec()))
@@ -580,6 +614,18 @@ fn handshake_error(error: native_tls::HandshakeError<TcpStream>) -> NetError {
             NetError::Protocol("TLS handshake would block".into())
         }
     }
+}
+
+/// Whether a failed command may have left part of its reply unread. Only a
+/// tagged NO or BAD ends the exchange cleanly (and a command refused before
+/// it was sent never started one); anything else -- a timeout, a dropped
+/// connection, a reply the parser choked on, another command's tag -- leaves
+/// the stream where the next command would read the wrong answer.
+fn leaves_stream_dirty(error: &::imap::Error) -> bool {
+    !matches!(
+        error,
+        ::imap::Error::No(_) | ::imap::Error::Bad(_) | ::imap::Error::Validate(_)
+    )
 }
 
 /// Quote a mailbox name (escaping \ and ") so a space stays inside one astring.

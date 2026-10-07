@@ -104,8 +104,10 @@ struct Stop {
 }
 
 fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outcome, Stop> {
-    let refused_or_stop = |moved: Vec<Option<String>>, error: NetError| {
-        if error.is_transient() {
+    // A failure that left the connection out of step says nothing about
+    // what the server made of the command: keep it queued for a new one.
+    let refused_or_stop = |session: &ImapSession, moved: Vec<Option<String>>, error: NetError| {
+        if error.is_transient() || !session.is_usable() {
             Err(Stop {
                 moved,
                 failure: classify(&error, host),
@@ -118,7 +120,7 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
         }
     };
     if let Err(error) = session.select(&op.folder, true) {
-        return refused_or_stop(Vec::new(), error);
+        return refused_or_stop(session, Vec::new(), error);
     }
     match &op.change {
         Change::Flag { uids, flag, add } => {
@@ -127,7 +129,7 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
             }
             match session.store_flags(&uids.join(","), flag, *add) {
                 Ok(()) => Ok(Outcome::Done(Vec::new())),
-                Err(error) => refused_or_stop(Vec::new(), error),
+                Err(error) => refused_or_stop(session, Vec::new(), error),
             }
         }
         Change::Move { uids, dest, .. } => {
@@ -135,7 +137,7 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
             for uid in uids {
                 match session.r#move(uid, dest) {
                     Ok(dest_uid) => moved.push(dest_uid),
-                    Err(error) => return refused_or_stop(moved, error),
+                    Err(error) => return refused_or_stop(session, moved, error),
                 }
             }
             Ok(Outcome::Done(moved))

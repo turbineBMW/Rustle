@@ -60,7 +60,11 @@ impl NetError {
                 | ::imap::Error::Tls(_)
                 | ::imap::Error::TlsHandshake(_)
                 | ::imap::Error::ConnectionLost
-                | ::imap::Error::Bye(_) => true,
+                | ::imap::Error::Bye(_)
+                // A reply we couldn't read or that answered another command:
+                // the connection went out of step, a fresh one may well work.
+                | ::imap::Error::Parse(_)
+                | ::imap::Error::TagMismatch(_) => true,
                 ::imap::Error::No(no) => is_auth_text(&no.to_string()),
                 ::imap::Error::Bad(bad) => is_auth_text(&bad.to_string()),
                 _ => false,
@@ -235,6 +239,8 @@ mod tests {
         assert!(NetError::Imap(::imap::Error::ConnectionLost).is_transient());
         assert!(NetError::NoCredential("me".into()).is_transient());
         assert!(!NetError::Protocol("no such mailbox".into()).is_transient());
+        let late = ::imap::Error::Parse(::imap::error::ParseError::Invalid(b"* 3 FETCH".to_vec()));
+        assert!(NetError::Imap(late).is_transient());
     }
 
     #[test]

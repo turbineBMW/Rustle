@@ -82,6 +82,8 @@ pub fn backfill(
     for folder in folders {
         let exists = match session.select(&folder.name, false) {
             Ok(exists) => exists,
+            // The connection, not the folder, failed.
+            Err(error) if !session.is_usable() => return Err(error),
             Err(error) => {
                 // A folder that won't open (a bare container, a broken
                 // share) is done as far as the backfill is concerned.
@@ -178,8 +180,9 @@ pub(crate) fn open_imap(account: &Account, credential: &Credential) -> Result<Im
     Ok(session)
 }
 
-/// A job finished cleanly with its session: park it for the next one. A
-/// session that failed part-way is dropped instead (logging out as it goes).
+/// A job is done with its session: park it for the next one. Safe to call
+/// after a command failed, too: the pool drops a session whose last failure
+/// left it out of step with the server, and keeps one that was only told no.
 pub(crate) fn release(account: &Account, credential: &Credential, session: ImapSession) {
     pool::checkin(account, credential, session);
 }
@@ -243,10 +246,15 @@ fn unread_counts(
             Ok(count) => {
                 counts.insert(mailbox.name.clone(), count);
             }
-            Err(error) => warn!(
-                "could not read the unread count of {}: {error}",
-                mailbox.name
-            ),
+            Err(error) => {
+                warn!(
+                    "could not read the unread count of {}: {error}",
+                    mailbox.name
+                );
+                if !session.is_usable() {
+                    break;
+                }
+            }
         }
     }
     counts
@@ -269,10 +277,15 @@ pub fn search_text(
             .and_then(|_| session.search_uids(criteria));
         match uids {
             Ok(uids) => found.push((mailbox.clone(), uids)),
-            Err(error) => warn!(
-                "could not search {mailbox} on {} (account {}): {error}",
-                account.imap_host, account.email
-            ),
+            Err(error) => {
+                warn!(
+                    "could not search {mailbox} on {} (account {}): {error}",
+                    account.imap_host, account.email
+                );
+                if !session.is_usable() {
+                    break;
+                }
+            }
         }
     }
     release(account, credential, session);
