@@ -1,3 +1,7 @@
+//! Searching the server. Typed searches send their words to a full-text
+//! SEARCH of the view's folders as typing settles, and the matches join the
+//! list: the database holds few bodies, the server holds them all.
+//!
 //! Smart Search: with the sparkle toggled in the search bar, Enter hands
 //! what was typed to the assistant's tool (`rustle_core::assistant`), which
 //! answers with a `SearchFilter`. The list then shows the view's emails that
@@ -117,7 +121,10 @@ impl MainWindow {
     }
 
     fn update_ask_spinner(&self) {
-        let is_busy = self.state().smart_pending > 0;
+        let is_busy = {
+            let state = self.state();
+            state.smart_pending > 0 || state.typed_pending > 0
+        };
         let spinner = &self.imp().ask_spinner;
         spinner.set_visible(is_busy);
         spinner.set_spinning(is_busy);
@@ -233,6 +240,113 @@ impl MainWindow {
         self.update_ask_spinner();
     }
 
+    /// The typed search's words, in the full text of the view's folders on
+    /// the server: the database has few bodies, the server has them all.
+    /// Matches join the list as they come back.
+    pub(super) fn search_server_for_typed(&self) {
+        let query = self.imp().search_entry.text().trim().to_string();
+        let generation = {
+            let mut state = self.state_mut();
+            state.typed_generation += 1;
+            state.typed_pending = 0;
+            if state.typed_matches.0 != query {
+                state.typed_matches = (query.clone(), HashSet::new());
+            }
+            state.typed_generation
+        };
+        self.update_ask_spinner();
+        if self.imp().ask_button.is_active() || !self.state().is_online {
+            return;
+        }
+        let Some(criteria) = rustle_core::query::parse(&query).imap_criteria() else {
+            return;
+        };
+        let mut by_account: HashMap<i64, Vec<Folder>> = HashMap::new();
+        for folder in self.current_folders() {
+            if folder.name == rustle_core::folders::OUTBOX_FOLDER {
+                continue;
+            }
+            by_account
+                .entry(folder.account_id)
+                .or_default()
+                .push(folder);
+        }
+        for (account_id, folders) in by_account {
+            let account = self.state().accounts.get(&account_id).cloned();
+            let Some(account) = account else { continue };
+            self.state_mut().typed_pending += 1;
+            let names: Vec<String> = folders.iter().map(|folder| folder.name.clone()).collect();
+            let criteria = criteria.clone();
+            let job_account = account.clone();
+            let query = query.clone();
+            workers::run(
+                move || search_job(&job_account, &names, &criteria),
+                glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    move |found: Vec<(String, Vec<String>)>| {
+                        window.on_typed_found(&account, &folders, &query, found, generation)
+                    }
+                ),
+            );
+        }
+        self.update_ask_spinner();
+    }
+
+    fn on_typed_found(
+        &self,
+        account: &Account,
+        folders: &[Folder],
+        query: &str,
+        found: Vec<(String, Vec<String>)>,
+        generation: u64,
+    ) {
+        if self.state().typed_generation != generation {
+            return;
+        }
+        let ids = self.local_ids(account, folders, &found);
+        let is_new = {
+            let mut state = self.state_mut();
+            state.typed_pending = state.typed_pending.saturating_sub(1);
+            if state.typed_matches.0 != query {
+                false
+            } else {
+                let before = state.typed_matches.1.len();
+                state.typed_matches.1.extend(ids);
+                state.typed_matches.1.len() > before
+            }
+        };
+        self.update_ask_spinner();
+        if is_new {
+            self.refresh_emails(self.selected_email().map(|email| email.id()));
+        }
+    }
+
+    /// The local ids of the messages a server search found, by mailbox.
+    fn local_ids(
+        &self,
+        account: &Account,
+        folders: &[Folder],
+        found: &[(String, Vec<String>)],
+    ) -> Vec<i64> {
+        let mut ids = Vec::new();
+        let db = self.db();
+        let db = db.borrow();
+        for (mailbox, uids) in found {
+            let Some(folder) = folders.iter().find(|folder| folder.name == *mailbox) else {
+                continue;
+            };
+            match db.email_ids_for_uids(folder.id, uids) {
+                Ok(found) => ids.extend(found),
+                Err(error) => log::error!(
+                    "could not look up search matches in {mailbox} (account {}): {error}",
+                    account.email
+                ),
+            }
+        }
+        ids
+    }
+
     fn on_server_found(
         &self,
         account: &Account,
@@ -243,23 +357,7 @@ impl MainWindow {
         if self.state().smart_generation != generation {
             return;
         }
-        let mut ids = Vec::new();
-        {
-            let db = self.db();
-            let db = db.borrow();
-            for (mailbox, uids) in &found {
-                let Some(folder) = folders.iter().find(|folder| folder.name == *mailbox) else {
-                    continue;
-                };
-                match db.email_ids_for_uids(folder.id, uids) {
-                    Ok(found) => ids.extend(found),
-                    Err(error) => log::error!(
-                        "could not look up Smart Search matches in {mailbox} (account {}): {error}",
-                        account.email
-                    ),
-                }
-            }
-        }
+        let ids = self.local_ids(account, folders, &found);
         let is_new = {
             let mut state = self.state_mut();
             state.smart_pending = state.smart_pending.saturating_sub(1);
@@ -288,7 +386,7 @@ fn search_job(
 ) -> Vec<(String, Vec<String>)> {
     let Some(credential) = secrets::credential_for(account) else {
         log::warn!(
-            "could not sign in to account {} for Smart Search",
+            "could not sign in to account {} to search it",
             account.email
         );
         return Vec::new();

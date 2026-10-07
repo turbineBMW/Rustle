@@ -23,6 +23,7 @@ pub mod models;
 pub mod net;
 pub mod omarchy;
 pub mod providers;
+pub mod query;
 pub mod queue;
 pub mod secrets;
 pub mod sounds;

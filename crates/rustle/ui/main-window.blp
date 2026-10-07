@@ -188,6 +188,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                         Gtk.SearchEntry search_entry {
                           hexpand: true;
                           placeholder-text: _("Search mail");
+                          tooltip-text: _("Words match anywhere, bodies included. Narrow with from:, to:, subject:, is:unread, is:starred, after:2026-09-01, before:2026-10-01, or \"a phrase\".");
                         }
 
                         Gtk.Spinner ask_spinner {

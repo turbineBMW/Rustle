@@ -405,6 +405,10 @@ pub struct MessageHeader {
     pub is_pinned: bool,
     pub preview: String,
     pub message_id: String,
+    /// The To and Cc recipients as text, for `to:` searches.
+    pub recipients: String,
+    /// Body text for the search index (not shown).
+    pub body_text: String,
     /// Every (name, address) pair on the message, for the contacts list.
     pub addresses: Vec<(String, String)>,
 }

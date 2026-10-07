@@ -283,6 +283,12 @@ pub fn search_text(
 /// display name, the date a timestamp, and `\Seen` inverts into `is_unread`.
 pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
     let (recipient, recipient_address) = crate::compose::first_recipient(&fetched.to_header);
+    let recipients = [&fetched.to_header, &fetched.cc_header]
+        .into_iter()
+        .filter(|header| !header.is_empty())
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
     let addresses = [&fetched.from_header, &fetched.to_header, &fetched.cc_header]
         .into_iter()
         .flat_map(|header| address::parse_list(header))
@@ -305,6 +311,8 @@ pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
         is_pinned: fetched.is_pinned,
         preview: fetched.preview,
         message_id: fetched.message_id,
+        recipients,
+        body_text: fetched.body_text,
         addresses,
     }
 }

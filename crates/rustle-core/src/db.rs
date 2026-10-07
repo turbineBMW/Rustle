@@ -62,6 +62,33 @@ const MIGRATIONS: &[&str] = &[
         dest_id INTEGER NOT NULL DEFAULT 0,
         dest TEXT NOT NULL DEFAULT ''
      )",
+    // Search reaches into bodies (as far as the database has them) and every
+    // recipient. FTS5 can't add a column, so the index is rebuilt.
+    "ALTER TABLE emails ADD COLUMN body_text TEXT NOT NULL DEFAULT '';
+     ALTER TABLE emails ADD COLUMN recipients TEXT NOT NULL DEFAULT '';
+     DROP TRIGGER IF EXISTS emails_fts_insert;
+     DROP TRIGGER IF EXISTS emails_fts_delete;
+     DROP TRIGGER IF EXISTS emails_fts_update;
+     DROP TABLE IF EXISTS emails_fts;
+     CREATE VIRTUAL TABLE emails_fts USING fts5(
+        sender, subject, preview, body_text, content='emails', content_rowid='id'
+     );
+     CREATE TRIGGER emails_fts_insert AFTER INSERT ON emails BEGIN
+        INSERT INTO emails_fts(rowid, sender, subject, preview, body_text)
+        VALUES (new.id, new.sender, new.subject, new.preview, new.body_text);
+     END;
+     CREATE TRIGGER emails_fts_delete AFTER DELETE ON emails BEGIN
+        INSERT INTO emails_fts(emails_fts, rowid, sender, subject, preview, body_text)
+        VALUES ('delete', old.id, old.sender, old.subject, old.preview, old.body_text);
+     END;
+     CREATE TRIGGER emails_fts_update AFTER UPDATE OF sender, subject, preview, body_text
+     ON emails BEGIN
+        INSERT INTO emails_fts(emails_fts, rowid, sender, subject, preview, body_text)
+        VALUES ('delete', old.id, old.sender, old.subject, old.preview, old.body_text);
+        INSERT INTO emails_fts(rowid, sender, subject, preview, body_text)
+        VALUES (new.id, new.sender, new.subject, new.preview, new.body_text);
+     END;
+     INSERT INTO emails_fts(emails_fts) VALUES ('rebuild');",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -79,10 +106,14 @@ pub struct Reconciled {
     pub is_changed: bool,
 }
 
-/// Turn free text into a safe FTS5 query: each word matched as a prefix.
-fn fts_query(text: &str) -> String {
-    text.split_whitespace()
-        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+/// Search terms as a safe FTS5 query: each term a prefix match, a term with
+/// spaces in it a phrase.
+fn fts_terms(terms: &[String]) -> String {
+    terms
+        .iter()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -181,6 +212,10 @@ impl Database {
             .conn
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         let version = version.max(0) as usize;
+        let adds_body_text = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN body_text"))
+            .is_some_and(|index| index >= version);
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(version) {
             // Keep multi-column removals and their version marker atomic.
             let transaction = self.conn.unchecked_transaction()?;
@@ -188,7 +223,30 @@ impl Database {
             transaction.pragma_update(None, "user_version", (index + 1) as i64)?;
             transaction.commit()?;
         }
+        if adds_body_text {
+            self.fill_body_text()?;
+        }
         Ok(())
+    }
+
+    /// Index the bodies already downloaded, once, when `body_text` arrives.
+    fn fill_body_text(&self) -> Result<()> {
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut statement = self
+                .conn
+                .prepare("SELECT id, raw_message FROM emails WHERE raw_message IS NOT NULL")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_>>()?
+        };
+        let transaction = self.conn.unchecked_transaction()?;
+        for (id, raw) in rows {
+            let text = crate::mime::search_text(&crate::mime::parse_message(&raw));
+            transaction.execute(
+                "UPDATE emails SET body_text = ?1 WHERE id = ?2",
+                params![text, id],
+            )?;
+        }
+        transaction.commit()
     }
 
     // --- accounts ---------------------------------------------------------
@@ -745,36 +803,28 @@ impl Database {
     }
 
     /// Full-text search returns only the individual messages that match.
+    /// What's typed in the search box (`query::parse`), over `folder_ids`.
     pub fn search_emails(&self, folder_ids: &[i64], query: &str) -> Result<Vec<Email>> {
-        let matcher = fts_query(query);
-        if matcher.is_empty() {
-            return self.emails_in_folders(folder_ids);
-        }
-        if folder_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let placeholders = vec!["?"; folder_ids.len()].join(", ");
-        let sql = format!(
-            "SELECT {EMAIL_COLUMNS} FROM emails
-             WHERE folder_id IN ({placeholders}) AND id IN (
-                SELECT rowid FROM emails_fts WHERE emails_fts MATCH ?
-             )"
-        );
-        let mut statement = self.conn.prepare(&sql)?;
-        let mut values: Vec<rusqlite::types::Value> = Vec::new();
-        values.extend(
-            folder_ids
-                .iter()
-                .map(|id| rusqlite::types::Value::from(*id)),
-        );
-        values.push(rusqlite::types::Value::from(matcher));
-        let rows = statement.query_map(rusqlite::params_from_iter(values), Self::email_from_row)?;
-        let emails = rows.collect::<Result<Vec<_>>>()?;
-        Ok(Self::sort_emails(emails))
+        self.search_emails_with(folder_ids, query, &HashSet::new())
     }
 
-    /// Smart Search: the emails in `folder_ids` that pass `filter`. Its words
-    /// match the sender, subject and preview here; `server_ids` are emails
+    /// `search_emails`, plus `server_ids`: emails a server-side search
+    /// matched, whose bodies this database mostly lacks.
+    pub fn search_emails_with(
+        &self,
+        folder_ids: &[i64],
+        query: &str,
+        server_ids: &HashSet<i64>,
+    ) -> Result<Vec<Email>> {
+        let filter = crate::query::parse(query);
+        if filter.is_empty() {
+            return self.emails_in_folders(folder_ids);
+        }
+        self.filter_emails(folder_ids, &filter, server_ids)
+    }
+
+    /// The emails in `folder_ids` that pass `filter`. Its words match the
+    /// sender, subject, preview and indexed body text here; `server_ids` are emails
     /// the server found them in, whose bodies this database mostly lacks.
     pub fn filter_emails(
         &self,
@@ -793,7 +843,10 @@ impl Database {
         // instr rather than LIKE: nothing in the text is a wildcard.
         for (columns, text) in [
             (&["sender", "sender_address"][..], &filter.from),
-            (&["recipient", "recipient_address"][..], &filter.to),
+            (
+                &["recipient", "recipient_address", "recipients"][..],
+                &filter.to,
+            ),
             (&["subject"][..], &filter.subject),
         ] {
             let Some(text) = text else { continue };
@@ -821,7 +874,7 @@ impl Database {
             let moment = crate::dates::sort_key(&email.date);
             after.is_none_or(|after| moment >= after) && before.is_none_or(|before| moment < before)
         });
-        let matcher = fts_query(&filter.words.join(" "));
+        let matcher = fts_terms(&filter.words);
         if !matcher.is_empty() {
             let mut statement = self
                 .conn
@@ -957,12 +1010,14 @@ impl Database {
     /// Cache a downloaded message. A row synced before previews existed gets
     /// its preview filled in from the body at the same time.
     pub fn save_raw_message(&self, email_id: i64, raw: &[u8]) -> Result<()> {
-        let preview = crate::mime::preview(&crate::mime::parse_message(raw));
+        let parsed = crate::mime::parse_message(raw);
+        let preview = crate::mime::preview(&parsed);
+        let body_text = crate::mime::search_text(&parsed);
         self.conn.execute(
-            "UPDATE emails SET raw_message = ?1,
+            "UPDATE emails SET raw_message = ?1, body_text = ?4,
                 preview = CASE WHEN preview = '' THEN ?3 ELSE preview END
              WHERE id = ?2",
-            params![raw, email_id, preview],
+            params![raw, email_id, preview, body_text],
         )?;
         Ok(())
     }
@@ -1017,12 +1072,15 @@ impl Database {
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread, starred,
                 message_id, sender_address, recipient, recipient_address,
-                pinned)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                pinned, recipients, body_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
                 unread = excluded.unread, starred = excluded.starred, pinned = excluded.pinned,
                 recipient = excluded.recipient, recipient_address = excluded.recipient_address,
-                preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END",
+                recipients = excluded.recipients,
+                preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END,
+                body_text = CASE WHEN length(excluded.body_text) > length(body_text)
+                    THEN excluded.body_text ELSE body_text END",
             params![
                 folder_id,
                 header.uid,
@@ -1037,6 +1095,8 @@ impl Database {
                 header.recipient,
                 header.recipient_address,
                 header.is_pinned as i64,
+                header.recipients,
+                header.body_text,
             ],
         )?;
         Ok(is_new)
@@ -1515,20 +1575,37 @@ mod tests {
             .unwrap();
         let account_id = old.conn.last_insert_rowid();
         let inbox = old.get_or_create_folder(account_id, "INBOX", "i").unwrap();
-        old.save_incoming_email(
-            inbox.id,
-            &header("1", "Topic", "2026-01-01T00:00:00Z", "Ada"),
-        )
-        .unwrap();
-        old.save_incoming_email(
-            inbox.id,
-            &header("2", "Re: Topic", "2026-01-02T00:00:00Z", "Bob"),
-        )
-        .unwrap();
+        // Written as that schema had it: today's writers set later columns.
+        for (uid, subject, date, sender) in [
+            ("1", "Topic", "2026-01-01T00:00:00Z", "Ada"),
+            ("2", "Re: Topic", "2026-01-02T00:00:00Z", "Bob"),
+        ] {
+            old.conn
+                .execute(
+                    "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date,
+                        unread, message_id, sender_address)
+                     VALUES (?1, ?2, ?3, ?4, '', ?5, 1, ?6, ?7)",
+                    params![
+                        inbox.id,
+                        uid,
+                        sender,
+                        subject,
+                        date,
+                        format!("<{uid}@x>"),
+                        format!("{}@x.y", sender.to_lowercase())
+                    ],
+                )
+                .unwrap();
+        }
         old.conn.execute_batch("UPDATE emails SET conversation_id = 1, in_reply_to = '<1@x>', reference_ids = '<1@x>'").unwrap();
         let before = old.emails_in_folders(&[inbox.id]).unwrap();
         let raw = b"Subject: Topic\r\n\r\nOriginal body";
-        old.save_raw_message(before[1].id, raw).unwrap();
+        old.conn
+            .execute(
+                "UPDATE emails SET raw_message = ?1 WHERE id = ?2",
+                params![raw.as_slice(), before[1].id],
+            )
+            .unwrap();
         let before = old.emails_in_folders(&[inbox.id]).unwrap();
 
         let db = Database::init(old.conn).unwrap();
@@ -1538,6 +1615,8 @@ mod tests {
             Some(raw.as_slice())
         );
         assert_eq!(db.search_emails(&[inbox.id], "Topic").unwrap().len(), 2);
+        // Bodies downloaded before the index reached them are indexed once.
+        assert_eq!(db.search_emails(&[inbox.id], "original").unwrap().len(), 1);
         let removed_columns: i64 = db.conn.query_row(
             "SELECT count(*) FROM pragma_table_info('emails') WHERE name IN ('conversation_id', 'in_reply_to', 'reference_ids')",
             [], |row| row.get(0),
@@ -1882,5 +1961,40 @@ mod tests {
         let mut db = db;
         db.delete_account(account.id).unwrap();
         assert!(db.pending_ops(account.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn typed_search_reaches_bodies_recipients_and_flags() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let mut budget = header("1", "Numbers", "2026-01-01T00:00:00Z", "Ada");
+        budget.body_text = "the quarterly forecast is attached".into();
+        budget.recipients = "Bob <bob@x.y>, Carol <carol@x.y>".into();
+        db.save_incoming_email(inbox.id, &budget).unwrap();
+        let mut lunch = header("2", "Lunch", "2026-01-02T00:00:00Z", "Dan");
+        lunch.is_unread = false;
+        db.save_incoming_email(inbox.id, &lunch).unwrap();
+
+        let subjects = |query: &str| -> Vec<String> {
+            db.search_emails(&[inbox.id], query)
+                .unwrap()
+                .into_iter()
+                .map(|email| email.subject)
+                .collect()
+        };
+        assert_eq!(subjects("forecast"), ["Numbers"]);
+        assert_eq!(subjects("to:carol"), ["Numbers"]);
+        assert_eq!(subjects("is:read"), ["Lunch"]);
+        assert_eq!(subjects("from:dan lunch"), ["Lunch"]);
+        assert!(
+            subjects("\"forecast attached\"").is_empty(),
+            "a phrase is a phrase"
+        );
+
+        // A later header fetch with a shorter text doesn't shrink the index.
+        budget.body_text = "the".into();
+        db.save_incoming_email(inbox.id, &budget).unwrap();
+        assert_eq!(subjects("quarterly"), ["Numbers"]);
     }
 }

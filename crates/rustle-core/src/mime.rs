@@ -45,6 +45,21 @@ pub const PREVIEW_CHARS: usize = 240;
 /// plain-text part when there is one, otherwise the HTML flattened, with all
 /// whitespace collapsed to single spaces.
 pub fn preview(parsed: &ParsedMessage) -> String {
+    body_text(parsed).chars().take(PREVIEW_CHARS).collect()
+}
+
+/// The most characters of a body kept for local search. Enough for nearly
+/// any message written by a person; a newsletter's tail isn't worth the space.
+pub const SEARCH_TEXT_CHARS: usize = 20_000;
+
+/// A body's words for the search index: what the preview shows, kept longer.
+pub fn search_text(parsed: &ParsedMessage) -> String {
+    body_text(parsed).chars().take(SEARCH_TEXT_CHARS).collect()
+}
+
+/// The plain-text part when there is one, otherwise the HTML flattened, with
+/// all whitespace collapsed to single spaces.
+fn body_text(parsed: &ParsedMessage) -> String {
     let text = match (&parsed.text_body, &parsed.html_body) {
         (Some(text), _) if !text.trim().is_empty() => text.clone(),
         (_, Some(html)) => html::html_to_text(html),
@@ -52,8 +67,7 @@ pub fn preview(parsed: &ParsedMessage) -> String {
         (None, None) => String::new(),
     };
     let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let collapsed = undo_truncated_base64(&collapsed);
-    collapsed.chars().take(PREVIEW_CHARS).collect()
+    undo_truncated_base64(&collapsed)
 }
 
 /// A base64 part cut off by a partial fetch fails to decode, and mail-parser
@@ -89,13 +103,19 @@ fn undo_truncated_base64(text: &str) -> String {
 /// lenient about a missing closing boundary or a truncated encoding, and a
 /// snippet cut short is still a snippet.
 pub fn preview_from_slices(headers: &[u8], text: &[u8]) -> String {
+    texts_from_slices(headers, text).0
+}
+
+/// The preview and the search text of a partial fetch, from one parse.
+pub fn texts_from_slices(headers: &[u8], text: &[u8]) -> (String, String) {
     let mut raw = Vec::with_capacity(headers.len() + text.len() + 4);
     raw.extend_from_slice(headers);
     if !raw.ends_with(b"\r\n\r\n") && !raw.ends_with(b"\n\n") {
         raw.extend_from_slice(b"\r\n");
     }
     raw.extend_from_slice(text);
-    preview(&parse_message(&raw))
+    let parsed = parse_message(&raw);
+    (preview(&parsed), search_text(&parsed))
 }
 
 pub fn parse_message(raw: &[u8]) -> ParsedMessage {
