@@ -29,6 +29,11 @@ pub const FLAG_PINNED: &str = "$Pinned";
 /// how it identifies itself, so we don't append a second copy on top.
 pub const GMAIL_CAPABILITY: &str = "X-GM-EXT-1";
 
+/// The longest UID set put on one command line. RFC 7162 asks clients to
+/// keep lines under 8192 octets and some servers refuse anything longer;
+/// this leaves room for the tag, the command and its arguments.
+const MAX_UID_SET_LEN: usize = 4000;
+
 /// What a header fetch asks for. BODY.PEEK[...] = look WITHOUT marking the
 /// message \Seen. The first 4 KiB of the body ride along for the preview
 /// line; Content-Type and the transfer encoding are what decode them.
@@ -395,20 +400,28 @@ impl ImapSession {
         self.command(|session| session.delete(name))
     }
 
-    pub fn delete_uids(&mut self, uids: &str) -> Result<()> {
-        self.command(|session| session.uid_store(uids, "+FLAGS (\\Deleted)"))?;
+    pub fn delete_uids(&mut self, uids: &[String]) -> Result<()> {
+        for set in uid_sets(uids) {
+            self.command(|session| session.uid_store(&set, "+FLAGS (\\Deleted)"))?;
+        }
         if self.has_capability("UIDPLUS") {
-            self.command(|session| session.uid_expunge(uids))?;
+            for set in uid_sets(uids) {
+                self.command(|session| session.uid_expunge(&set))?;
+            }
         } else {
             self.command(|session| session.expunge())?;
         }
         Ok(())
     }
 
-    /// Add or remove flags on a UID set: "7" or "7,9,20".
-    pub fn store_flags(&mut self, uids: &str, flag: &str, should_add: bool) -> Result<()> {
+    /// Add or remove a flag on some messages, in as few STOREs as keep each
+    /// command line short. Adding or removing twice is harmless, so a
+    /// retry after a failure part-way only repeats what already landed.
+    pub fn store_flags(&mut self, uids: &[String], flag: &str, should_add: bool) -> Result<()> {
         let command = if should_add { "+FLAGS" } else { "-FLAGS" };
-        self.command(|session| session.uid_store(uids, format!("{command} ({flag})")))?;
+        for set in uid_sets(uids) {
+            self.command(|session| session.uid_store(&set, format!("{command} ({flag})")))?;
+        }
         Ok(())
     }
 
@@ -628,6 +641,68 @@ fn leaves_stream_dirty(error: &::imap::Error) -> bool {
     )
 }
 
+/// An IMAP sequence set for a run of UIDs, with consecutive values folded
+/// into ranges so a 200-message batch stays a short command line.
+pub fn uid_set(uids: &[u32]) -> String {
+    uid_ranges(uids).join(",")
+}
+
+/// UIDs as sequence sets for as many commands as it takes: folded into
+/// ranges like `uid_set`, then split so no set is longer than
+/// MAX_UID_SET_LEN. Thousands of scattered UIDs would otherwise make one
+/// line a server refuses outright. Empty for no UIDs.
+pub fn uid_sets(uids: &[String]) -> Vec<String> {
+    let numbers: Vec<u32> = uids.iter().filter_map(|uid| uid.parse().ok()).collect();
+    split_uid_ranges(uid_ranges(&numbers), MAX_UID_SET_LEN)
+}
+
+/// The UIDs sorted, deduplicated and folded: "1:3", "7", "9:12".
+fn uid_ranges(uids: &[u32]) -> Vec<String> {
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut ranges = Vec::new();
+    let mut run: Option<(u32, u32)> = None;
+    for uid in sorted {
+        match run {
+            Some((start, end)) if uid == end + 1 => run = Some((start, uid)),
+            Some((start, end)) => {
+                ranges.push(range_text(start, end));
+                run = Some((uid, uid));
+            }
+            None => run = Some((uid, uid)),
+        }
+    }
+    if let Some((start, end)) = run {
+        ranges.push(range_text(start, end));
+    }
+    ranges
+}
+
+fn range_text(start: u32, end: u32) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}:{end}")
+    }
+}
+
+/// Join ranges with commas into sets no longer than `max_len` (one range
+/// is never split, and none comes near the limit).
+fn split_uid_ranges(ranges: Vec<String>, max_len: usize) -> Vec<String> {
+    let mut sets: Vec<String> = Vec::new();
+    for range in ranges {
+        match sets.last_mut() {
+            Some(set) if set.len() + 1 + range.len() <= max_len => {
+                set.push(',');
+                set.push_str(&range);
+            }
+            _ => sets.push(range),
+        }
+    }
+    sets
+}
+
 /// Quote a mailbox name (escaping \ and ") so a space stays inside one astring.
 pub fn quote_mailbox(name: &str) -> String {
     format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
@@ -742,6 +817,35 @@ mod tests {
             Some("41".into())
         );
         assert_eq!(destination_uid("A3 OK Done."), None);
+    }
+
+    #[test]
+    fn uid_sets_fold_runs_and_split_long_lines() {
+        assert_eq!(uid_set(&[]), "");
+        assert_eq!(uid_set(&[5]), "5");
+        assert_eq!(uid_set(&[9, 8, 7, 3, 1, 2, 7]), "1:3,7:9");
+        assert_eq!(uid_set(&[4, 2]), "2,4");
+        let strings = |uids: &[u32]| -> Vec<String> { uids.iter().map(u32::to_string).collect() };
+        assert!(uid_sets(&[]).is_empty());
+        assert_eq!(uid_sets(&strings(&[3, 1, 2, 10])), ["1:3,10"]);
+        assert_eq!(
+            split_uid_ranges(uid_ranges(&[1, 2, 3, 10, 12, 20, 21]), 8),
+            ["1:3,10", "12,20:21"]
+        );
+        // Every other UID up to 20000: nothing folds, so it has to split.
+        let sparse: Vec<u32> = (1..20_000).step_by(2).collect();
+        let sets = uid_sets(&strings(&sparse));
+        assert!(sets.len() > 1);
+        assert!(sets.iter().all(|set| set.len() <= MAX_UID_SET_LEN));
+        let rejoined: Vec<u32> = sets
+            .iter()
+            .flat_map(|set| set.split(','))
+            .map(|uid| uid.parse().unwrap())
+            .collect();
+        assert_eq!(rejoined, sparse);
+        // A contiguous block folds to one short range.
+        let block: Vec<u32> = (1..=20_000).collect();
+        assert_eq!(uid_sets(&strings(&block)), ["1:20000"]);
     }
 
     #[test]

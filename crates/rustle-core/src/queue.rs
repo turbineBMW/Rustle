@@ -127,7 +127,7 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
             if uids.is_empty() {
                 return Ok(Outcome::Done(Vec::new()));
             }
-            match session.store_flags(&uids.join(","), flag, *add) {
+            match session.store_flags(uids, flag, *add) {
                 Ok(()) => Ok(Outcome::Done(Vec::new())),
                 Err(error) => refused_or_stop(session, Vec::new(), error),
             }

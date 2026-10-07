@@ -8,7 +8,9 @@ use crate::models::NO_SUBJECT;
 use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
-use crate::net::imap::{quote_mailbox, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
+use crate::net::imap::{
+    quote_mailbox, uid_set, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY,
+};
 use crate::net::pool;
 use crate::net::smtp::SmtpSession;
 use log::warn;
@@ -124,38 +126,6 @@ fn missing_uids(server: &HashSet<String>, local: &HashSet<String>) -> Vec<u32> {
         .collect();
     missing.sort_unstable_by(|a, b| b.cmp(a));
     missing
-}
-
-/// An IMAP sequence set for a run of UIDs, with consecutive values folded
-/// into ranges so a 200-message batch stays a short command line.
-fn uid_set(uids: &[u32]) -> String {
-    let mut sorted = uids.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let mut parts: Vec<String> = Vec::new();
-    let mut run: Option<(u32, u32)> = None;
-    for uid in sorted {
-        match run {
-            Some((start, end)) if uid == end + 1 => run = Some((start, uid)),
-            Some((start, end)) => {
-                parts.push(range_text(start, end));
-                run = Some((uid, uid));
-            }
-            None => run = Some((uid, uid)),
-        }
-    }
-    if let Some((start, end)) = run {
-        parts.push(range_text(start, end));
-    }
-    parts.join(",")
-}
-
-fn range_text(start: u32, end: u32) -> String {
-    if start == end {
-        start.to_string()
-    } else {
-        format!("{start}:{end}")
-    }
 }
 
 /// Results from the commands attempted by a mailbox move: a move that fails
@@ -352,8 +322,8 @@ pub fn fetch_full_message(
     Ok(raw)
 }
 
-/// Add or remove an IMAP flag on a set of messages, in one STORE. An empty
-/// set is not an empty command but a malformed one, so it is skipped.
+/// Add or remove an IMAP flag on a set of messages. An empty set is not an
+/// empty command but a malformed one, so it is skipped.
 pub fn set_flag(
     account: &Account,
     credential: &Credential,
@@ -367,7 +337,7 @@ pub fn set_flag(
     }
     let mut session = open_imap(account, credential)?;
     session.select(folder_name, true)?;
-    session.store_flags(&uids.join(","), flag, should_add)?;
+    session.store_flags(uids, flag, should_add)?;
     release(account, credential, session);
     Ok(())
 }
@@ -534,7 +504,7 @@ pub fn save_draft(
         None => None,
     };
     if !earlier.is_empty() {
-        session.delete_uids(&earlier.join(","))?;
+        session.delete_uids(&earlier)?;
     }
     release(account, credential, session);
     Ok(Some(SavedDraft { mailbox, uid }))
@@ -551,7 +521,7 @@ pub fn discard_draft(account: &Account, credential: &Credential, message_id: &st
         session.select(&mailbox, true)?;
         let uids = session.search_uids(&criteria)?;
         if !uids.is_empty() {
-            session.delete_uids(&uids.join(","))?;
+            session.delete_uids(&uids)?;
         }
     }
     release(account, credential, session);
@@ -622,14 +592,6 @@ mod tests {
         let local = uids(&["2", "10"]);
         assert_eq!(missing_uids(&server, &local), vec![7, 3, 1]);
         assert!(missing_uids(&local, &server).is_empty());
-    }
-
-    #[test]
-    fn uid_set_folds_runs_into_ranges() {
-        assert_eq!(uid_set(&[]), "");
-        assert_eq!(uid_set(&[5]), "5");
-        assert_eq!(uid_set(&[9, 8, 7, 3, 1, 2, 7]), "1:3,7:9");
-        assert_eq!(uid_set(&[4, 2]), "2,4");
     }
 
     #[test]
