@@ -1281,7 +1281,7 @@ dependencies = [
 [[package]]
 name = "graphmail-bridge"
 version = "0.1.0"
-source = "git+https://github.com/turbineBMW/graphmail-bridge?branch=feat%2Fembed#46de7df12c294edf4448440d57b4890008c9ffbc"
+source = "git+https://github.com/turbineBMW/graphmail-bridge?branch=main#957bf65fcc414f30e24542ec0e6697af5ffc6477"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3496,7 +3496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
