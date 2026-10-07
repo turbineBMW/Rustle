@@ -8,6 +8,7 @@ mod backfill;
 mod composer;
 mod folders;
 mod list;
+mod message_tools;
 mod moves;
 #[cfg(feature = "phone")]
 mod phone;
@@ -48,7 +49,16 @@ const MAIL_ACTIONS: [&str; 6] = [
     "trash",
     "move",
 ];
-const REPLY_FORWARD_ACTIONS: [&str; 4] = ["reply", "reply-all", "forward", "edit-draft"];
+/// Live once a message has rendered.
+const REPLY_FORWARD_ACTIONS: [&str; 7] = [
+    "reply",
+    "reply-all",
+    "forward",
+    "edit-draft",
+    "print",
+    "save-message",
+    "show-source",
+];
 
 /// How long an archive/trash/move stays undoable before the real IMAP MOVE
 /// runs. The Undo toast is shown for this window, so the two have to agree.
@@ -393,6 +403,7 @@ impl MainWindow {
         window.setup_message_handlers();
         window.setup_smart_search();
         window.setup_inline_composer();
+        window.setup_reader_tools();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();

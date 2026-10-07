@@ -94,6 +94,9 @@ struct Inner {
     is_released: bool,
     placeholder: Option<gtk::Label>,
     webview: Option<webkit::WebView>,
+    text_label: Option<gtk::Label>,
+    /// The reader's zoom: the WebKit zoom level, or the text's scale.
+    zoom: f64,
     images_banner: Option<adw::Banner>,
     html: Option<String>,
     pub raw: Option<Vec<u8>>,
@@ -223,6 +226,8 @@ impl MessageView {
                 is_released: false,
                 placeholder: None,
                 webview: None,
+                text_label: None,
+                zoom: 1.0,
                 images_banner: None,
                 html: None,
                 raw: None,
@@ -385,6 +390,78 @@ impl MessageView {
             .selectable(true)
             .build();
         self.body.append(&label);
+        let zoom = {
+            let mut inner = self.inner.borrow_mut();
+            inner.text_label = Some(label.clone());
+            inner.zoom
+        };
+        set_label_scale(&label, zoom);
+    }
+
+    /// Zoom the body (not the header): 1.0 is the normal size.
+    pub fn set_zoom(&self, zoom: f64) {
+        let (webview, label) = {
+            let mut inner = self.inner.borrow_mut();
+            inner.zoom = zoom;
+            (inner.webview.clone(), inner.text_label.clone())
+        };
+        if let Some(webview) = webview {
+            webview.set_zoom_level(zoom);
+        }
+        if let Some(label) = label {
+            set_label_scale(&label, zoom);
+        }
+    }
+
+    /// Print the message, headers first, through the print dialog. It's laid
+    /// out in a view of its own, never shown: the one on screen may be dark
+    /// and has no headers in it.
+    pub fn print(&self, parent: &gtk::Window) {
+        let (parsed, allows_images) = {
+            let inner = self.inner.borrow();
+            let Some(parsed) = inner.parsed.clone() else {
+                return;
+            };
+            (parsed, inner.should_load_remote_images)
+        };
+        let page = mime::sandbox_html(&mime::print_html(&parsed), allows_images, mime::PRINT_STYLE);
+        let view = webkit::WebView::builder()
+            .related_view(&ensure_anchor())
+            .build();
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_javascript(false);
+        }
+        // Nothing may navigate this view but its own load.
+        view.connect_decide_policy(|_, decision, _| {
+            let is_link = decision
+                .downcast_ref::<webkit::NavigationPolicyDecision>()
+                .and_then(|navigation| navigation.navigation_action())
+                .is_some_and(|action| {
+                    action.navigation_type() == webkit::NavigationType::LinkClicked
+                });
+            if is_link {
+                decision.ignore();
+            }
+            is_link
+        });
+        // The view has no parent to keep it, so this does until it's printed.
+        let keep: Rc<RefCell<Option<webkit::WebView>>> = Rc::new(RefCell::new(Some(view.clone())));
+        let parent = parent.clone();
+        view.connect_load_changed(move |view, event| {
+            if event != webkit::LoadEvent::Finished {
+                return;
+            }
+            let operation = webkit::PrintOperation::new(view);
+            let done = keep.clone();
+            operation.connect_finished(move |_| {
+                done.borrow_mut().take();
+            });
+            operation.connect_failed(|_, error| log::error!("could not print a message: {error}"));
+            if operation.run_dialog(Some(&parent)) == webkit::PrintOperationResponse::Cancel {
+                keep.borrow_mut().take();
+            }
+        });
+        view.load_html(&page, None);
     }
 
     fn show_html(&self, html: &str) {
@@ -431,6 +508,7 @@ impl MessageView {
         } else {
             "message-html"
         });
+        webview.set_zoom_level(self.inner.borrow().zoom);
         webview.load_html(&self.sandboxed_html(), None);
         self.inner.borrow_mut().webview = Some(webview.clone());
         self.body.append(&webview);
@@ -582,6 +660,13 @@ impl MessageView {
         inner.raw = None;
         inner.parsed = None;
     }
+}
+
+/// Scale a plain-text body the way WebKit zooms an HTML one.
+fn set_label_scale(label: &gtk::Label, zoom: f64) {
+    let attributes = pango::AttrList::new();
+    attributes.insert(pango::AttrFloat::new_scale(zoom));
+    label.set_attributes(Some(&attributes));
 }
 
 /// The webview only ever renders the message body: the one navigation it may
