@@ -45,6 +45,8 @@ pub enum PgpError {
     NoPublicKey(String),
     #[error("not an OpenPGP message")]
     NotPgp,
+    #[error("the message was changed after it was encrypted")]
+    Tampered,
     #[error("gpg: {0}")]
     Gpg(String),
     #[error("{0}")]
@@ -52,11 +54,14 @@ pub enum PgpError {
 }
 
 /// A message once decrypted: the raw message to show in its place, and
-/// the signature it carried inside, if any.
+/// the signature it carried inside, if any. `is_encrypted` is false for a
+/// PGP MESSAGE that was only signed (or only wrapped): gpg unpacks it all
+/// the same, but nothing was secret.
 #[derive(Clone, Debug)]
 pub struct Decrypted {
     pub raw: Vec<u8>,
     pub signature: Option<SignatureStatus>,
+    pub is_encrypted: bool,
 }
 
 pub fn is_available() -> bool {
@@ -127,12 +132,7 @@ pub fn decrypt(raw: &[u8]) -> Result<Decrypted, PgpError> {
         _ => return Err(PgpError::NotPgp),
     };
     let (plain, status) = run_gpg(&["--decrypt"], &armored)?;
-    if !status.contains("DECRYPTION_OKAY") && !status.contains("[GNUPG:] PLAINTEXT") {
-        if status.contains("NO_SECKEY") {
-            return Err(PgpError::NoSecretKey);
-        }
-        return Err(PgpError::Gpg(first_error(&status)));
-    }
+    let is_encrypted = decryption_from_status(&status)?;
     let headers = outer_headers(raw);
     let mut out = headers;
     if is_mime {
@@ -145,7 +145,29 @@ pub fn decrypt(raw: &[u8]) -> Result<Decrypted, PgpError> {
     Ok(Decrypted {
         raw: out,
         signature: signature_from_status(&status),
+        is_encrypted,
     })
+}
+
+/// What a `multipart/signed` message shows: its outer headers over the
+/// signed part alone. Anything else in it -- a part added after the
+/// signature, say -- isn't covered by the signature, so isn't shown under it.
+pub fn signed_message(raw: &[u8]) -> Option<Vec<u8>> {
+    let (signed, _) = signed_parts(raw)?;
+    let mut out = outer_headers(raw);
+    out.extend_from_slice(&signed);
+    Some(out)
+}
+
+/// Whether a good signature's user ID names the address the message is
+/// From. Both are the sender's say-so, but a signature by someone else's
+/// key proves nothing about the From line.
+pub fn signer_matches_sender(signer: &str, from_header: &str) -> bool {
+    let from = crate::address::first_address(from_header);
+    !from.is_empty()
+        && crate::address::parse_list(signer)
+            .iter()
+            .any(|mailbox| mailbox.address.eq_ignore_ascii_case(&from))
 }
 
 /// Check a `multipart/signed` message's signature over its first part.
@@ -313,6 +335,56 @@ fn signature_from_status(status: &str) -> Option<SignatureStatus> {
         }
         other => other,
     }
+}
+
+/// Whether gpg's status lines say it decrypted something whole: Ok(true)
+/// when it did, Ok(false) when there was nothing to decrypt (a signed-only
+/// or bare literal PGP MESSAGE). gpg writes plaintext as it goes, so what
+/// it wrote counts for nothing when decryption failed, the integrity check
+/// (MDC or AEAD) failed, or there was none.
+fn decryption_from_status(status: &str) -> Result<bool, PgpError> {
+    let keywords: Vec<&str> = status
+        .lines()
+        .filter_map(|line| line.strip_prefix("[GNUPG:] "))
+        .collect();
+    let has = |keyword: &str| {
+        keywords
+            .iter()
+            .any(|line| line.split(' ').next() == Some(keyword))
+    };
+    if has("BADMDC") {
+        return Err(PgpError::Tampered);
+    }
+    if has("DECRYPTION_FAILED") || (has("BEGIN_DECRYPTION") && !has("DECRYPTION_OKAY")) {
+        if has("NO_SECKEY") {
+            return Err(PgpError::NoSecretKey);
+        }
+        return Err(PgpError::Gpg(first_error(status)));
+    }
+    if has("DECRYPTION_OKAY") {
+        // DECRYPTION_INFO <mdc_method> <sym_algo> [<aead_algo>]: neither an
+        // MDC nor AEAD means nothing would have noticed a change.
+        let is_unprotected = keywords
+            .iter()
+            .filter_map(|line| line.strip_prefix("DECRYPTION_INFO "))
+            .any(|info| {
+                let fields: Vec<&str> = info.split(' ').collect();
+                let mdc = fields.first().copied().unwrap_or("0");
+                let aead = fields.get(2).copied().unwrap_or("0");
+                mdc == "0" && aead == "0"
+            });
+        if is_unprotected {
+            return Err(PgpError::Tampered);
+        }
+        return Ok(true);
+    }
+    if has("PLAINTEXT") {
+        return Ok(false);
+    }
+    if has("NO_SECKEY") {
+        return Err(PgpError::NoSecretKey);
+    }
+    Err(PgpError::Gpg(first_error(status)))
 }
 
 fn first_error(status: &str) -> String {
@@ -536,6 +608,82 @@ mod tests {
     }
 
     #[test]
+    fn decryption_needs_okay_and_integrity() {
+        let okay = "[GNUPG:] ENC_TO 1234 18 0\n[GNUPG:] BEGIN_DECRYPTION\n[GNUPG:] DECRYPTION_INFO 2 9 0\n[GNUPG:] PLAINTEXT 62 0\n[GNUPG:] DECRYPTION_OKAY\n[GNUPG:] GOODMDC\n[GNUPG:] END_DECRYPTION\n";
+        assert!(matches!(decryption_from_status(okay), Ok(true)));
+        let aead = okay.replace("DECRYPTION_INFO 2 9 0", "DECRYPTION_INFO 0 9 2");
+        assert!(matches!(decryption_from_status(&aead), Ok(true)));
+        // Plaintext written before the failure is still no decryption.
+        let failed = "[GNUPG:] BEGIN_DECRYPTION\n[GNUPG:] PLAINTEXT 62 0\n[GNUPG:] DECRYPTION_FAILED\n[GNUPG:] END_DECRYPTION\n";
+        assert!(decryption_from_status(failed).is_err());
+        let bad_mdc = okay.replace("GOODMDC", "BADMDC");
+        assert!(matches!(
+            decryption_from_status(&bad_mdc),
+            Err(PgpError::Tampered)
+        ));
+        let no_mdc = okay.replace("DECRYPTION_INFO 2 9 0", "DECRYPTION_INFO 0 9");
+        assert!(matches!(
+            decryption_from_status(&no_mdc),
+            Err(PgpError::Tampered)
+        ));
+        let truncated = "[GNUPG:] BEGIN_DECRYPTION\n[GNUPG:] PLAINTEXT 62 0\n";
+        assert!(decryption_from_status(truncated).is_err());
+        // Signed only, or a bare literal packet: readable, not encrypted.
+        let signed =
+            "[GNUPG:] PLAINTEXT 62 0\n[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG 1234 Ada <ada@x.y>\n";
+        assert!(matches!(decryption_from_status(signed), Ok(false)));
+        assert!(matches!(
+            decryption_from_status("[GNUPG:] PLAINTEXT 62 0\n"),
+            Ok(false)
+        ));
+        let no_key = "[GNUPG:] ENC_TO 1234 18 0\n[GNUPG:] NO_SECKEY 1234\n[GNUPG:] BEGIN_DECRYPTION\n[GNUPG:] DECRYPTION_FAILED\n";
+        assert!(matches!(
+            decryption_from_status(no_key),
+            Err(PgpError::NoSecretKey)
+        ));
+        assert!(decryption_from_status("").is_err());
+    }
+
+    #[test]
+    fn shows_only_the_signed_part() {
+        let raw = b"From: a@x.y\r\nSubject: s\r\nContent-Type: multipart/signed; micalg=pgp-sha256;\r\n protocol=\"application/pgp-signature\"; boundary=\"s\"\r\n\r\n--s\r\nContent-Type: text/plain\r\n\r\nSigned text.\r\n--s\r\nContent-Type: application/pgp-signature\r\n\r\n-----BEGIN PGP SIGNATURE-----\r\nsig\r\n-----END PGP SIGNATURE-----\r\n--s\r\nContent-Type: text/html\r\n\r\n<p>Pay the invoice.</p>\r\n--s--\r\n";
+        let shown = signed_message(raw).unwrap();
+        let parsed = crate::mime::parse_message(&shown);
+        assert_eq!(
+            parsed.text_body.as_deref().map(str::trim),
+            Some("Signed text.")
+        );
+        assert_eq!(parsed.html_body, None);
+        assert_eq!(parsed.subject, "s");
+        assert_eq!(parsed.from_header, "a@x.y");
+        assert!(parsed.attachments.is_empty());
+    }
+
+    #[test]
+    fn the_signer_has_to_be_the_sender() {
+        assert!(signer_matches_sender(
+            "Ada <ada@x.y>",
+            "\"Ada L.\" <ADA@x.y>"
+        ));
+        assert!(signer_matches_sender("ada@x.y", "ada@x.y"));
+        assert!(signer_matches_sender(
+            "Ada (work) <ada@x.y>",
+            "Ada <ada@x.y>"
+        ));
+        assert!(!signer_matches_sender(
+            "Mallory <mallory@evil.example>",
+            "Ada <ada@x.y>"
+        ));
+        // A name that looks like the address doesn't count.
+        assert!(!signer_matches_sender(
+            "ada@x.y <mallory@evil.example>",
+            "ada@x.y"
+        ));
+        assert!(!signer_matches_sender("Ada <ada@x.y>", ""));
+        assert!(!signer_matches_sender("Ada", "Ada <ada@x.y>"));
+    }
+
+    #[test]
     fn decrypted_messages_keep_the_outer_headers() {
         let raw = b"From: a@x.y\r\nSubject: hi\r\nMIME-Version: 1.0\r\nContent-Type: multipart/encrypted;\r\n boundary=b\r\n\r\nbody";
         let headers = String::from_utf8(outer_headers(raw)).unwrap();
@@ -589,8 +737,28 @@ mod tests {
             Some("Hello, secret.")
         );
         assert_eq!(parsed.subject, "s");
+        assert!(decrypted.is_encrypted);
         assert!(matches!(
             decrypted.signature,
+            Some(SignatureStatus::Good { .. })
+        ));
+
+        // An inline PGP MESSAGE that's only signed reads, but isn't encrypted.
+        let (armored, _) = run_gpg(
+            &["--sign", "--armor", "--local-user", "<test@rustle.invalid>"],
+            b"Only signed.\n",
+        )
+        .unwrap();
+        let inline = [
+            b"From: test@rustle.invalid\r\nContent-Type: text/plain\r\n\r\n".as_slice(),
+            &armored,
+        ]
+        .concat();
+        assert_eq!(detect(&inline), Protection::InlineEncrypted);
+        let opened = decrypt(&inline).unwrap();
+        assert!(!opened.is_encrypted);
+        assert!(matches!(
+            opened.signature,
             Some(SignatureStatus::Good { .. })
         ));
 
