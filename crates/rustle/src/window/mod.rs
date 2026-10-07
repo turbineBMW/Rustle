@@ -11,6 +11,7 @@ mod moves;
 #[cfg(feature = "phone")]
 mod phone;
 mod reader;
+mod smart_search;
 mod sync;
 mod watch;
 
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use moves::PendingMove;
+pub use smart_search::SmartSearch;
 
 /// Window action names, grouped by what enables and disables them together.
 const MAIL_ACTIONS: [&str; 6] = [
@@ -133,6 +135,13 @@ pub struct State {
     pub inbox_resync_pending: HashSet<i64>,
     pub is_online: bool,
     pub message_handlers: Option<Rc<Handlers>>,
+    /// The Smart Search the list shows, once the assistant has answered.
+    pub smart_search: Option<SmartSearch>,
+    /// Bumped by every Smart Search and by clearing one, so late answers
+    /// from an older one are dropped.
+    pub smart_generation: u64,
+    /// The assistant and server searches still out.
+    pub smart_pending: u32,
 }
 
 mod imp {
@@ -169,6 +178,16 @@ mod imp {
         pub search_bar: TemplateChild<gtk::SearchBar>,
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
+        #[template_child]
+        pub search_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub search_row: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub ask_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub ask_spinner: TemplateChild<gtk::Spinner>,
+        #[template_child]
+        pub smart_summary: TemplateChild<gtk::Label>,
         #[template_child]
         pub unread_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
@@ -345,6 +364,7 @@ impl MainWindow {
         window.setup_actions();
         window.connect_widgets();
         window.setup_message_handlers();
+        window.setup_smart_search();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();

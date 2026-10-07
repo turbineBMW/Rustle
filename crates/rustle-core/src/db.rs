@@ -1,6 +1,7 @@
 //! All SQLite access. One connection, main thread only: the worker threads
 //! do network and hand results back here.
 
+use crate::assistant::SearchFilter;
 use crate::eds;
 use crate::folders;
 use crate::models::{
@@ -742,6 +743,84 @@ impl Database {
         Ok(Self::sort_emails(emails))
     }
 
+    /// Smart Search: the emails in `folder_ids` that pass `filter`. Its words
+    /// match the sender, subject and preview here; `server_ids` are emails
+    /// the server found them in, whose bodies this database mostly lacks.
+    pub fn filter_emails(
+        &self,
+        folder_ids: &[i64],
+        filter: &SearchFilter,
+        server_ids: &HashSet<i64>,
+    ) -> Result<Vec<Email>> {
+        if folder_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; folder_ids.len()].join(", ");
+        let mut sql =
+            format!("SELECT {EMAIL_COLUMNS} FROM emails WHERE folder_id IN ({placeholders})");
+        let mut values: Vec<rusqlite::types::Value> =
+            folder_ids.iter().map(|id| (*id).into()).collect();
+        // instr rather than LIKE: nothing in the text is a wildcard.
+        for (columns, text) in [
+            (&["sender", "sender_address"][..], &filter.from),
+            (&["recipient", "recipient_address"][..], &filter.to),
+            (&["subject"][..], &filter.subject),
+        ] {
+            let Some(text) = text else { continue };
+            let tests: Vec<String> = columns
+                .iter()
+                .map(|column| format!("instr(lower({column}), lower(?)) > 0"))
+                .collect();
+            sql.push_str(&format!(" AND ({})", tests.join(" OR ")));
+            values.extend(columns.iter().map(|_| text.trim().to_string().into()));
+        }
+        for (column, wanted) in [("unread", filter.unread), ("starred", filter.starred)] {
+            if let Some(wanted) = wanted {
+                sql.push_str(&format!(" AND {column} = ?"));
+                values.push((wanted as i64).into());
+            }
+        }
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values), Self::email_from_row)?;
+        let mut emails = rows.collect::<Result<Vec<_>>>()?;
+
+        // Stored dates carry their own zone offsets, so they are compared
+        // as instants rather than as text.
+        let (after, before) = filter.time_bounds();
+        emails.retain(|email| {
+            let moment = crate::dates::sort_key(&email.date);
+            after.is_none_or(|after| moment >= after) && before.is_none_or(|before| moment < before)
+        });
+        let matcher = fts_query(&filter.words.join(" "));
+        if !matcher.is_empty() {
+            let mut statement = self
+                .conn
+                .prepare("SELECT rowid FROM emails_fts WHERE emails_fts MATCH ?")?;
+            let found = statement
+                .query_map([matcher], |row| row.get::<_, i64>(0))?
+                .collect::<Result<HashSet<i64>>>()?;
+            emails.retain(|email| found.contains(&email.id) || server_ids.contains(&email.id));
+        }
+        Ok(Self::sort_emails(emails))
+    }
+
+    /// The local ids of a folder's messages, by their server UIDs.
+    pub fn email_ids_for_uids(&self, folder_id: i64, uids: &[String]) -> Result<Vec<i64>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id FROM emails WHERE folder_id = ?1 AND server_id = ?2")?;
+        let mut ids = Vec::new();
+        for uid in uids {
+            if let Some(id) = statement
+                .query_row(params![folder_id, uid], |row| row.get(0))
+                .optional()?
+            {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
     fn sort_emails(mut emails: Vec<Email>) -> Vec<Email> {
         // Sent time is comparable across accounts and defines the day sections.
         // Arrival order breaks ties; the local ID makes the ordering stable.
@@ -1345,6 +1424,58 @@ mod tests {
         let id = db.emails_in_folders(&[inbox.id]).unwrap()[1].id;
         db.set_email_pinned(id, true).unwrap();
         assert_eq!(subjects(&db), vec!["Old", "New"]);
+    }
+
+    #[test]
+    fn smart_search_filters_and_unions_server_matches() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        for (uid, subject, date, sender) in [
+            (
+                "1",
+                "Invoice 12",
+                "2026-09-02T10:00:00+02:00",
+                "Ada Lovelace",
+            ),
+            ("2", "Lunch", "2026-09-03T10:00:00Z", "Ada Lovelace"),
+            ("3", "Invoice 9", "2026-08-01T10:00:00Z", "Bob"),
+        ] {
+            db.save_incoming_email(inbox.id, &header(uid, subject, date, sender))
+                .unwrap();
+        }
+        let subjects = |filter: &SearchFilter, server: &HashSet<i64>| -> Vec<String> {
+            db.filter_emails(&[inbox.id], filter, server)
+                .unwrap()
+                .into_iter()
+                .map(|email| email.subject)
+                .collect()
+        };
+        let none = HashSet::new();
+        let from_ada = SearchFilter {
+            from: Some("ADA".into()),
+            ..SearchFilter::default()
+        };
+        assert_eq!(subjects(&from_ada, &none), ["Lunch", "Invoice 12"]);
+        let invoices = SearchFilter {
+            words: vec!["invoice".into()],
+            after: Some("2026-09-01".into()),
+            ..SearchFilter::default()
+        };
+        assert_eq!(subjects(&invoices, &none), ["Invoice 12"]);
+        // "Lunch" mentions an invoice only in its body, which the server saw.
+        let lunch = db
+            .email_ids_for_uids(inbox.id, &["2".into(), "9".into()])
+            .unwrap();
+        assert_eq!(lunch.len(), 1);
+        let server: HashSet<i64> = lunch.into_iter().collect();
+        assert_eq!(subjects(&invoices, &server), ["Lunch", "Invoice 12"]);
+        let unread_bob = SearchFilter {
+            from: Some("bob".into()),
+            unread: Some(false),
+            ..SearchFilter::default()
+        };
+        assert!(subjects(&unread_bob, &none).is_empty());
     }
 
     #[test]

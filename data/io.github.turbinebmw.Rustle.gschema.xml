@@ -26,6 +26,23 @@
 			<summary>Check spelling</summary>
 			<description>Underline misspelled words in the composer and the signature editor, in the language of the desktop's locale. Needs a Hunspell, Nuspell or Aspell dictionary for that language.</description>
 		</key>
+		<key name="assistant" type="s">
+			<choices>
+				<choice value=""/>
+				<choice value="claude"/>
+				<choice value="codex"/>
+				<choice value="opencode"/>
+				<choice value="pi"/>
+			</choices>
+			<default>''</default>
+			<summary>AI assistant</summary>
+			<description>The coding agent's command-line tool Smart Search asks: claude (Claude Code), codex, opencode or pi, run headless with its own sign-in. Smart Search sends it only the words you type, never your mail. Empty turns the assistant off.</description>
+		</key>
+		<key name="assistant-model" type="s">
+			<default>''</default>
+			<summary>AI assistant model</summary>
+			<description>The model the assistant's tool is asked to use, in that tool's own naming (for example sonnet, or provider/model for opencode). Empty uses the tool's default.</description>
+		</key>
 		<key name="bridge-photo-port" type="i">
 			<range min="1" max="65535"/>
 			<default>1180</default>

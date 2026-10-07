@@ -38,10 +38,13 @@ impl MainWindow {
         let imp = self.imp();
         let folder_ids = self.current_folder_ids();
         let query = imp.search_entry.text().trim().to_string();
+        let smart = self.state().smart_search.clone();
         let matches = {
             let db = self.db();
             let db = db.borrow();
-            let result = if query.is_empty() {
+            let result = if let Some(smart) = &smart {
+                db.filter_emails(&folder_ids, &smart.filter, &smart.server_ids)
+            } else if query.is_empty() {
                 db.emails_in_folders(&folder_ids)
             } else {
                 db.search_emails(&folder_ids, &query)
@@ -166,6 +169,10 @@ impl MainWindow {
     pub(super) fn on_search_changed(&self) {
         if let Some(previous) = self.state_mut().search_timeout.take() {
             previous.remove();
+        }
+        // Smart Search runs on Enter, not as you type.
+        if self.is_smart_typing() {
+            return;
         }
         let source = glib::timeout_add_local_once(
             Duration::from_millis(SEARCH_DEBOUNCE_MS),

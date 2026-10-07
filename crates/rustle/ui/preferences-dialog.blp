@@ -53,6 +53,19 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
       }
     }
 
+    Adw.PreferencesGroup {
+      title: _("Assistant");
+      description: _("Smart Search turns what you type into a search with a coding agent's command-line tool, signed in as you. It sends only the words you type, never your mail.");
+
+      Adw.ComboRow assistant_row {
+        title: _("Tool");
+      }
+
+      Adw.EntryRow assistant_model_row {
+        title: _("Model (optional)");
+      }
+    }
+
     Adw.PreferencesGroup appearance_group {
       title: _("Appearance");
 

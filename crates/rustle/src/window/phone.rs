@@ -130,6 +130,7 @@ impl MainWindow {
 
         // The list: search and New Message at the bottom.
         imp.search_bar.set_key_capture_widget(None::<&gtk::Widget>);
+        imp.search_box.remove(&*imp.search_row);
         imp.search_bar.set_child(None::<&gtk::Widget>);
         imp.search_bar.set_visible(false);
         imp.search_entry
@@ -146,8 +147,8 @@ impl MainWindow {
             }
         });
         let list_row = gtk::Box::builder().spacing(8).build();
-        imp.search_entry.set_hexpand(true);
-        list_row.append(&*imp.search_entry);
+        imp.search_row.set_hexpand(true);
+        list_row.append(&*imp.search_row);
         list_row.append(&compose);
         dock(&imp.list_toolbar, &list_row);
 

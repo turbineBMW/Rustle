@@ -240,6 +240,33 @@ fn unread_counts(
     counts
 }
 
+/// Search the full text of `mailboxes` on the server, for Smart Search:
+/// the matching UIDs per mailbox. A mailbox that fails is logged and left
+/// out, so one odd folder doesn't sink the rest.
+pub fn search_text(
+    account: &Account,
+    credential: &Credential,
+    mailboxes: &[String],
+    criteria: &str,
+) -> Result<Vec<(String, Vec<String>)>> {
+    let mut session = open_imap(account, credential)?;
+    let mut found = Vec::new();
+    for mailbox in mailboxes {
+        let uids = session
+            .select(mailbox, false)
+            .and_then(|_| session.search_uids(criteria));
+        match uids {
+            Ok(uids) => found.push((mailbox.clone(), uids)),
+            Err(error) => warn!(
+                "could not search {mailbox} on {} (account {}): {error}",
+                account.imap_host, account.email
+            ),
+        }
+    }
+    session.logout();
+    Ok(found)
+}
+
 /// Turn raw wire headers into the display-ready form: the sender becomes a
 /// display name, the date a timestamp, and `\Seen` inverts into `is_unread`.
 pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
