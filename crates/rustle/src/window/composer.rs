@@ -30,6 +30,12 @@ const HELD_ACTIONS: [&str; 9] = [
     "search",
 ];
 
+impl InlineComposer {
+    pub fn widget(&self) -> gtk::Widget {
+        self.composer.clone().upcast()
+    }
+}
+
 pub struct InlineComposer {
     composer: Composer,
     /// The emails selected when it opened; a different selection means

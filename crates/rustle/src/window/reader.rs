@@ -11,9 +11,10 @@ use adw::subclass::prelude::*;
 use chrono::Utc;
 use gtk::gio;
 use gtk::glib;
+use rustle_core::db::OutboxEntry;
 use rustle_core::invite::{self, Invitation, Person, Response};
 use rustle_core::mime::Unsubscribe;
-use rustle_core::models::{Attachment, Email, MessageHeader};
+use rustle_core::models::{Account, Attachment, Email, MessageHeader};
 use rustle_core::net::errors::classify;
 use rustle_core::{compose, dates, folders};
 use rustle_core::{secrets, sync};
@@ -449,6 +450,27 @@ impl MainWindow {
                 return false;
             }
         };
+        let header = MessageHeader {
+            sender: account.email.clone(),
+            recipient: organizer.label().to_string(),
+            recipient_address: organizer.email.clone(),
+            subject: subject.clone(),
+            preview: text.clone(),
+            ..MessageHeader::default()
+        };
+        self.queue_outgoing(&account, &raw, header, vec![organizer.email.clone()])
+    }
+
+    /// Put a message the app wrote itself (an invitation answer, an
+    /// unsubscribe request) in the account's Outbox and send it: it gets the
+    /// Outbox's retries, and its copy in Sent. True once it's queued.
+    fn queue_outgoing(
+        &self,
+        account: &Account,
+        raw: &[u8],
+        header: MessageHeader,
+        recipients: Vec<String>,
+    ) -> bool {
         let queued = {
             let db = self.db();
             let db = db.borrow();
@@ -461,25 +483,110 @@ impl MainWindow {
                 let row = db.save_email(
                     outbox.id,
                     &MessageHeader {
-                        sender: account.email.clone(),
-                        recipient: organizer.label().to_string(),
-                        recipient_address: organizer.email.clone(),
-                        subject: subject.clone(),
-                        preview: text.clone(),
                         date: dates::now_iso(),
                         is_unread: false,
-                        ..MessageHeader::default()
+                        ..header
                     },
                 )?;
-                db.save_raw_message(row.id, &raw)
+                db.save_raw_message(row.id, raw)?;
+                db.set_outbox_entry(
+                    row.id,
+                    &OutboxEntry {
+                        recipients,
+                        ..OutboxEntry::default()
+                    },
+                )
             })
         };
         if let Err(error) = queued {
-            log::error!("could not queue an invitation reply in the Outbox: {error}");
+            log::error!(
+                "could not queue a message in the Outbox of {}: {error}",
+                account.email
+            );
             return false;
         }
-        self.drain_outbox(&account);
+        self.drain_outbox(account);
         true
+    }
+
+    /// A list that only takes unsubscribes by mail: after asking, send the
+    /// message its mailto: describes, from the account this mail came to.
+    fn unsubscribe_by_mail(&self, mailto: &str, on_done: Box<dyn Fn()>) {
+        let account = self
+            .selected_email()
+            .and_then(|email| self.account_for_folder(email.with(|e| e.folder_id)))
+            .map(|(account, _)| account);
+        let request = compose::parse_mailto(mailto);
+        let Some(account) = account.filter(|_| !request.to.is_empty()) else {
+            self.open_mailto(mailto);
+            return;
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading(gettext("Unsubscribe from this list?"))
+            .body(i18n::format(
+                &gettext("An email will be sent to {destination} from {account}."),
+                &[("destination", &request.to), ("account", &account.email)],
+            ))
+            .build();
+        dialog.add_response("cancel", &gettext("Cancel"));
+        dialog.add_response("unsubscribe", &gettext("Unsubscribe"));
+        dialog.set_response_appearance("unsubscribe", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("cancel"));
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_, response| {
+                    if response != "unsubscribe" {
+                        return;
+                    }
+                    let subject = if request.subject.trim().is_empty() {
+                        "unsubscribe".to_string()
+                    } else {
+                        request.subject.clone()
+                    };
+                    let body = if request.body_html.trim().is_empty() {
+                        "unsubscribe".to_string()
+                    } else {
+                        request.body_html.clone()
+                    };
+                    let to = compose::split_addresses(&request.to);
+                    let message = compose::Outgoing {
+                        from: &account.email,
+                        to: &to,
+                        subject: &subject,
+                        body_html: &body,
+                        plain_text: true,
+                        ..compose::Outgoing::default()
+                    };
+                    let raw = match compose::build_mime_message(&message) {
+                        Ok(raw) => raw,
+                        Err(error) => {
+                            log::error!(
+                                "could not build an unsubscribe request to {to:?}: {error}"
+                            );
+                            window.toast(&gettext("Couldn't unsubscribe."));
+                            return;
+                        }
+                    };
+                    let header = MessageHeader {
+                        sender: account.email.clone(),
+                        recipient: request.to.clone(),
+                        recipient_address: request.to.clone(),
+                        subject: subject.clone(),
+                        ..MessageHeader::default()
+                    };
+                    if window.queue_outgoing(&account, &raw, header, to) {
+                        on_done();
+                        window.toast(&gettext(
+                            "Unsubscribe request sent. It can take a few days to take effect.",
+                        ));
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
     }
 
     fn on_unsubscribe(&self, target: &Unsubscribe, on_done: Box<dyn Fn()>) {
@@ -494,7 +601,7 @@ impl MainWindow {
                     |_| {},
                 );
             } else {
-                self.open_mailto(&target.mailto);
+                self.unsubscribe_by_mail(&target.mailto, on_done);
             }
             return;
         }

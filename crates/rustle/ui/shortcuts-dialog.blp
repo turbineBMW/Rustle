@@ -120,4 +120,67 @@ Adw.ShortcutsDialog shortcuts_dialog {
       action-name: "win.zoom-reset";
     }
   }
+
+  Adw.ShortcutsSection {
+    title: _("Single-Key (when turned on in Preferences)");
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Next Message");
+      accelerator: "j";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Previous Message");
+      accelerator: "k";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Archive");
+      accelerator: "e";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Delete");
+      accelerator: "numbersign";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Reply");
+      accelerator: "r";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Reply All");
+      accelerator: "a";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Forward");
+      accelerator: "f";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Star");
+      accelerator: "s";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "New Message");
+      accelerator: "c";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Search");
+      accelerator: "slash";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Mark Read");
+      accelerator: "<Shift>i";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Mark Unread");
+      accelerator: "<Shift>u";
+    }
+  }
 }
