@@ -16,6 +16,12 @@
 			<summary>Load remote images</summary>
 			<description>Load remote images in messages by default instead of asking.</description>
 		</key>
+		<key name="reader-zoom" type="d">
+			<range min="0.5" max="3.0"/>
+			<default>1.0</default>
+			<summary>Reader zoom</summary>
+			<description>How large message bodies are drawn in the reading pane; 1.0 is the normal size.</description>
+		</key>
 		<key name="load-sender-avatars" type="b">
 			<default>false</default>
 			<summary>Load sender avatars</summary>

@@ -87,4 +87,37 @@ Adw.ShortcutsDialog shortcuts_dialog {
       action-name: "win.trash";
     }
   }
+
+  Adw.ShortcutsSection {
+    title: _("Reading");
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Print");
+      action-name: "win.print";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Save Message As");
+      action-name: "win.save-message";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Show Source");
+      action-name: "win.show-source";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Zoom In");
+      action-name: "win.zoom-in";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Zoom Out");
+      action-name: "win.zoom-out";
+    }
+
+    Adw.ShortcutsItem {
+      title: C_("shortcut window", "Reset Zoom");
+      action-name: "win.zoom-reset";
+    }
+  }
 }

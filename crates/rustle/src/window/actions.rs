@@ -35,7 +35,7 @@ fn register(
 
 impl MainWindow {
     pub(super) fn setup_actions(&self) {
-        let plain: [(&str, ActionHandler); 13] = [
+        let plain: [(&str, ActionHandler); 19] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
             ("toggle-pin", |w| w.on_toggle_pin()),
@@ -49,6 +49,12 @@ impl MainWindow {
             ("refresh", |w| w.on_refresh_clicked()),
             ("search", |w| w.on_search_action()),
             ("manage-accounts", |w| w.on_manage_accounts()),
+            ("print", |w| w.print_message()),
+            ("save-message", |w| w.save_message()),
+            ("show-source", |w| w.show_source()),
+            ("zoom-in", |w| w.step_zoom(1)),
+            ("zoom-out", |w| w.step_zoom(-1)),
+            ("zoom-reset", |w| w.step_zoom(0)),
         ];
         for (name, handler) in plain {
             let window = self.downgrade();

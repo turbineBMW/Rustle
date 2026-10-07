@@ -8,6 +8,6 @@ Terminal=false
 Type=Application
 Categories=Network;Email;
 Keywords=GTK;Email;E-mail;Mail;IMAP;SMTP;Inbox;
-MimeType=x-scheme-handler/mailto;
+MimeType=x-scheme-handler/mailto;message/rfc822;
 StartupNotify=true
 DBusActivatable=true

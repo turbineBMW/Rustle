@@ -336,9 +336,99 @@ pub fn sandbox_html(html: &str, are_remote_images_allowed: bool, style: &str) ->
     )
 }
 
+/// A message laid out for paper: a block of its headers, then the body.
+/// Paper has no reading pane around it, so the headers the pane shows have
+/// to be part of the page. Goes through `sandbox_html` like the screen copy.
+pub fn print_html(parsed: &ParsedMessage) -> String {
+    use crate::html::escape;
+    let mut rows = String::new();
+    let fields = [
+        ("From", parsed.from_header.clone()),
+        ("To", parsed.to.join(", ")),
+        ("Cc", parsed.cc.join(", ")),
+        ("Date", parsed.date.clone()),
+    ];
+    for (name, value) in fields {
+        if value.trim().is_empty() {
+            continue;
+        }
+        rows.push_str(&format!(
+            "<tr><th>{}</th><td>{}</td></tr>",
+            escape(name),
+            escape(value.trim())
+        ));
+    }
+    let body = match (&parsed.html_body, &parsed.text_body) {
+        (Some(html), _) => html.clone(),
+        (None, Some(text)) => format!("<pre class=\"rustle-print-text\">{}</pre>", escape(text)),
+        (None, None) => String::new(),
+    };
+    format!(
+        "<div class=\"rustle-print-header\"><h1>{}</h1><table>{rows}</table></div>{body}",
+        escape(&parsed.subject)
+    )
+}
+
+/// The stylesheet that goes with `print_html`.
+pub const PRINT_STYLE: &str = "body { margin: 0; font-family: sans-serif; } \
+    .rustle-print-header { border-bottom: 1px solid #888; margin-bottom: 1em; \
+      padding-bottom: 0.5em; font-size: 10pt; } \
+    .rustle-print-header h1 { font-size: 14pt; margin: 0 0 0.4em; } \
+    .rustle-print-header th { text-align: right; padding-right: 0.8em; \
+      vertical-align: top; color: #555; font-weight: normal; } \
+    .rustle-print-text { white-space: pre-wrap; font-family: monospace; }";
+
+/// A file name for saving a message as .eml: its subject, with whatever a
+/// file system or a shell would trip on taken out.
+pub fn eml_filename(subject: &str) -> String {
+    let cleaned: String = subject
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let mut name = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name_is_usable = !name.trim_matches('.').is_empty();
+    if !name_is_usable {
+        name = "message".to_string();
+    }
+    // Leave room for the extension inside the common 255-byte limit.
+    while name.len() > 200 {
+        name.pop();
+    }
+    format!("{name}.eml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eml_names_are_safe_file_names() {
+        assert_eq!(eml_filename("Re: Q3 / budget?"), "Re Q3 budget.eml");
+        assert_eq!(eml_filename(""), "message.eml");
+        assert_eq!(eml_filename(".."), "message.eml");
+        assert_eq!(eml_filename("tab\there"), "tab here.eml");
+        assert!(eml_filename(&"é".repeat(300)).len() <= 204);
+    }
+
+    #[test]
+    fn print_layout_heads_the_body_with_escaped_headers() {
+        let raw = b"From: Ada <ada@x.y>\r\nTo: bob@x.y\r\nSubject: <b>Plan</b>\r\nDate: Wed, 16 Jul 2026 10:00:00 +0000\r\n\r\nline one\r\n";
+        let html = print_html(&parse_message(raw));
+        assert!(html.contains("<h1>&lt;b&gt;Plan&lt;/b&gt;</h1>"), "{html}");
+        assert!(
+            html.contains("<th>From</th><td>Ada &lt;ada@x.y&gt;</td>"),
+            "{html}"
+        );
+        assert!(!html.contains("<th>Cc</th>"));
+        assert!(
+            html.contains("<pre class=\"rustle-print-text\">line one"),
+            "{html}"
+        );
+    }
 
     #[test]
     fn inline_cid_images_are_embedded_and_not_listed_as_attachments() {

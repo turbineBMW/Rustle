@@ -95,6 +95,8 @@ mod imp {
                 let uri = file.uri().to_string();
                 if uri.to_lowercase().starts_with(MAILTO_SCHEME) {
                     app.open_mailto(&uri);
+                } else if file.path().is_some() {
+                    app.open_message_file(file);
                 } else {
                     log::warn!("ignoring unsupported URI {uri}");
                 }
@@ -183,6 +185,21 @@ impl RustleApplication {
         };
         let composer = Composer::for_mailto(self.db(), account, uri);
         composer::present_in_window(Some(self.upcast_ref()), &composer);
+    }
+
+    /// A message file (.eml) opened from the desktop: read it and show it in
+    /// a viewer window. The main window lends its attachment handling; it is
+    /// made if need be, but not shown.
+    fn open_message_file(&self, file: &gio::File) {
+        let raw = match file.load_contents(gio::Cancellable::NONE) {
+            Ok((raw, _)) => raw.to_vec(),
+            Err(error) => {
+                log::error!("could not read the message file {:?}: {error}", file.path());
+                return;
+            }
+        };
+        let window = self.main_window().unwrap_or_else(|| self.new_window());
+        window.show_eml(raw);
     }
 
     fn load_css(&self) {
@@ -274,6 +291,15 @@ impl RustleApplication {
             ("win.refresh", &["F5"]),
             ("win.search", &["<control>f"]),
             ("win.toggle-sidebar", &["F9"]),
+            ("win.print", &["<control><shift>p"]),
+            ("win.save-message", &["<control><shift>s"]),
+            ("win.show-source", &["<control>u"]),
+            (
+                "win.zoom-in",
+                &["<control>plus", "<control>equal", "<control>KP_Add"],
+            ),
+            ("win.zoom-out", &["<control>minus", "<control>KP_Subtract"]),
+            ("win.zoom-reset", &["<control>0", "<control>KP_0"]),
         ] {
             self.set_accels_for_action(name, accels);
         }

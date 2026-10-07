@@ -195,6 +195,7 @@ impl MainWindow {
             &self.avatars(),
             account.as_ref(),
         );
+        view.set_zoom(self.reader_zoom());
         imp.message_box.append(view.widget());
         self.state_mut().message_view = Some(view);
         imp.reader_stack.set_visible_child_name(PAGE_MESSAGE);

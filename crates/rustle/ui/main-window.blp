@@ -340,6 +340,13 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                       }
 
                       [end]
+                      Gtk.MenuButton {
+                        icon-name: "view-more-symbolic";
+                        tooltip-text: _("More Message Actions");
+                        menu-model: message_menu;
+                      }
+
+                      [end]
                       Gtk.Box {
                         styles ["linked"]
 
@@ -440,6 +447,42 @@ template $RustleMainWindow: Adw.ApplicationWindow {
       outer_split.collapsed: true;
       outer_split.show-sidebar: false;
       inner_split.collapsed: true;
+    }
+  }
+}
+
+menu message_menu {
+  section {
+    item {
+      label: _("_Print…");
+      action: "win.print";
+    }
+
+    item {
+      label: _("_Save As…");
+      action: "win.save-message";
+    }
+
+    item {
+      label: _("Show _Source");
+      action: "win.show-source";
+    }
+  }
+
+  section {
+    item {
+      label: _("Zoom _In");
+      action: "win.zoom-in";
+    }
+
+    item {
+      label: _("Zoom _Out");
+      action: "win.zoom-out";
+    }
+
+    item {
+      label: _("_Reset Zoom");
+      action: "win.zoom-reset";
     }
   }
 }
