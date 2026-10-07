@@ -8,7 +8,9 @@ use crate::models::NO_SUBJECT;
 use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
-use crate::net::imap::{quote_mailbox, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
+use crate::net::imap::{
+    quote_mailbox, uid_set, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY,
+};
 use crate::net::pool;
 use crate::net::smtp::SmtpSession;
 use log::warn;
@@ -39,7 +41,13 @@ pub struct SyncResult {
     pub exists: u32,
     /// How far back from the newest this fetch reached.
     pub offset: u32,
-    /// Authoritative UID snapshot, only for the newest page.
+    /// How many messages the fetched window held, \Deleted ones included:
+    /// paging counts by position, and those still take one up.
+    pub fetched: u32,
+    /// Messages in the window marked \Deleted, left out of `messages`: any
+    /// row still kept for them goes.
+    pub deleted_uids: Vec<String>,
+    /// Authoritative UID snapshot (\Deleted left out), only for the newest page.
     pub all_uids: Option<HashSet<String>>,
     /// Server unread counts by mailbox name, for the folders not fetched.
     pub unread_counts: HashMap<String, u32>,
@@ -82,6 +90,8 @@ pub fn backfill(
     for folder in folders {
         let exists = match session.select(&folder.name, false) {
             Ok(exists) => exists,
+            // The connection, not the folder, failed.
+            Err(error) if !session.is_usable() => return Err(error),
             Err(error) => {
                 // A folder that won't open (a bare container, a broken
                 // share) is done as far as the backfill is concerned.
@@ -90,7 +100,7 @@ pub fn backfill(
                 continue;
             }
         };
-        let server_uids = session.search_all_uids()?;
+        let server_uids = session.search_undeleted_uids()?;
         let missing = missing_uids(&server_uids, &folder.local_uids);
         if missing.is_empty() {
             completed.push(folder.name.clone());
@@ -99,9 +109,11 @@ pub fn backfill(
         let batch = &missing[..missing.len().min(limit.max(1) as usize)];
         let raw = session.fetch_headers_by_uid(&uid_set(batch))?;
         release(account, credential, session);
+        // Marked \Deleted since the search: none of these is stored yet.
+        let (messages, _) = split_deleted(raw);
         return Ok(BackfillResult {
             folder: Some(folder.name.clone()),
-            messages: raw.into_iter().map(to_message_header).collect(),
+            messages,
             remaining: (missing.len() - batch.len()) as u32,
             exists,
             completed,
@@ -122,38 +134,6 @@ fn missing_uids(server: &HashSet<String>, local: &HashSet<String>) -> Vec<u32> {
         .collect();
     missing.sort_unstable_by(|a, b| b.cmp(a));
     missing
-}
-
-/// An IMAP sequence set for a run of UIDs, with consecutive values folded
-/// into ranges so a 200-message batch stays a short command line.
-fn uid_set(uids: &[u32]) -> String {
-    let mut sorted = uids.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let mut parts: Vec<String> = Vec::new();
-    let mut run: Option<(u32, u32)> = None;
-    for uid in sorted {
-        match run {
-            Some((start, end)) if uid == end + 1 => run = Some((start, uid)),
-            Some((start, end)) => {
-                parts.push(range_text(start, end));
-                run = Some((uid, uid));
-            }
-            None => run = Some((uid, uid)),
-        }
-    }
-    if let Some((start, end)) = run {
-        parts.push(range_text(start, end));
-    }
-    parts.join(",")
-}
-
-fn range_text(start: u32, end: u32) -> String {
-    if start == end {
-        start.to_string()
-    } else {
-        format!("{start}:{end}")
-    }
 }
 
 /// Results from the commands attempted by a mailbox move: a move that fails
@@ -178,8 +158,9 @@ pub(crate) fn open_imap(account: &Account, credential: &Credential) -> Result<Im
     Ok(session)
 }
 
-/// A job finished cleanly with its session: park it for the next one. A
-/// session that failed part-way is dropped instead (logging out as it goes).
+/// A job is done with its session: park it for the next one. Safe to call
+/// after a command failed, too: the pool drops a session whose last failure
+/// left it out of step with the server, and keeps one that was only told no.
 pub(crate) fn release(account: &Account, credential: &Credential, session: ImapSession) {
     pool::checkin(account, credential, session);
 }
@@ -201,7 +182,7 @@ pub fn fetch_mailbox(
     };
     let exists = session.select(&target, false)?;
     let all_uids = if offset == 0 {
-        Some(session.search_all_uids()?)
+        Some(session.search_undeleted_uids()?)
     } else {
         None
     };
@@ -212,13 +193,17 @@ pub fn fetch_mailbox(
         HashMap::new()
     };
     release(account, credential, session);
+    let fetched = raw.len() as u32;
+    let (messages, deleted_uids) = split_deleted(raw);
 
     Ok(SyncResult {
         folders: mailboxes,
-        messages: raw.into_iter().map(to_message_header).collect(),
+        messages,
         folder: target,
         exists,
         offset,
+        fetched,
+        deleted_uids,
         all_uids,
         unread_counts,
     })
@@ -243,10 +228,15 @@ fn unread_counts(
             Ok(count) => {
                 counts.insert(mailbox.name.clone(), count);
             }
-            Err(error) => warn!(
-                "could not read the unread count of {}: {error}",
-                mailbox.name
-            ),
+            Err(error) => {
+                warn!(
+                    "could not read the unread count of {}: {error}",
+                    mailbox.name
+                );
+                if !session.is_usable() {
+                    break;
+                }
+            }
         }
     }
     counts
@@ -269,14 +259,29 @@ pub fn search_text(
             .and_then(|_| session.search_uids(criteria));
         match uids {
             Ok(uids) => found.push((mailbox.clone(), uids)),
-            Err(error) => warn!(
-                "could not search {mailbox} on {} (account {}): {error}",
-                account.imap_host, account.email
-            ),
+            Err(error) => {
+                warn!(
+                    "could not search {mailbox} on {} (account {}): {error}",
+                    account.imap_host, account.email
+                );
+                if !session.is_usable() {
+                    break;
+                }
+            }
         }
     }
     release(account, credential, session);
     Ok(found)
+}
+
+/// Fetched headers, display-ready, apart from the UIDs of those marked
+/// \Deleted: those are shown nowhere, and nothing about them is kept.
+fn split_deleted(raw: Vec<FetchedHeader>) -> (Vec<MessageHeader>, Vec<String>) {
+    let (deleted, kept): (Vec<_>, Vec<_>) = raw.into_iter().partition(|header| header.is_deleted);
+    (
+        kept.into_iter().map(to_message_header).collect(),
+        deleted.into_iter().map(|header| header.uid).collect(),
+    )
 }
 
 /// Turn raw wire headers into the display-ready form: the sender becomes a
@@ -339,8 +344,8 @@ pub fn fetch_full_message(
     Ok(raw)
 }
 
-/// Add or remove an IMAP flag on a set of messages, in one STORE. An empty
-/// set is not an empty command but a malformed one, so it is skipped.
+/// Add or remove an IMAP flag on a set of messages. An empty set is not an
+/// empty command but a malformed one, so it is skipped.
 pub fn set_flag(
     account: &Account,
     credential: &Credential,
@@ -354,7 +359,7 @@ pub fn set_flag(
     }
     let mut session = open_imap(account, credential)?;
     session.select(folder_name, true)?;
-    session.store_flags(&uids.join(","), flag, should_add)?;
+    session.store_flags(uids, flag, should_add)?;
     release(account, credential, session);
     Ok(())
 }
@@ -521,7 +526,7 @@ pub fn save_draft(
         None => None,
     };
     if !earlier.is_empty() {
-        session.delete_uids(&earlier.join(","))?;
+        session.delete_uids(&earlier)?;
     }
     release(account, credential, session);
     Ok(Some(SavedDraft { mailbox, uid }))
@@ -538,7 +543,7 @@ pub fn discard_draft(account: &Account, credential: &Credential, message_id: &st
         session.select(&mailbox, true)?;
         let uids = session.search_uids(&criteria)?;
         if !uids.is_empty() {
-            session.delete_uids(&uids.join(","))?;
+            session.delete_uids(&uids)?;
         }
     }
     release(account, credential, session);
@@ -612,11 +617,20 @@ mod tests {
     }
 
     #[test]
-    fn uid_set_folds_runs_into_ranges() {
-        assert_eq!(uid_set(&[]), "");
-        assert_eq!(uid_set(&[5]), "5");
-        assert_eq!(uid_set(&[9, 8, 7, 3, 1, 2, 7]), "1:3,7:9");
-        assert_eq!(uid_set(&[4, 2]), "2,4");
+    fn deleted_headers_are_left_out() {
+        let fetched = |uid: &str, is_deleted: bool| FetchedHeader {
+            uid: uid.into(),
+            is_deleted,
+            ..FetchedHeader::default()
+        };
+        let (messages, deleted) = split_deleted(vec![
+            fetched("1", false),
+            fetched("2", true),
+            fetched("3", false),
+        ]);
+        let uids: Vec<&str> = messages.iter().map(|m| m.uid.as_str()).collect();
+        assert_eq!(uids, ["1", "3"]);
+        assert_eq!(deleted, ["2"]);
     }
 
     #[test]

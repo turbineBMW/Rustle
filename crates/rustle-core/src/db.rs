@@ -888,6 +888,19 @@ impl Database {
         Ok(removed)
     }
 
+    /// Remove the rows of some server messages: ones the server now holds
+    /// as marked \Deleted.
+    pub fn delete_server_emails(&self, folder_id: i64, uids: &[String]) -> Result<usize> {
+        let mut statement = self
+            .conn
+            .prepare("DELETE FROM emails WHERE folder_id = ?1 AND server_id = ?2")?;
+        let mut removed = 0;
+        for uid in uids {
+            removed += statement.execute(params![folder_id, uid])?;
+        }
+        Ok(removed)
+    }
+
     /// Individual emails across folders, pinned first and then newest first.
     pub fn emails_in_folders(&self, folder_ids: &[i64]) -> Result<Vec<Email>> {
         if folder_ids.is_empty() {
@@ -1161,7 +1174,12 @@ impl Database {
             .optional()?;
         let mut is_new = existing.is_none();
         if let Some(message_id) = &existing {
-            if message_id.as_deref().unwrap_or("") != header.message_id {
+            // An incoming header without a Message-ID proves nothing: it is
+            // as likely a fetch that came back without its headers, and
+            // replacing on that would throw away a good row.
+            if !header.message_id.is_empty()
+                && message_id.as_deref().unwrap_or("") != header.message_id
+            {
                 // Another message at the same UID (a mailbox that reset its
                 // UIDs). Replace the row, which also drops its cached body.
                 self.conn.execute(
@@ -1178,8 +1196,12 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
                 unread = excluded.unread, starred = excluded.starred, pinned = excluded.pinned,
-                recipient = excluded.recipient, recipient_address = excluded.recipient_address,
-                recipients = excluded.recipients,
+                recipient = CASE WHEN excluded.recipient = '' THEN recipient
+                    ELSE excluded.recipient END,
+                recipient_address = CASE WHEN excluded.recipient_address = ''
+                    THEN recipient_address ELSE excluded.recipient_address END,
+                recipients = CASE WHEN excluded.recipients = '' THEN recipients
+                    ELSE excluded.recipients END,
                 preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END,
                 body_text = CASE WHEN length(excluded.body_text) > length(body_text)
                     THEN excluded.body_text ELSE body_text END,
@@ -2130,6 +2152,66 @@ mod tests {
         let id = db.emails_in_folders(&[inbox.id]).unwrap()[1].id;
         db.set_email_pinned(id, true).unwrap();
         assert_eq!(subjects(&db), vec!["Old", "New"]);
+    }
+
+    #[test]
+    fn deleted_server_mail_leaves_the_folder_and_its_count() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let other = db.get_or_create_folder(account.id, "Archive", "a").unwrap();
+        for folder in [inbox.id, other.id] {
+            for uid in ["1", "2"] {
+                db.save_incoming_email(folder, &header(uid, "Hi", "2026-01-01T00:00:00Z", "Ada"))
+                    .unwrap();
+            }
+        }
+        assert_eq!(db.unread_count_in_folder(inbox.id).unwrap(), 2);
+        assert_eq!(
+            db.delete_server_emails(inbox.id, &["2".into(), "9".into()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.uids_in_folder(inbox.id).unwrap(),
+            HashSet::from(["1".to_string()])
+        );
+        assert_eq!(db.unread_count_in_folder(inbox.id).unwrap(), 1);
+        assert_eq!(db.uids_in_folder(other.id).unwrap().len(), 2, "per folder");
+    }
+
+    #[test]
+    fn a_header_without_a_message_id_never_replaces_a_row() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let mut real = header("7", "Hello", "2026-01-01T00:00:00Z", "Ada");
+        real.recipient = "Bob".into();
+        assert!(db.save_incoming_email(inbox.id, &real).unwrap());
+        let id = db.emails_in_folder(inbox.id).unwrap()[0].id;
+        db.save_raw_message(id, b"Subject: Hello\r\n\r\nbody")
+            .unwrap();
+        // What a flags-only FETCH used to turn into: the UID, a flag, nothing else.
+        let blank = MessageHeader {
+            uid: "7".into(),
+            subject: "(no subject)".into(),
+            is_unread: false,
+            ..MessageHeader::default()
+        };
+        assert!(!db.save_incoming_email(inbox.id, &blank).unwrap());
+        let email = db.email(id).unwrap().expect("the row survives");
+        assert_eq!(email.subject, "Hello");
+        assert_eq!(email.recipient, "Bob");
+        assert!(!email.is_unread, "the flag still lands");
+        assert!(db.raw_message(id).unwrap().is_some(), "the body is kept");
+        // A different Message-ID at the same UID is still a reset.
+        let other = header("7", "Other", "2026-01-02T00:00:00Z", "Cy");
+        let other = MessageHeader {
+            message_id: "<other@x>".into(),
+            ..other
+        };
+        assert!(db.save_incoming_email(inbox.id, &other).unwrap());
+        assert_eq!(db.emails_in_folder(inbox.id).unwrap()[0].subject, "Other");
     }
 
     #[test]

@@ -60,11 +60,32 @@ impl NetError {
                 | ::imap::Error::Tls(_)
                 | ::imap::Error::TlsHandshake(_)
                 | ::imap::Error::ConnectionLost
-                | ::imap::Error::Bye(_) => true,
+                | ::imap::Error::Bye(_)
+                // A reply we couldn't read or that answered another command:
+                // the connection went out of step, a fresh one may well work.
+                | ::imap::Error::Parse(_)
+                | ::imap::Error::TagMismatch(_) => true,
                 ::imap::Error::No(no) => is_auth_text(&no.to_string()),
                 ::imap::Error::Bad(bad) => is_auth_text(&bad.to_string()),
                 _ => false,
             },
+        }
+    }
+
+    /// The network, not the server's answer, gave out: a timeout, a dropped
+    /// or refused connection, a failed handshake. Says nothing about the
+    /// command that was running when it happened.
+    pub fn is_connectivity(&self) -> bool {
+        match self {
+            NetError::Io(_) | NetError::Tls(_) => true,
+            NetError::Imap(imap) => matches!(
+                imap,
+                ::imap::Error::Io(_)
+                    | ::imap::Error::Tls(_)
+                    | ::imap::Error::TlsHandshake(_)
+                    | ::imap::Error::ConnectionLost
+            ),
+            _ => false,
         }
     }
 }
@@ -235,6 +256,17 @@ mod tests {
         assert!(NetError::Imap(::imap::Error::ConnectionLost).is_transient());
         assert!(NetError::NoCredential("me".into()).is_transient());
         assert!(!NetError::Protocol("no such mailbox".into()).is_transient());
+        let late = ::imap::Error::Parse(::imap::error::ParseError::Invalid(b"* 3 FETCH".to_vec()));
+        assert!(NetError::Imap(late).is_transient());
+    }
+
+    #[test]
+    fn a_garbled_reply_is_not_the_network() {
+        let timeout = NetError::Io(io::Error::new(io::ErrorKind::TimedOut, "x"));
+        assert!(timeout.is_connectivity());
+        assert!(NetError::Imap(::imap::Error::ConnectionLost).is_connectivity());
+        let late = ::imap::Error::Parse(::imap::error::ParseError::Invalid(b"* 3 FETCH".to_vec()));
+        assert!(!NetError::Imap(late).is_connectivity());
     }
 
     #[test]

@@ -9,7 +9,15 @@ use crate::net::auth::Credential;
 use crate::net::errors::{classify, Failure, NetError};
 use crate::net::imap::{ImapSession, FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
 use crate::sync::{open_imap, release};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+
+/// How many times one change may break the connection before it counts as
+/// refused. A reply the client can't read keeps a change queued, which is
+/// right once; a change that gets one every time would hold up the whole
+/// account's queue behind it for good. A timeout or a dropped connection
+/// doesn't count: that's the network, and the change waits it out.
+const MAX_BROKEN_TRIES: u32 = 3;
 
 /// What a queued operation does to its messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,7 +76,38 @@ pub struct Replay {
     pub failure: Option<Failure>,
 }
 
-/// Send `ops` to the server, in order, over one session.
+/// Per queued change (by id), how many passes it broke the connection in.
+/// In memory only: a restart gives every change a fresh start.
+#[derive(Default)]
+struct BrokenTries {
+    counts: Mutex<HashMap<i64, u32>>,
+}
+
+impl BrokenTries {
+    /// Count one more, and say whether that is the last it gets.
+    fn record(&self, op_id: i64) -> bool {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(op_id).or_default();
+        *count += 1;
+        if *count >= MAX_BROKEN_TRIES {
+            counts.remove(&op_id);
+            return true;
+        }
+        false
+    }
+
+    fn clear(&self, op_id: i64) {
+        self.counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&op_id);
+    }
+}
+
+static BROKEN_TRIES: LazyLock<BrokenTries> = LazyLock::new(BrokenTries::default);
+
+/// Send `ops` to the server, in order, over one session (a new one after a
+/// change that broke it is given up on).
 pub fn replay(account: &Account, credential: &Credential, ops: &[PendingOp]) -> Replay {
     let mut replay = Replay::default();
     if ops.is_empty() {
@@ -82,9 +121,43 @@ pub fn replay(account: &Account, credential: &Credential, ops: &[PendingOp]) -> 
         }
     };
     for op in ops {
+        if !session.is_usable() {
+            session = match open_imap(account, credential) {
+                Ok(session) => session,
+                Err(error) => {
+                    replay.failure = Some(classify(&error, &account.imap_host));
+                    return replay;
+                }
+            };
+        }
         match run_op(&mut session, op, &account.imap_host) {
-            Ok(outcome) => replay.outcomes.push((op.id, outcome)),
-            Err(Stop { moved, failure }) => {
+            Ok(outcome) => {
+                BROKEN_TRIES.clear(op.id);
+                replay.outcomes.push((op.id, outcome));
+            }
+            // The session was sound when this change began, and the server's
+            // answer to it is what broke it. That counts against it; the
+            // third time, it is given up on rather than left to hold up
+            // everything queued behind it.
+            Err(stop)
+                if !session.is_usable() && !stop.is_connectivity && BROKEN_TRIES.record(op.id) =>
+            {
+                log::error!(
+                    "giving up on a queued {} in {} (account {}) after {MAX_BROKEN_TRIES} tries: {}",
+                    op_kind(op),
+                    op.folder,
+                    account.email,
+                    stop.reason
+                );
+                replay.outcomes.push((
+                    op.id,
+                    Outcome::Refused {
+                        moved: stop.moved,
+                        reason: stop.reason,
+                    },
+                ));
+            }
+            Err(Stop { moved, failure, .. }) => {
                 if !moved.is_empty() {
                     replay.interrupted = Some((op.id, moved));
                 }
@@ -97,18 +170,33 @@ pub fn replay(account: &Account, credential: &Credential, ops: &[PendingOp]) -> 
     replay
 }
 
+fn op_kind(op: &PendingOp) -> &'static str {
+    match op.change {
+        Change::Flag { .. } => "flag change",
+        Change::Move { .. } => "move",
+    }
+}
+
 /// A failure that ends the pass: the connection, not the operation, is at fault.
 struct Stop {
     moved: Vec<Option<String>>,
     failure: Failure,
+    /// The error as it stands, for when the change is given up on.
+    reason: String,
+    /// The network gave out, rather than the server's answer being unreadable.
+    is_connectivity: bool,
 }
 
 fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outcome, Stop> {
-    let refused_or_stop = |moved: Vec<Option<String>>, error: NetError| {
-        if error.is_transient() {
+    // A failure that left the connection out of step says nothing about
+    // what the server made of the command: keep it queued for a new one.
+    let refused_or_stop = |session: &ImapSession, moved: Vec<Option<String>>, error: NetError| {
+        if error.is_transient() || !session.is_usable() {
             Err(Stop {
                 moved,
                 failure: classify(&error, host),
+                reason: error.to_string(),
+                is_connectivity: error.is_connectivity(),
             })
         } else {
             Ok(Outcome::Refused {
@@ -118,16 +206,16 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
         }
     };
     if let Err(error) = session.select(&op.folder, true) {
-        return refused_or_stop(Vec::new(), error);
+        return refused_or_stop(session, Vec::new(), error);
     }
     match &op.change {
         Change::Flag { uids, flag, add } => {
             if uids.is_empty() {
                 return Ok(Outcome::Done(Vec::new()));
             }
-            match session.store_flags(&uids.join(","), flag, *add) {
+            match session.store_flags(uids, flag, *add) {
                 Ok(()) => Ok(Outcome::Done(Vec::new())),
-                Err(error) => refused_or_stop(Vec::new(), error),
+                Err(error) => refused_or_stop(session, Vec::new(), error),
             }
         }
         Change::Move { uids, dest, .. } => {
@@ -135,7 +223,7 @@ fn run_op(session: &mut ImapSession, op: &PendingOp, host: &str) -> Result<Outco
             for uid in uids {
                 match session.r#move(uid, dest) {
                     Ok(dest_uid) => moved.push(dest_uid),
-                    Err(error) => return refused_or_stop(moved, error),
+                    Err(error) => return refused_or_stop(session, moved, error),
                 }
             }
             Ok(Outcome::Done(moved))
@@ -215,6 +303,20 @@ mod tests {
             flag: flag.into(),
             add,
         }
+    }
+
+    #[test]
+    fn a_change_is_given_up_on_its_third_broken_try() {
+        let tries = BrokenTries::default();
+        assert!(!tries.record(1));
+        assert!(!tries.record(2));
+        assert!(!tries.record(1));
+        assert!(tries.record(1), "the third for op 1");
+        assert!(!tries.record(1), "and its count starts over");
+        tries.clear(2);
+        assert!(!tries.record(2));
+        assert!(!tries.record(2));
+        assert!(tries.record(2));
     }
 
     #[test]

@@ -107,8 +107,18 @@ pub(crate) fn checkout(account: &Account, credential: &Credential) -> Option<Ima
     }
 }
 
-/// Park a session that finished its job cleanly, for the next one.
+/// Park a session for the next job, unless a command left it out of step
+/// with the server (a timeout, a garbled reply): its next reader would take
+/// a late answer for its own, so it is dropped instead.
 pub(crate) fn checkin(account: &Account, credential: &Credential, mut session: ImapSession) {
+    if !session.is_usable() {
+        log::debug!(
+            "dropping a session to {} that is out of step",
+            account.imap_host
+        );
+        session.discard();
+        return;
+    }
     session.drain_changes();
     if let Some(mut surplus) = SESSIONS.put(&key(account, credential), session, Instant::now()) {
         surplus.logout();

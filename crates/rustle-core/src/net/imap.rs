@@ -29,6 +29,11 @@ pub const FLAG_PINNED: &str = "$Pinned";
 /// how it identifies itself, so we don't append a second copy on top.
 pub const GMAIL_CAPABILITY: &str = "X-GM-EXT-1";
 
+/// The longest UID set put on one command line. RFC 7162 asks clients to
+/// keep lines under 8192 octets and some servers refuse anything longer;
+/// this leaves room for the tag, the command and its arguments.
+const MAX_UID_SET_LEN: usize = 4000;
+
 /// What a header fetch asks for. BODY.PEEK[...] = look WITHOUT marking the
 /// message \Seen. The first 4 KiB of the body ride along for the preview
 /// line; Content-Type and the transfer encoding are what decode them.
@@ -68,6 +73,8 @@ pub struct FetchedHeader {
     pub is_seen: bool,
     pub is_flagged: bool,
     pub is_pinned: bool,
+    /// Marked \Deleted: waiting for an expunge, gone as far as we show.
+    pub is_deleted: bool,
     /// A snippet of the body, already decoded; empty when the server sent none.
     pub preview: String,
     /// The start of the body as text, for the search index: the same 4 KiB
@@ -98,6 +105,10 @@ pub struct ImapSession {
     /// A second handle on the socket under the TLS layer, so a wait can be
     /// cut short from another thread and the read timeout put back.
     socket: Option<TcpStream>,
+    /// A command failed part-way through its reply (a timeout, a dropped or
+    /// garbled response): what the server sends next may answer the command
+    /// before, so nothing more is sent on this connection.
+    is_broken: bool,
 }
 
 impl ImapSession {
@@ -110,6 +121,7 @@ impl ImapSession {
             client: None,
             capabilities: HashSet::new(),
             socket: None,
+            is_broken: false,
         }
     }
 
@@ -145,15 +157,7 @@ impl ImapSession {
                 client
             }
         };
-        self.capabilities = client
-            .capabilities()?
-            .iter()
-            .map(|capability| match capability {
-                Capability::Imap4rev1 => "IMAP4REV1".to_string(),
-                Capability::Auth(name) => format!("AUTH={}", name.to_uppercase()),
-                Capability::Atom(name) => name.to_uppercase(),
-            })
-            .collect();
+        self.capabilities = capability_names(&client.capabilities()?);
         self.client = Some(client);
         Ok(())
     }
@@ -169,6 +173,11 @@ impl ImapSession {
         match result {
             Ok(session) => {
                 self.session = Some(session);
+                // What a server lists before sign-in is what an anonymous
+                // client may use; Dovecot and Gmail name UIDPLUS, MOVE and
+                // IDLE only after. Ask again, or those look missing.
+                let capabilities = self.command(|session| session.capabilities())?;
+                self.capabilities = capability_names(&capabilities);
                 Ok(())
             }
             Err((error, _client)) => Err(error.into()),
@@ -179,7 +188,13 @@ impl ImapSession {
     /// raises over the error already on its way out. A server hanging up
     /// first is normal, not a problem.
     pub fn logout(&mut self) {
-        if let Some(mut session) = self.session.take() {
+        if self.is_broken {
+            // LOGOUT's reply could not be told from a late one: just hang up.
+            if let Some(socket) = self.socket.take() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            self.session = None;
+        } else if let Some(mut session) = self.session.take() {
             if let Err(error) = session.logout() {
                 debug!("IMAP logout from {} failed: {error}", self.host);
             }
@@ -195,6 +210,33 @@ impl ImapSession {
         self.session
             .as_mut()
             .ok_or_else(|| NetError::Protocol(format!("not signed in to {host}:{port}")))
+    }
+
+    /// Run one command on the signed-in session. Every command goes through
+    /// here, so a failure that leaves the reply half read marks the session
+    /// broken no matter who sent it; a clean NO or BAD from the server does
+    /// not, the exchange is over.
+    fn command<T>(
+        &mut self,
+        run: impl FnOnce(&mut Session<::imap::Connection>) -> ::imap::Result<T>,
+    ) -> Result<T> {
+        if self.is_broken {
+            return Err(NetError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                format!("the connection to {} is out of step", self.host),
+            )));
+        }
+        let result = run(self.require()?);
+        if let Err(error) = &result {
+            self.is_broken |= leaves_stream_dirty(error);
+        }
+        Ok(result?)
+    }
+
+    /// Signed in, and nothing has left the connection out of step: safe to
+    /// hand to the next job.
+    pub fn is_usable(&self) -> bool {
+        self.session.is_some() && !self.is_broken
     }
 
     pub fn has_capability(&self, name: &str) -> bool {
@@ -240,6 +282,7 @@ impl ImapSession {
             }
             outcome
         };
+        self.is_broken |= server_left || outcome.is_err();
         if server_left {
             return Err(NetError::Protocol(format!(
                 "{} closed the connection",
@@ -273,8 +316,7 @@ impl ImapSession {
 
     /// A round trip that does nothing: proof the connection still works.
     pub fn noop(&mut self) -> Result<()> {
-        self.require()?.noop()?;
-        Ok(())
+        self.command(|session| session.noop())
     }
 
     /// Drop the connection without a goodbye: for one that may be dead,
@@ -290,7 +332,7 @@ impl ImapSession {
     /// Every listed mailbox, containers included so the caller can rebuild
     /// the hierarchy.
     pub fn list_folders(&mut self) -> Result<Vec<MailboxInfo>> {
-        let names = self.require()?.list(None, Some("*"))?;
+        let names = self.command(|session| session.list(None, Some("*")))?;
         Ok(names
             .iter()
             .map(|name| MailboxInfo {
@@ -304,18 +346,19 @@ impl ImapSession {
     /// Open a mailbox; return how many messages it holds. Read-only by default
     /// keeps us non-destructive and never marks mail as read.
     pub fn select(&mut self, mailbox: &str, is_writable: bool) -> Result<u32> {
-        let session = self.require()?;
-        let info = if is_writable {
-            session.select(mailbox)?
-        } else {
-            session.examine(mailbox)?
-        };
+        let info = self.command(|session| {
+            if is_writable {
+                session.select(mailbox)
+            } else {
+                session.examine(mailbox)
+            }
+        })?;
         Ok(info.exists)
     }
 
     /// How many unread messages a mailbox holds, without selecting it.
     pub fn unseen_count(&mut self, mailbox: &str) -> Result<u32> {
-        let status = self.require()?.status(mailbox, "(UNSEEN)")?;
+        let status = self.command(|session| session.status(mailbox, "(UNSEEN)"))?;
         status
             .unseen
             .ok_or_else(|| NetError::Protocol(format!("no UNSEEN in the status of {mailbox}")))
@@ -324,84 +367,135 @@ impl ImapSession {
     /// Upload a message into a mailbox, stored `\Seen`: this is our own copy
     /// of something we just sent, and arriving as unread would be wrong.
     pub fn append(&mut self, mailbox: &str, raw: &[u8]) -> Result<()> {
-        self.require()?
-            .append(mailbox, raw)
-            .flag(Flag::Seen)
-            .finish()?;
+        self.command(|session| session.append(mailbox, raw).flag(Flag::Seen).finish())?;
         Ok(())
     }
 
     /// Upload a draft: `\Draft` so any client offers to finish it, `\Seen`
     /// so it never counts as unread.
     pub fn append_draft(&mut self, mailbox: &str, raw: &[u8]) -> Result<()> {
-        self.require()?
-            .append(mailbox, raw)
-            .flags([Flag::Draft, Flag::Seen])
-            .finish()?;
+        self.command(|session| {
+            session
+                .append(mailbox, raw)
+                .flags([Flag::Draft, Flag::Seen])
+                .finish()
+        })?;
         Ok(())
     }
 
-    /// Remove messages from the selected (writable) mailbox for good. With
-    /// UIDPLUS only these go; a plain EXPUNGE also clears anything else
-    /// already marked deleted there, which is what it was marked for.
     /// CREATE, RENAME and DELETE a mailbox, by its name on the wire.
     pub fn create_mailbox(&mut self, name: &str) -> Result<()> {
-        self.require()?.create(name)?;
-        Ok(())
+        self.command(|session| session.create(name))
     }
 
     pub fn rename_mailbox(&mut self, from: &str, to: &str) -> Result<()> {
-        self.require()?.rename(from, to)?;
-        Ok(())
+        self.command(|session| session.rename(from, to))
     }
 
     pub fn delete_mailbox(&mut self, name: &str) -> Result<()> {
-        self.require()?.delete(name)?;
-        Ok(())
+        self.command(|session| session.delete(name))
     }
 
-    pub fn delete_uids(&mut self, uids: &str) -> Result<()> {
-        let has_uidplus = self.has_capability("UIDPLUS");
-        let session = self.require()?;
-        session.uid_store(uids, "+FLAGS (\\Deleted)")?;
-        if has_uidplus {
-            session.uid_expunge(uids)?;
+    /// Remove messages from the selected (writable) mailbox for good, or as
+    /// near as the server allows without touching anything else: see
+    /// `expunge_uids`.
+    pub fn delete_uids(&mut self, uids: &[String]) -> Result<()> {
+        for set in uid_sets(uids) {
+            self.command(|session| session.uid_store(&set, "+FLAGS (\\Deleted)"))?;
+        }
+        self.expunge_uids(uids)
+    }
+
+    /// Expunge `uids`, already marked \Deleted, and nothing else. UID
+    /// EXPUNGE (UIDPLUS) does exactly that. Without it there is only a
+    /// plain EXPUNGE, which also purges whatever else is marked \Deleted in
+    /// the mailbox -- mail another client marked and can still undelete. So
+    /// it is sent only when a search finds nothing marked but ours;
+    /// otherwise ours stay marked for a later expunge to take. A leftover
+    /// is a nuisance; another client's mail purged is gone for good. (One
+    /// marked in the round trip between search and expunge still goes.)
+    fn expunge_uids(&mut self, uids: &[String]) -> Result<()> {
+        if self.has_capability("UIDPLUS") {
+            for set in uid_sets(uids) {
+                self.command(|session| session.uid_expunge(&set))?;
+            }
+            return Ok(());
+        }
+        let ours: HashSet<&str> = uids.iter().map(String::as_str).collect();
+        let marked = match self.command(|session| session.uid_search("DELETED")) {
+            Ok(marked) => marked,
+            // Refused: no way to be sure, so leave them marked.
+            Err(error) if self.is_usable() => {
+                debug!(
+                    "left {} message(s) marked deleted on {}: {error}",
+                    uids.len(),
+                    self.host
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if marked
+            .iter()
+            .all(|uid| ours.contains(uid.to_string().as_str()))
+        {
+            self.command(|session| session.expunge())?;
         } else {
-            session.expunge()?;
+            debug!(
+                "left {} message(s) marked deleted on {}: others are marked too and it has no UIDPLUS",
+                uids.len(),
+                self.host
+            );
         }
         Ok(())
     }
 
-    /// Add or remove flags on a UID set: "7" or "7,9,20".
-    pub fn store_flags(&mut self, uids: &str, flag: &str, should_add: bool) -> Result<()> {
+    /// Add or remove a flag on some messages, in as few STOREs as keep each
+    /// command line short. Adding or removing twice is harmless, so a
+    /// retry after a failure part-way only repeats what already landed.
+    pub fn store_flags(&mut self, uids: &[String], flag: &str, should_add: bool) -> Result<()> {
         let command = if should_add { "+FLAGS" } else { "-FLAGS" };
-        self.require()?
-            .uid_store(uids, format!("{command} ({flag})"))?;
+        for set in uid_sets(uids) {
+            self.command(|session| session.uid_store(&set, format!("{command} ({flag})")))?;
+        }
         Ok(())
     }
 
-    /// Every UID in the currently selected mailbox.
-    pub fn search_all_uids(&mut self) -> Result<HashSet<String>> {
-        let uids = self.require()?.uid_search("ALL")?;
+    /// Every UID in the currently selected mailbox not marked \Deleted.
+    /// A marked message is only waiting for an expunge -- ours may wait a
+    /// while (see `expunge_uids`) -- so it counts as gone.
+    pub fn search_undeleted_uids(&mut self) -> Result<HashSet<String>> {
+        let uids = self.command(|session| session.uid_search("UNDELETED"))?;
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
     /// The UIDs in the selected mailbox matching a SEARCH `criteria`.
     pub fn search_uids(&mut self, criteria: &str) -> Result<Vec<String>> {
-        let uids = self.require()?.uid_search(criteria)?;
+        let uids = self.command(|session| session.uid_search(criteria))?;
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
     /// Move one message and return its destination UID when reported.
     /// COPYUID is the response code used by most servers; MOVEUID by some
-    /// implementing RFC 6851. Both arrive on the tagged OK line, which the
-    /// crate's own `uid_mv` discards, so the command is run raw.
+    /// implementing RFC 6851. Both arrive in the reply, which the crate's
+    /// own `uid_mv` and `uid_copy` discard, so the commands are run raw.
+    /// A server without MOVE gets the long way round: COPY, mark the
+    /// original \Deleted, expunge it (see `expunge_uids` for when that
+    /// waits). Should a step after the copy fail, the original stays put
+    /// and the error goes back: at worst a second copy, never no copy.
     pub fn r#move(&mut self, uid: &str, destination: &str) -> Result<Option<String>> {
-        let session = self.require()?;
-        let command = format!("UID MOVE {uid} {}", quote_mailbox(destination));
-        let (data, _done_at) = session.run(&command)?;
-        let text = String::from_utf8_lossy(&data);
-        Ok(destination_uid(&text))
+        let mailbox = quote_mailbox(destination);
+        if self.has_capability("MOVE") {
+            let command = format!("UID MOVE {uid} {mailbox}");
+            let (data, _done_at) = self.command(|session| session.run(&command))?;
+            return Ok(destination_uid(&String::from_utf8_lossy(&data)));
+        }
+        let command = format!("UID COPY {uid} {mailbox}");
+        let (data, _done_at) = self.command(|session| session.run(&command))?;
+        let destination_uid = destination_uid(&String::from_utf8_lossy(&data));
+        self.command(|session| session.uid_store(uid, "+FLAGS (\\Deleted)"))?;
+        self.expunge_uids(&[uid.to_string()])?;
+        Ok(destination_uid)
     }
 
     /// Fetch UID + flags + a few headers for a window of `limit` messages,
@@ -426,16 +520,18 @@ impl ImapSession {
     /// Just the conversation headers of some messages, for filling in the
     /// keys of mail fetched before they were kept.
     pub fn fetch_thread_headers(&mut self, uid_set: &str) -> Result<Vec<ThreadHeaders>> {
-        let fetches = self.require()?.uid_fetch(
-            uid_set,
-            "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX)])",
-        )?;
+        let fetches = self.command(|session| {
+            session.uid_fetch(
+                uid_set,
+                "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX)])",
+            )
+        })?;
         Ok(fetches
             .iter()
             .filter_map(|fetch| {
                 let uid = fetch.uid?.to_string();
-                let parsed = mail_parser::MessageParser::default()
-                    .parse_headers(fetch.header().unwrap_or(&[]));
+                // See `fetch_header_set`: no header section, not an answer.
+                let parsed = mail_parser::MessageParser::default().parse_headers(fetch.header()?);
                 let raw = |name: &str| -> String {
                     parsed
                         .as_ref()
@@ -462,17 +558,23 @@ impl ImapSession {
     }
 
     fn fetch_header_set(&mut self, set: &str, by_uid: bool) -> Result<Vec<FetchedHeader>> {
-        let session = self.require()?;
-        let fetches = if by_uid {
-            session.uid_fetch(set, HEADER_FETCH_QUERY)?
-        } else {
-            session.fetch(set, HEADER_FETCH_QUERY)?
-        };
+        let fetches = self.command(|session| {
+            if by_uid {
+                session.uid_fetch(set, HEADER_FETCH_QUERY)
+            } else {
+                session.fetch(set, HEADER_FETCH_QUERY)
+            }
+        })?;
         Ok(fetches
             .iter()
             .filter_map(|fetch| {
                 let uid = fetch.uid?;
-                let header_bytes = fetch.header().unwrap_or(&[]);
+                // The crate hands back every FETCH the server sent, including
+                // unsolicited ones ("* 7 FETCH (UID 345 FLAGS (\Seen))" when
+                // another client changes a flag mid-command). Those carry no
+                // header section; taking them for an answer would save a
+                // blank message over the real one.
+                let header_bytes = fetch.header()?;
                 let flags = fetch.flags();
                 let mut header = parse_header(
                     uid.to_string(),
@@ -481,6 +583,7 @@ impl ImapSession {
                     flags.contains(&Flag::Flagged),
                     flags.iter().any(is_pinned_flag),
                 );
+                header.is_deleted = flags.contains(&Flag::Deleted);
                 (header.preview, header.body_text) =
                     crate::mime::texts_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
                 Some(header)
@@ -490,7 +593,7 @@ impl ImapSession {
 
     /// Fetch one full message (headers + body) by its stable UID.
     pub fn fetch_message(&mut self, uid: &str) -> Result<Vec<u8>> {
-        let fetches = self.require()?.uid_fetch(uid, "(BODY.PEEK[])")?;
+        let fetches = self.command(|session| session.uid_fetch(uid, "(BODY.PEEK[])"))?;
         fetches
             .iter()
             .find_map(|fetch| fetch.body().map(|body| body.to_vec()))
@@ -577,6 +680,93 @@ fn handshake_error(error: native_tls::HandshakeError<TcpStream>) -> NetError {
     }
 }
 
+/// Capability names as `has_capability` looks them up: upper case, with
+/// AUTH= mechanisms spelled out.
+fn capability_names(capabilities: &::imap::types::Capabilities) -> HashSet<String> {
+    capabilities
+        .iter()
+        .map(|capability| match capability {
+            Capability::Imap4rev1 => "IMAP4REV1".to_string(),
+            Capability::Auth(name) => format!("AUTH={}", name.to_uppercase()),
+            Capability::Atom(name) => name.to_uppercase(),
+        })
+        .collect()
+}
+
+/// Whether a failed command may have left part of its reply unread. Only a
+/// tagged NO or BAD ends the exchange cleanly (and a command refused before
+/// it was sent never started one); anything else -- a timeout, a dropped
+/// connection, a reply the parser choked on, another command's tag -- leaves
+/// the stream where the next command would read the wrong answer.
+fn leaves_stream_dirty(error: &::imap::Error) -> bool {
+    !matches!(
+        error,
+        ::imap::Error::No(_) | ::imap::Error::Bad(_) | ::imap::Error::Validate(_)
+    )
+}
+
+/// An IMAP sequence set for a run of UIDs, with consecutive values folded
+/// into ranges so a 200-message batch stays a short command line.
+pub fn uid_set(uids: &[u32]) -> String {
+    uid_ranges(uids).join(",")
+}
+
+/// UIDs as sequence sets for as many commands as it takes: folded into
+/// ranges like `uid_set`, then split so no set is longer than
+/// MAX_UID_SET_LEN. Thousands of scattered UIDs would otherwise make one
+/// line a server refuses outright. Empty for no UIDs.
+pub fn uid_sets(uids: &[String]) -> Vec<String> {
+    let numbers: Vec<u32> = uids.iter().filter_map(|uid| uid.parse().ok()).collect();
+    split_uid_ranges(uid_ranges(&numbers), MAX_UID_SET_LEN)
+}
+
+/// The UIDs sorted, deduplicated and folded: "1:3", "7", "9:12".
+fn uid_ranges(uids: &[u32]) -> Vec<String> {
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut ranges = Vec::new();
+    let mut run: Option<(u32, u32)> = None;
+    for uid in sorted {
+        match run {
+            Some((start, end)) if uid == end + 1 => run = Some((start, uid)),
+            Some((start, end)) => {
+                ranges.push(range_text(start, end));
+                run = Some((uid, uid));
+            }
+            None => run = Some((uid, uid)),
+        }
+    }
+    if let Some((start, end)) = run {
+        ranges.push(range_text(start, end));
+    }
+    ranges
+}
+
+fn range_text(start: u32, end: u32) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}:{end}")
+    }
+}
+
+/// Join ranges with commas into sets no longer than `max_len` (one range
+/// is never split, and none comes near the limit).
+fn split_uid_ranges(ranges: Vec<String>, max_len: usize) -> Vec<String> {
+    let mut sets: Vec<String> = Vec::new();
+    for range in ranges {
+        match sets.last_mut() {
+            Some(set) if set.len() + 1 + range.len() <= max_len => {
+                set.push(',');
+                set.push_str(&range);
+            }
+            _ => sets.push(range),
+        }
+    }
+    sets
+}
+
 /// Quote a mailbox name (escaping \ and ") so a space stays inside one astring.
 pub fn quote_mailbox(name: &str) -> String {
     format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
@@ -629,6 +819,7 @@ pub fn parse_header(
         is_seen,
         is_flagged,
         is_pinned,
+        is_deleted: false,
         preview: String::new(),
         body_text: String::new(),
         references: raw("References"),
@@ -691,6 +882,35 @@ mod tests {
             Some("41".into())
         );
         assert_eq!(destination_uid("A3 OK Done."), None);
+    }
+
+    #[test]
+    fn uid_sets_fold_runs_and_split_long_lines() {
+        assert_eq!(uid_set(&[]), "");
+        assert_eq!(uid_set(&[5]), "5");
+        assert_eq!(uid_set(&[9, 8, 7, 3, 1, 2, 7]), "1:3,7:9");
+        assert_eq!(uid_set(&[4, 2]), "2,4");
+        let strings = |uids: &[u32]| -> Vec<String> { uids.iter().map(u32::to_string).collect() };
+        assert!(uid_sets(&[]).is_empty());
+        assert_eq!(uid_sets(&strings(&[3, 1, 2, 10])), ["1:3,10"]);
+        assert_eq!(
+            split_uid_ranges(uid_ranges(&[1, 2, 3, 10, 12, 20, 21]), 8),
+            ["1:3,10", "12,20:21"]
+        );
+        // Every other UID up to 20000: nothing folds, so it has to split.
+        let sparse: Vec<u32> = (1..20_000).step_by(2).collect();
+        let sets = uid_sets(&strings(&sparse));
+        assert!(sets.len() > 1);
+        assert!(sets.iter().all(|set| set.len() <= MAX_UID_SET_LEN));
+        let rejoined: Vec<u32> = sets
+            .iter()
+            .flat_map(|set| set.split(','))
+            .map(|uid| uid.parse().unwrap())
+            .collect();
+        assert_eq!(rejoined, sparse);
+        // A contiguous block folds to one short range.
+        let block: Vec<u32> = (1..=20_000).collect();
+        assert_eq!(uid_sets(&strings(&block)), ["1:20000"]);
     }
 
     #[test]
