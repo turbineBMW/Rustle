@@ -1,0 +1,2044 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the Rustle package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Rustle\n"
+"Report-Msgid-Bugs-To: https://github.com/turbineBMW/Rustle/issues\n"
+"POT-Creation-Date: 2026-10-07 12:25-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: crates/rustle/src/application.rs:54
+msgid "Start in the background without showing a window"
+msgstr ""
+
+#: crates/rustle/src/application.rs:330
+msgid "translator-credits"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:397 crates/rustle/ui/main-window.blp:165
+msgid "New Message"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:695
+#, rust-format
+msgid "Send from {email}"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:868
+#, rust-format
+msgid "Review or rewrite with {tool}"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:900
+msgid "Write something first."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:907
+#: crates/rustle/src/window/smart_search.rs:155
+#, rust-format
+msgid "Asking {tool}…"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:973
+msgid "Looks good: nothing to change."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:976
+#, rust-format
+msgid "{n} suggestion"
+msgid_plural "{n} suggestions"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/composer.rs:997
+msgid "Apply"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1056
+msgid "Replacing keeps your signature and the quoted message."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1069
+msgid "Replace Draft"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1105
+msgid "Draft rewritten"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1106 crates/rustle/src/window/moves.rs:263
+#: crates/rustle/src/window/outbox.rs:32
+msgid "Undo"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1164
+msgid "Default Colour"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1174
+msgid "No Highlight"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1246
+msgid "Edit Link…"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1247
+msgid "Remove Link"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1348
+#: crates/rustle/src/dialogs/signature.rs:179
+msgid "Small"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1349
+msgid "Medium"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1350
+#: crates/rustle/src/dialogs/signature.rs:181
+msgid "Large"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1351
+msgid "Original"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1355
+#, rust-format
+msgid "{label} ({width} px, {size})"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1369
+#, rust-format
+msgid "Image, {size}"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1375
+msgid "Remove Image"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1481
+msgid "(no recipient)"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1552
+msgid "Remove Attachment"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1616
+msgid "Save Changes to Draft?"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1617
+msgid "The draft in this account's Drafts folder will be updated."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1618
+msgid "Delete Draft"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1622
+msgid "Save as Draft?"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1624
+msgid ""
+"The message will be kept in this account's Drafts folder to finish later."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1626 crates/rustle/src/window/actions.rs:421
+#: crates/rustle/src/window/folder_admin.rs:185
+#: crates/rustle/src/window/sync.rs:536 crates/rustle/ui/main-window.blp:366
+msgid "Delete"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1633
+msgid "Keep Editing"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1635
+msgid "Save Draft"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1667 crates/rustle/src/composer.rs:1705
+#, rust-format
+msgid "Couldn't save the draft: {msg}"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1741
+msgid ""
+"This account has no Drafts folder on the server, so the draft is kept on "
+"this device only."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1748
+#, rust-format
+msgid ""
+"Couldn't save the draft to the server: {msg}. It is kept on this device."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1872
+#, rust-format
+msgid "Couldn't send: {msg}"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2013
+#, rust-format
+msgid "Couldn't send: {msg}. Saved to Outbox."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2037
+msgid "the answer wasn't in the expected form"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2042
+msgid "Shorter"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2043
+msgid "Friendlier"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2044
+msgid "More Formal"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2045
+msgid "Clearer"
+msgstr ""
+
+#: crates/rustle/src/composer.rs:2072 crates/rustle/src/composer.rs:2095
+#: crates/rustle/src/i18n.rs:68 crates/rustle/src/window/folder_admin.rs:285
+#: crates/rustle/src/window/reader.rs:276
+msgid "Could not sign in to this account."
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:142
+msgid "Plain Text"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:144
+msgid "Paste Without Formatting"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:164
+msgid "Insert Template"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:165
+msgid "Delete Template"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:168
+msgid "Save as Template…"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:210
+msgid "Save as Template"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:212
+msgid "The subject and what you wrote are saved, to start other messages from."
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:216
+#: crates/rustle/src/composer/tools.rs:410
+#: crates/rustle/src/dialogs/rules.rs:318
+#: crates/rustle/src/dialogs/signature.rs:67 crates/rustle/src/editor.rs:811
+#: crates/rustle/src/window/folder_admin.rs:184
+#: crates/rustle/src/window/folder_admin.rs:223
+#: crates/rustle/src/window/reader.rs:583
+#: crates/rustle/src/window/reader.rs:674
+#: crates/rustle/ui/account-dialog.blp:17 crates/rustle/ui/composer.blp:19
+msgid "Cancel"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:216
+#: crates/rustle/src/dialogs/rules.rs:318
+#: crates/rustle/src/dialogs/signature.rs:76 crates/rustle/src/editor.rs:815
+msgid "Save"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:334
+#, rust-format
+msgid "Someone new is on this reply. Attach the original's attachment?"
+msgid_plural ""
+"Someone new is on this reply. Attach the original's {n} attachments?"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/composer/tools.rs:379
+msgid "In 1 Hour"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:380
+msgid "Tomorrow Morning"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:382
+msgid "Monday Morning"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:407
+msgid "Send Later"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:411
+msgid "Schedule"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:146
+msgid "Account Colour"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:151
+msgid "Colour used to mark this account's mail"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:169
+msgid "Remove Account"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:171
+msgid "Remove from Rustle"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:192
+msgid "Name"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:209
+msgid "Picture"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:214
+msgid "Remove Picture"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:221
+msgid "Choose Picture…"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:253
+msgid "Images"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:258
+msgid "Choose Account Picture"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:335
+#: crates/rustle/src/dialogs/signature.rs:53
+#: crates/rustle/src/dialogs/signature.rs:89
+msgid "Signature"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:336
+#: crates/rustle/src/widgets/sound_row.rs:46
+msgid "None"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:342
+msgid "Edit Signature"
+msgstr ""
+
+#: crates/rustle/src/dialogs/accounts.rs:361
+#: crates/rustle/ui/preferences-dialog.blp:17
+msgid "Notification Sound"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:69
+msgid "Microsoft 365"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:95
+msgid ""
+"For a work or school account whose organisation won't let other mail apps "
+"in. Rustle reaches it through a bridge built into the app, which keeps it "
+"working while Rustle runs."
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:98
+#: crates/rustle/ui/account-dialog.blp:39
+msgid "Email Address"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:104
+msgid "Sign In With"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:109
+msgid "Microsoft Office"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:111
+msgid ""
+"Works where other apps are blocked. Your organisation's sign-in log will "
+"show Microsoft Office."
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:119
+#, rust-format
+msgid "Online Accounts: {email}"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:120
+msgid ""
+"The Microsoft 365 sign-in your desktop already has, where your organisation "
+"allows it."
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:131
+msgid "Sign In"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:170
+msgid "Sign In at Microsoft"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:172
+msgid "Enter this code on the page that opened, then finish signing in there."
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:177
+msgid "Copy Code"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:185
+msgid "Open Page Again"
+msgstr ""
+
+#: crates/rustle/src/dialogs/bridge_account.rs:303
+#, rust-format
+msgid "Couldn't add the account: {msg}"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:119
+msgid "Mail Accounts on This Computer"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:122
+msgid "Connect an account in GNOME Settings and it will show up here."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:125
+msgid ""
+"Connect an account in the Online Accounts window and it will show up here."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:128
+msgid ""
+"Connect an account in Settings, under Online Accounts, and it will show up "
+"here."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:230
+msgid ""
+"Rustle signs in through GNOME Online Accounts, but some of what it needs is "
+"missing."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:233
+#, rust-format
+msgid ""
+"Outside GNOME, Rustle signs in through GNOME Online Accounts and its "
+"standalone window, {app}. Some of what it needs is missing."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:237
+msgid "Rustle signs in through GNOME Online Accounts, which isn't running."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:255
+msgid "Run this in a terminal, then check again."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:260
+msgid ""
+"Install these packages with your distribution's package manager, then check "
+"again."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:272
+msgid "Copied to clipboard"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:298
+msgid "Added"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:307
+msgid "Show"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:309
+#: crates/rustle/ui/account-dialog.blp:22
+msgid "Add"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:359
+msgid "Could not open Online Accounts."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:370
+msgid "Open Settings and add the account under Online Accounts."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:424
+msgid "Could not open Settings."
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:433
+msgid "Online Accounts service"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:434
+msgid "Evolution Data Server"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:435
+msgid "GNOME Settings"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:436
+msgid "Online Accounts window"
+msgstr ""
+
+#: crates/rustle/src/dialogs/online_accounts.rs:437
+msgid "Keyring"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:20
+msgid "Manually"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:21
+msgid "Every 5 minutes"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:22
+msgid "Every 15 minutes"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:23
+msgid "Every 30 minutes"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:24
+msgid "Every hour"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:160
+#, rust-format
+msgid "Take colours from the desktop theme, currently {theme}"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:163
+msgid "Take colours from the desktop theme"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:202
+msgid "Off"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:208
+#, rust-format
+msgid "{tool} (not installed)"
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:285
+msgid "Could not reach the desktop portal."
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:323
+msgid "Rustle checks for new mail after you log in."
+msgstr ""
+
+#: crates/rustle/src/dialogs/preferences.rs:349
+#: crates/rustle/src/dialogs/preferences.rs:373
+msgid "Could not change whether Rustle starts at login."
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:46
+msgid "From"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:47
+#: crates/rustle/src/widgets/message_view.rs:331
+#: crates/rustle/ui/composer.blp:172
+msgid "To"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:48 crates/rustle/ui/composer.blp:184
+msgid "Subject"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:49
+msgid "Message text"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:50
+msgid "Anywhere"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:57
+msgid "Rules"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:73
+msgid "New Mail"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:75
+msgid "Rules act on mail as it arrives in an inbox, while Rustle is running."
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:80
+msgid "Add Rule"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:112
+#, rust-format
+msgid "{field} contains “{text}”"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:123
+msgid "On"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:141
+msgid "Delete Rule"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:168
+msgid "No rules yet"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:170
+msgid "Add one to file newsletters, star mail from someone, and more."
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:181
+msgid "Mark read"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:184
+#: crates/rustle/src/dialogs/rules.rs:255
+#: crates/rustle/src/window/actions.rs:405
+#: crates/rustle/src/window/reader.rs:174 crates/rustle/ui/main-window.blp:324
+msgid "Star"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:191
+#, rust-format
+msgid "Move to {folder}"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:246
+msgid "contains…"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:248
+msgid "Separate alternatives with commas: any of them matches."
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:253
+msgid "Mark as read"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:277
+msgid "Don't move"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:297
+#: crates/rustle/src/window/actions.rs:422
+msgid "Move to"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:311
+msgid "New Rule"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:313
+msgid "Edit Rule"
+msgstr ""
+
+#: crates/rustle/src/dialogs/rules.rs:315
+msgid "When new mail in an inbox matches:"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:102 crates/rustle/ui/composer.blp:213
+msgid "Bold"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:103 crates/rustle/ui/composer.blp:220
+msgid "Italic"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:107 crates/rustle/ui/composer.blp:227
+msgid "Underline"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:112 crates/rustle/ui/composer.blp:234
+msgid "Strikethrough"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:117 crates/rustle/ui/composer.blp:260
+msgid "Bulleted List"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:122 crates/rustle/ui/composer.blp:267
+msgid "Numbered List"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:151 crates/rustle/src/editor.rs:807
+#: crates/rustle/ui/composer.blp:276
+msgid "Insert Link"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:164
+#: crates/rustle/src/dialogs/signature.rs:168 crates/rustle/ui/composer.blp:244
+msgid "Text Colour"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:180
+msgid "Normal"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:182
+msgid "Huge"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:185
+msgid "Text Size"
+msgstr ""
+
+#: crates/rustle/src/dialogs/signature.rs:200
+msgid "Clear Formatting"
+msgstr ""
+
+#: crates/rustle/src/editor.rs:786
+msgid "Text"
+msgstr ""
+
+#: crates/rustle/src/editor.rs:791
+msgid "Link"
+msgstr ""
+
+#: crates/rustle/src/editor.rs:805
+msgid "Edit Link"
+msgstr ""
+
+#: crates/rustle/src/editor.rs:817
+msgid "Insert"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:49
+msgid "Sign-in failed. Check the account password."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:51
+#, rust-format
+msgid "Couldn't establish a secure connection to {host}."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:55
+#, rust-format
+msgid "Can't find {host}. Check the server address or your connection."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:59
+#, rust-format
+msgid "{host} refused the connection. Check the port."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:63
+#, rust-format
+msgid "Connecting to {host} timed out."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:66
+msgid "Couldn't reach the mail server. Check your connection."
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:81
+msgid "Pinned"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:91
+msgid "Today"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:92 crates/rustle/src/i18n.rs:138
+msgid "Yesterday"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:100
+#, rust-format
+msgid "{day}{ordinal}"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:105
+#, rust-format
+msgid "{weekday}, {month} {day}"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:109
+#, rust-format
+msgid "{weekday}, {month} {day}, {year}"
+msgstr ""
+
+#: crates/rustle/src/i18n.rs:137
+#, rust-format
+msgid "Today {time}"
+msgstr ""
+
+#: crates/rustle/src/widgets/color_menu.rs:146
+msgid "Custom Colour"
+msgstr ""
+
+#: crates/rustle/src/widgets/color_menu.rs:147
+msgid "Custom Colour…"
+msgstr ""
+
+#: crates/rustle/src/widgets/folder_row.rs:124
+msgid "All Inboxes"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:64
+msgid "Was"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:76
+#, rust-format
+msgid "Organised by {name}"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:81
+msgid "Recurring"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:107
+msgid "Join"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:120
+msgid "Save Invitation"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:139
+msgid "Accept"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:140
+msgid "Tentative"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:141
+msgid "Decline"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:160
+msgid "You accepted"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:161
+msgid "You tentatively accepted"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:162
+msgid "You declined"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:200
+#: crates/rustle/src/widgets/invitation.rs:201
+msgid "Meeting cancelled"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:204
+msgid "Meeting response"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:207
+#, rust-format
+msgid "{name} accepted"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:208
+#, rust-format
+msgid "{name} tentatively accepted"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:209
+#, rust-format
+msgid "{name} declined"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:210
+#, rust-format
+msgid "{name} responded"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:214
+msgid "Meeting moved"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:216
+#, rust-format
+msgid "{name} updated the meeting"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:219
+msgid "Meeting updated"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:220
+msgid "Meeting invitation"
+msgstr ""
+
+#: crates/rustle/src/widgets/invitation.rs:221
+msgid "Event"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:268
+msgid "Loading…"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:292
+msgid "Couldn't load this message."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:332
+#: crates/rustle/ui/composer.blp:176
+msgid "Cc"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:333
+#: crates/rustle/ui/composer.blp:180
+msgid "Bcc"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:416
+#, rust-format
+msgid "{n} related message"
+msgid_plural "{n} related messages"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/widgets/message_view.rs:438
+msgid ""
+"Your mail provider couldn't verify who sent this. Be careful with its links, "
+"attachments and requests."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:449
+msgid "This looks like a newsletter."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:451
+msgid "You're subscribed to this mailing list."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:455
+#: crates/rustle/src/window/reader.rs:584
+#: crates/rustle/src/window/reader.rs:675
+msgid "Unsubscribe"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:563
+msgid "Remote images are blocked to protect your privacy."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:565
+msgid "Show Images"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:669
+msgid "Attachments"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:719
+msgid "Open with the default app"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:732
+msgid "Save Attachment"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:42
+msgid "App Default"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:45
+msgid "System Sound"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:47
+msgid "Choose a File…"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:63
+msgid "Play"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:113
+msgid "Won't play: unsupported format. Use OGG, WAV, FLAC or Opus."
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:117
+msgid "Whatever Preferences says"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:120
+msgid "The desktop's new-mail sound"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:122
+msgid "Just the notification"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:148
+msgid "Audio Files (OGG, WAV, FLAC, Opus, AAC)"
+msgstr ""
+
+#: crates/rustle/src/widgets/sound_row.rs:155
+msgid "Choose a Notification Sound"
+msgstr ""
+
+#: crates/rustle/src/window/actions.rs:395
+#: crates/rustle/src/window/reader.rs:163 crates/rustle/src/window/sync.rs:534
+#: crates/rustle/ui/main-window.blp:317
+msgid "Mark Read"
+msgstr ""
+
+#: crates/rustle/src/window/actions.rs:397
+#: crates/rustle/src/window/reader.rs:167
+msgid "Mark Unread"
+msgstr ""
+
+#: crates/rustle/src/window/actions.rs:403
+#: crates/rustle/src/window/reader.rs:171
+msgid "Unstar"
+msgstr ""
+
+#: crates/rustle/src/window/actions.rs:411
+#: crates/rustle/src/window/reader.rs:177
+msgid "Unpin"
+msgstr ""
+
+#: crates/rustle/src/window/actions.rs:413
+#: crates/rustle/src/window/reader.rs:180 crates/rustle/ui/main-window.blp:331
+msgid "Pin"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:49
+msgid "New Subfolder…"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:51
+msgid "New Folder…"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:72
+msgid "Rename…"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:73
+msgid "Delete…"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:118
+#, rust-format
+msgid "New Folder in “{name}”"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:121
+msgid "New Folder"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:129
+msgid "Create"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:149
+#, rust-format
+msgid "Rename “{name}”"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:153
+msgid "Rename"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:176
+#, rust-format
+msgid "Delete “{name}”?"
+msgstr ""
+
+#: crates/rustle/src/window/folder_admin.rs:180
+msgid ""
+"The folder and every message in it are deleted from the server. This can't "
+"be undone."
+msgstr ""
+
+#: crates/rustle/src/window/message_tools.rs:138
+msgid "Copy Source"
+msgstr ""
+
+#: crates/rustle/src/window/message_tools.rs:164
+msgid "Message Source"
+msgstr ""
+
+#: crates/rustle/src/window/message_tools.rs:241
+msgid "Message"
+msgstr ""
+
+#: crates/rustle/src/window/moves.rs:48
+msgid "Unarchive"
+msgstr ""
+
+#: crates/rustle/src/window/moves.rs:50 crates/rustle/src/window/sync.rs:535
+#: crates/rustle/ui/main-window.blp:355 crates/rustle/ui/main-window.blp:360
+msgid "Archive"
+msgstr ""
+
+#: crates/rustle/src/window/moves.rs:100
+#, rust-format
+msgid "Moved to {name}"
+msgid_plural "Moved {n} emails to {name}"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/moves.rs:120
+#, rust-format
+msgid "Archived"
+msgid_plural "Archived {n} emails"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/moves.rs:121
+#, rust-format
+msgid "Unarchived"
+msgid_plural "Unarchived {n} emails"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/moves.rs:122
+#, rust-format
+msgid "Deleted"
+msgid_plural "Deleted {n} emails"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/moves.rs:129
+#, rust-format
+msgid "No {role} folder found."
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:24
+#, rust-format
+msgid "Scheduled for {time}"
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:28
+msgid "Sending…"
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:84
+msgid "It's already on its way."
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:97
+msgid "It has already been sent."
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:181
+#, rust-format
+msgid "Scheduled to send {time}"
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:184
+msgid "Waiting to send"
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:201
+msgid "Edit"
+msgstr ""
+
+#: crates/rustle/src/window/outbox.rs:201
+msgid "Send Now"
+msgstr ""
+
+#: crates/rustle/src/window/queue.rs:150
+#, rust-format
+msgid "Action failed: {msg}"
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:258
+msgid "This message hasn't finished syncing yet."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:263
+msgid "No account is open."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:366
+#, rust-format
+msgid "Couldn't open {name}."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:442
+msgid "Only an invitation in one of your accounts can be answered."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:450
+msgid "You organised this meeting."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:459
+#: crates/rustle/src/window/reader.rs:501
+msgid "Couldn't read this invitation."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:474
+#, rust-format
+msgid "Accepted: {summary}"
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:475
+#, rust-format
+msgid "{name} has accepted."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:478
+#, rust-format
+msgid "Tentative: {summary}"
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:479
+#, rust-format
+msgid "{name} has tentatively accepted."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:482
+#, rust-format
+msgid "Declined: {summary}"
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:483
+#, rust-format
+msgid "{name} has declined."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:577
+#: crates/rustle/src/window/reader.rs:668
+msgid "Unsubscribe from this list?"
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:579
+#, rust-format
+msgid "An email will be sent to {destination} from {account}."
+msgstr ""
+
+#: crates/rustle/src/window/reader.rs:670
+#, rust-format
+msgid "A request will be sent to {destination}."
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:71
+#, rust-format
+msgid "Smart Search with {tool}"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:82
+msgid "Describe it, then press Enter"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:84
+#: crates/rustle/ui/main-window.blp:190
+msgid "Search mail"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:195
+msgid "Couldn't make a search out of that."
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:415
+#, rust-format
+msgid "From “{text}”"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:416
+#, rust-format
+msgid "To “{text}”"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:417
+#, rust-format
+msgid "Subject “{text}”"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:420
+#, rust-format
+msgid "Words: {words}"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:426
+#, rust-format
+msgid "On or after {date}"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:432
+#, rust-format
+msgid "Before {date}"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:437
+msgid "Unread"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:438
+msgid "Read"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:442
+msgid "Starred"
+msgstr ""
+
+#: crates/rustle/src/window/smart_search.rs:443
+msgid "Not starred"
+msgstr ""
+
+#: crates/rustle/src/window/sync.rs:142
+#, rust-format
+msgid "Sent {n} queued message."
+msgid_plural "Sent {n} queued messages."
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/sync.rs:151
+#, rust-format
+msgid "Couldn't send a queued message. {reason}"
+msgid_plural "Couldn't send {n} queued messages. {reason}"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/sync.rs:494 crates/rustle/src/window/sync.rs:553
+#, rust-format
+msgid "{n} new message"
+msgid_plural "{n} new messages"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/sync.rs:596
+msgid "You're offline. Rustle will reconnect when your connection returns."
+msgstr ""
+
+#: crates/rustle/src/window/sync.rs:638
+msgid "Rustle is running in the background"
+msgstr ""
+
+#: crates/rustle/src/window/sync.rs:640
+msgid "It will keep checking for new mail. Quit to stop."
+msgstr ""
+
+#: crates/rustle/src/window/sync.rs:692
+msgid "Retry"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:5
+#: crates/rustle/ui/add-account-dialog.blp:49
+msgid "Manual Setup"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:32
+msgid "Account"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:35
+msgid "Display Name"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:44
+msgid "Password"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:49
+msgid "Incoming Mail (IMAP)"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:52
+#: crates/rustle/ui/account-dialog.blp:74
+msgid "Server"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:56
+#: crates/rustle/ui/account-dialog.blp:78
+msgid "Port"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:62
+#: crates/rustle/ui/account-dialog.blp:84
+msgid "Connection Security"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:64
+#: crates/rustle/ui/account-dialog.blp:86
+msgid "None (plaintext)"
+msgstr ""
+
+#: crates/rustle/ui/account-dialog.blp:71
+msgid "Outgoing Mail (SMTP)"
+msgstr ""
+
+#: crates/rustle/ui/accounts-dialog.blp:5
+msgid "Accounts"
+msgstr ""
+
+#: crates/rustle/ui/accounts-dialog.blp:19
+msgid "Mail Accounts"
+msgstr ""
+
+#: crates/rustle/ui/accounts-dialog.blp:24
+#: crates/rustle/ui/accounts-dialog.blp:40
+#: crates/rustle/ui/add-account-dialog.blp:5
+#: crates/rustle/ui/main-window.blp:32
+msgid "Add Account"
+msgstr ""
+
+#: crates/rustle/ui/accounts-dialog.blp:37
+msgid "No Accounts"
+msgstr ""
+
+#: crates/rustle/ui/accounts-dialog.blp:38 crates/rustle/ui/main-window.blp:30
+msgid "Add a mail account to get started."
+msgstr ""
+
+#: crates/rustle/ui/add-account-dialog.blp:15
+#: crates/rustle/ui/online-accounts-dialog.blp:5
+msgid "Online Accounts"
+msgstr ""
+
+#: crates/rustle/ui/add-account-dialog.blp:16
+msgid ""
+"Sign in through your desktop with Google, Microsoft and other providers. "
+"Rustle never sees your password."
+msgstr ""
+
+#: crates/rustle/ui/add-account-dialog.blp:32
+msgid "Microsoft 365 Through Rustle"
+msgstr ""
+
+#: crates/rustle/ui/add-account-dialog.blp:33
+msgid ""
+"For a work account your organisation won't let other mail apps reach. Rustle "
+"signs in as Microsoft Office and serves the mailbox itself."
+msgstr ""
+
+#: crates/rustle/ui/add-account-dialog.blp:50
+msgid ""
+"Enter your address, password and server details yourself. Works with any "
+"IMAP and SMTP provider."
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:34
+msgid "Send"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:37
+msgid "More Ways to Send"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:47
+msgid "More Options"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:54 crates/rustle/ui/preferences-dialog.blp:68
+msgid "Assistant"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:61
+msgid "Open in New Window"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:75
+msgid "Attach"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:111
+msgid "Review"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:112
+msgid "Suggest fixes for spelling, grammar, clarity and tone"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:122
+msgid "How to rewrite it"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:126
+msgid "Rewrite"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:131
+msgid "Anything else? (optional)"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:145
+msgid ""
+"Only the text you wrote is sent: not the quoted message, your signature or "
+"the subject."
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:251
+msgid "Highlight Colour"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:283
+msgid "Add Attachment"
+msgstr ""
+
+#: crates/rustle/ui/composer.blp:300
+msgid "Send _Later…"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:5
+#: data/io.github.turbinebmw.Rustle.desktop.in:2
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:7
+msgid "Rustle"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:29
+msgid "Welcome to Rustle"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:57
+msgid "Resize folder sidebar"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:65
+msgid "Folders"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:71
+msgid "Hide Folders"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:79 crates/rustle/ui/main-window.blp:115
+msgid "Main Menu"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:107
+msgid "Show Folders"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:135
+msgid "Messages"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:143
+msgid "Resize email list"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:153
+msgid "Refresh Inbox"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:159
+msgid "Show Unread Only"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:173
+msgid "Search"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:191
+msgid ""
+"Words match anywhere, bodies included. Narrow with from:, to:, subject:, "
+"is:unread, is:starred, after:2026-09-01, before:2026-10-01, or \"a phrase\"."
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:202
+msgid "Smart Search"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:248
+msgid "No Messages"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:249
+msgid "This folder is empty."
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:256
+msgid "Checking for Mail…"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:271
+msgid "Reader"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:285
+msgid "Reply"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:291
+msgid "Reply All"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:297
+msgid "Forward"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:306
+msgid "Edit Draft"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:338
+msgid "Move to Folder"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:346
+msgid "More Message Actions"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:376
+msgid "Select an Email"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:377
+msgid "Pick a message from the list to read it here."
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:384
+msgid "Loading Message…"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:458
+msgid "_Print…"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:463
+msgid "_Save As…"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:468
+msgid "Show _Source"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:475
+msgid "Zoom _In"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:480
+msgid "Zoom _Out"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:485
+msgid "_Reset Zoom"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:494
+msgid "_Manage Accounts"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:498
+msgid "_Rules"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:505
+msgid "_Preferences"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:509
+msgid "_Keyboard Shortcuts"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:513
+msgid "_About Rustle"
+msgstr ""
+
+#: crates/rustle/ui/main-window.blp:520
+msgid "_Quit"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:29
+msgid "Online Accounts Isn't Installed"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:33
+msgid "Install"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:44
+msgid "Copy"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:54
+msgid "Check Again"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:67
+msgid "Rustle signs in to these for you, so there is no password to enter."
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:72
+#: crates/rustle/ui/online-accounts-dialog.blp:87
+msgid "Open Online Accounts"
+msgstr ""
+
+#: crates/rustle/ui/online-accounts-dialog.blp:85
+msgid "No Online Accounts"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:5
+msgid "Preferences"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:9
+#: crates/rustle/ui/shortcuts-dialog.blp:6
+msgid "General"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:12
+msgid "New Mail Notifications"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:13
+msgid "Show a notification when new mail arrives"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:21
+msgid "Load Remote Images"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:22
+msgid "Load images from the internet without asking"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:26
+msgid "Load Sender Avatars"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:27
+msgid "Fetch sender pictures from Gravatar, which tells them who emails you"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:31
+msgid "Check Spelling"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:32
+msgid "Underline misspelled words while composing"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:36
+msgid "Undo Send"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:37
+msgid "Seconds a sent message waits, so it can be taken back; 0 sends at once"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:47
+msgid "Run in Background"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:48
+msgid "Keep checking for mail after the window is closed"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:52
+msgid "Start at Login"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:53
+msgid "Start hidden when you log in and keep checking for mail"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:57
+msgid "Check for Mail"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:58
+msgid "How often to look for new mail"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:62
+msgid "Download All Mail"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:63
+msgid ""
+"Keep fetching older messages in every folder until the whole account is here"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:69
+msgid ""
+"Smart Search turns what you type into a search with a coding agent's command-"
+"line tool, signed in as you. It sends only the words you type, never your "
+"mail."
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:72
+msgid "Tool"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:76
+msgid "Model (optional)"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:81
+msgid "Appearance"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:84
+msgid "Follow Omarchy Theme"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:90
+msgid "Message List"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:93
+msgid "Group Conversations"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:94
+msgid "One row per conversation, showing the newest message and a count"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:98
+msgid "Single-Key Shortcuts"
+msgstr ""
+
+#: crates/rustle/ui/preferences-dialog.blp:99
+msgid ""
+"j/k to move, e to archive, # to delete, r to reply, s to star, / to search"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:8
+msgctxt "shortcut window"
+msgid "New Window"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:13
+msgctxt "shortcut window"
+msgid "Preferences"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:18
+msgctxt "shortcut window"
+msgid "Show Shortcuts"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:23
+msgctxt "shortcut window"
+msgid "Quit"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:29
+msgid "Mail"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:31
+#: crates/rustle/ui/shortcuts-dialog.blp:167
+msgctxt "shortcut window"
+msgid "New Message"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:36
+#: crates/rustle/ui/shortcuts-dialog.blp:147
+msgctxt "shortcut window"
+msgid "Reply"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:41
+#: crates/rustle/ui/shortcuts-dialog.blp:152
+msgctxt "shortcut window"
+msgid "Reply All"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:46
+#: crates/rustle/ui/shortcuts-dialog.blp:157
+msgctxt "shortcut window"
+msgid "Forward"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:51
+msgctxt "shortcut window"
+msgid "Refresh"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:56
+#: crates/rustle/ui/shortcuts-dialog.blp:172
+msgctxt "shortcut window"
+msgid "Search"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:61
+msgctxt "shortcut window"
+msgid "Show Folders"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:66
+msgctxt "shortcut window"
+msgid "Mark Read/Unread"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:71
+#: crates/rustle/ui/shortcuts-dialog.blp:162
+msgctxt "shortcut window"
+msgid "Star"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:76
+msgctxt "shortcut window"
+msgid "Pin"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:81
+#: crates/rustle/ui/shortcuts-dialog.blp:137
+msgctxt "shortcut window"
+msgid "Archive"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:86
+#: crates/rustle/ui/shortcuts-dialog.blp:142
+msgctxt "shortcut window"
+msgid "Delete"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:92
+msgid "Reading"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:94
+msgctxt "shortcut window"
+msgid "Print"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:99
+msgctxt "shortcut window"
+msgid "Save Message As"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:104
+msgctxt "shortcut window"
+msgid "Show Source"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:109
+msgctxt "shortcut window"
+msgid "Zoom In"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:114
+msgctxt "shortcut window"
+msgid "Zoom Out"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:119
+msgctxt "shortcut window"
+msgid "Reset Zoom"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:125
+msgid "Single-Key (when turned on in Preferences)"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:127
+msgctxt "shortcut window"
+msgid "Next Message"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:132
+msgctxt "shortcut window"
+msgid "Previous Message"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:177
+msgctxt "shortcut window"
+msgid "Mark Read"
+msgstr ""
+
+#: crates/rustle/ui/shortcuts-dialog.blp:182
+msgctxt "shortcut window"
+msgid "Mark Unread"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.desktop.in:3
+msgid "Mail Client"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.desktop.in:4
+msgid "Read and send your email"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.desktop.in:10
+msgid "GTK;Email;E-mail;Mail;IMAP;SMTP;Inbox;"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:8
+msgid "A fast email client for GNOME"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:10
+msgid ""
+"Rustle is a native GTK 4 / libadwaita email client written in Rust. Three "
+"panes — folders, emails, reader — with a unified inbox across every account "
+"and nothing to configure beyond your account details."
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:15
+msgid "Features include:"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:17
+msgid ""
+"Multiple IMAP/SMTP accounts, with TLS or STARTTLS, or imported from GNOME "
+"Online Accounts"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:18
+msgid "A unified inbox across all accounts"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:19
+msgid "Individual messages in date order, nested folders shown as a tree"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:20
+msgid "Instant full-text search across your mail"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:21
+msgid "A rich-text composer with attachments, and one-click unsubscribe"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:22
+msgid "Follows the system accent colour and dark style"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:28
+msgid "Brandon Williams"
+msgstr ""
+
+#: data/io.github.turbinebmw.Rustle.metainfo.xml.in:39
+msgid ""
+"First release: a Rust rewrite of Postcard with a unified inbox and accent-"
+"colour support."
+msgstr ""

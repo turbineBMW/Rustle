@@ -21,5 +21,9 @@ fmt:
 install:
     sh install.sh
 
+# Regenerate the translation template, po/rustle.pot, from the sources.
+pot:
+    sh po/update-pot.sh
+
 clean:
     cargo clean
