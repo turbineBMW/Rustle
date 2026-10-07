@@ -327,6 +327,9 @@ mod imp {
         pub originals: RefCell<Vec<Attachment>>,
         pub original_people: RefCell<std::collections::HashSet<String>>,
         pub tool_actions: RefCell<Option<gio::SimpleActionGroup>>,
+        /// OpenPGP for the send, from the More menu.
+        pub pgp_sign: Cell<bool>,
+        pub pgp_encrypt: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -1715,6 +1718,15 @@ impl Composer {
             .and_then(|resumed| self.account_by_id(resumed.account_id));
         // Strong: the composer has gone by the time the server answers,
         // and its host still hears what became of the draft.
+        // A message to be encrypted isn't put on the server in the clear,
+        // even as a draft.
+        if self.imp().pgp_encrypt.get() {
+            self.notice(&gettext(
+                "The draft is kept on this device only, as the message is to be encrypted.",
+            ));
+            self.finish();
+            return;
+        }
         let composer = self.clone();
         workers::run(
             move || {
@@ -1863,6 +1875,16 @@ impl Composer {
             log::warn!("could not remember the recipients: {error}");
         }
 
+        let protection = self.protection();
+        if protection.sign || protection.encrypt {
+            self.send_protected(
+                account,
+                subject,
+                (to_addrs, cc_addrs, bcc_addrs),
+                protection,
+            );
+            return;
+        }
         let raw = match self.build_raw(&account, false) {
             Ok(raw) => raw,
             Err(error) => {
@@ -1876,6 +1898,95 @@ impl Composer {
             }
         };
 
+        self.send_built(account, subject, to_addrs, cc_addrs, bcc_addrs, raw);
+    }
+
+    /// Sign and/or encrypt off the main thread -- gpg may wait on its
+    /// passphrase prompt -- then send as usual.
+    fn send_protected(
+        &self,
+        account: Account,
+        subject: String,
+        (to_addrs, cc_addrs, bcc_addrs): (Vec<String>, Vec<String>, Vec<String>),
+        protection: compose::Protection,
+    ) {
+        let imp = self.imp();
+        let body_html = imp.body_html.borrow().clone();
+        let attachments = self.attachments();
+        let message_id = imp.message_id.borrow().clone();
+        let plain_text = imp.plain_text.get();
+        let recipients: Vec<String> = to_addrs
+            .iter()
+            .chain(&cc_addrs)
+            .chain(&bcc_addrs)
+            .map(|text| rustle_core::address::first_address(text))
+            .filter(|address| !address.is_empty())
+            .collect();
+        let (from, job_to, job_cc, job_bcc, job_subject) = (
+            account.email.clone(),
+            to_addrs.clone(),
+            cc_addrs.clone(),
+            bcc_addrs.clone(),
+            subject.clone(),
+        );
+        self.set_sending(true);
+        workers::run(
+            move || -> Result<Vec<u8>, String> {
+                let message = compose::Outgoing {
+                    from: &from,
+                    to: &job_to,
+                    cc: &job_cc,
+                    bcc: &job_bcc,
+                    subject: &job_subject,
+                    body_html: &body_html,
+                    attachments: &attachments,
+                    message_id: Some(&message_id),
+                    plain_text,
+                };
+                let gpg = rustle_core::pgp::Gpg {
+                    sender: rustle_core::address::first_address(&from),
+                    recipients,
+                };
+                compose::build_protected_message(&message, protection, &gpg).map_err(|error| {
+                    log::error!("could not protect a message from {from}: {error}");
+                    error.to_string()
+                })
+            },
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |result: Result<Vec<u8>, String>| {
+                    window.set_sending(false);
+                    match result {
+                        Ok(raw) => {
+                            window.send_built(account, subject, to_addrs, cc_addrs, bcc_addrs, raw)
+                        }
+                        Err(message) => {
+                            window
+                                .imp()
+                                .toast_overlay
+                                .add_toast(adw::Toast::new(&i18n::format(
+                                    &gettext("Couldn't send: {msg}"),
+                                    &[("msg", &message)],
+                                )))
+                        }
+                    }
+                }
+            ),
+        );
+    }
+
+    /// The rest of a send, once the message is built: the Outbox, then
+    /// sending now or holding it for later.
+    fn send_built(
+        &self,
+        account: Account,
+        subject: String,
+        to_addrs: Vec<String>,
+        cc_addrs: Vec<String>,
+        bcc_addrs: Vec<String>,
+        raw: Vec<u8>,
+    ) {
         // The SMTP envelope recipients, unlike the message's own To/Cc
         // headers, also carry Bcc addresses.
         let recipients: Vec<String> = to_addrs

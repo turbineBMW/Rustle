@@ -103,6 +103,8 @@ pub enum ComposeError {
     Address(String),
     #[error("could not build the message: {0}")]
     Build(#[from] lettre::error::Error),
+    #[error("OpenPGP: {0}")]
+    Pgp(String),
 }
 
 fn lettre_mailbox(text: &str) -> Result<LettreMailbox, ComposeError> {
@@ -270,7 +272,60 @@ pub fn invitation_reply_message(
     Ok(message.formatted())
 }
 
-fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeError> {
+/// A message's body: one part, or a tree of them.
+enum Body {
+    Single(SinglePart),
+    Multi(MultiPart),
+}
+
+impl Body {
+    /// The part as it goes on the wire, its own headers included.
+    fn formatted(&self) -> Vec<u8> {
+        match self {
+            Body::Single(part) => part.formatted(),
+            Body::Multi(part) => part.formatted(),
+        }
+    }
+}
+
+/// The body of `message`: text (and HTML), inline images, attachments.
+fn body(message: &Outgoing) -> Body {
+    let attachments = message.attachments;
+    if message.plain_text {
+        let text = SinglePart::plain(html_to_text(message.body_html));
+        return if attachments.is_empty() {
+            Body::Single(text)
+        } else {
+            Body::Multi(with_attachments(
+                MultiPart::mixed().singlepart(text),
+                attachments,
+            ))
+        };
+    }
+    let (body_html, images) = extract_inline_images(message.body_html);
+    let alternative = MultiPart::alternative_plain_html(html_to_text(&body_html), body_html);
+    let body = if images.is_empty() {
+        alternative
+    } else {
+        let mut related = MultiPart::related().multipart(alternative);
+        for image in images {
+            let content_type = ContentType::parse(&image.mime_type)
+                .or_else(|_| ContentType::parse("application/octet-stream"))
+                .expect("octet-stream is a valid content type");
+            let part: SinglePart =
+                LettreAttachment::new_inline(image.content_id).body(image.content, content_type);
+            related = related.singlepart(part);
+        }
+        related
+    };
+    Body::Multi(if attachments.is_empty() {
+        body
+    } else {
+        with_attachments(MultiPart::mixed().multipart(body), attachments)
+    })
+}
+
+fn headers(message: &Outgoing, is_draft: bool) -> Result<MessageBuilder, ComposeError> {
     let from = lettre_mailbox(message.from)?;
     let mut builder = Message::builder()
         .from(from.clone())
@@ -296,46 +351,143 @@ fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeE
             builder = builder.cc(lettre_mailbox(cc)?);
         }
     }
-    let attachments = message.attachments;
+    Ok(builder)
+}
 
-    if message.plain_text {
-        let text = SinglePart::plain(html_to_text(message.body_html));
-        let message = if attachments.is_empty() {
-            builder.singlepart(text)?
-        } else {
-            builder.multipart(with_attachments(
-                MultiPart::mixed().singlepart(text),
-                attachments,
-            ))?
-        };
-        return Ok(message.formatted());
-    }
-
-    let (body_html, images) = extract_inline_images(message.body_html);
-    let alternative = MultiPart::alternative_plain_html(html_to_text(&body_html), body_html);
-    let body = if images.is_empty() {
-        alternative
-    } else {
-        let mut related = MultiPart::related().multipart(alternative);
-        for image in images {
-            let content_type = ContentType::parse(&image.mime_type)
-                .or_else(|_| ContentType::parse("application/octet-stream"))
-                .expect("octet-stream is a valid content type");
-            let part: SinglePart =
-                LettreAttachment::new_inline(image.content_id).body(image.content, content_type);
-            related = related.singlepart(part);
-        }
-        related
-    };
-    let message = if attachments.is_empty() {
-        builder.multipart(body)?
-    } else {
-        builder.multipart(with_attachments(
-            MultiPart::mixed().multipart(body),
-            attachments,
-        ))?
+fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeError> {
+    let builder = headers(message, is_draft)?;
+    let message = match body(message) {
+        Body::Single(part) => builder.singlepart(part)?,
+        Body::Multi(part) => builder.multipart(part)?,
     };
     Ok(message.formatted())
+}
+
+/// What OpenPGP does to a message on its way out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Protection {
+    pub sign: bool,
+    pub encrypt: bool,
+}
+
+/// The OpenPGP operations a protected message needs, so the MIME here is
+/// testable without gpg (`pgp.rs` provides the real ones).
+pub trait Crypto {
+    /// A detached, armored signature over `entity`.
+    fn sign(&self, entity: &[u8]) -> Result<Vec<u8>, String>;
+    /// `entity` encrypted (and signed inside, when asked), armored.
+    fn encrypt(&self, entity: &[u8], also_sign: bool) -> Result<Vec<u8>, String>;
+}
+
+/// A message signed and/or encrypted the RFC 3156 way: its body becomes
+/// `multipart/signed` (the body, then its signature) or
+/// `multipart/encrypted` (a version part, then the ciphertext). The
+/// headers stay outside, readable. Without protection, the plain message.
+pub fn build_protected_message(
+    message: &Outgoing,
+    protection: Protection,
+    crypto: &dyn Crypto,
+) -> Result<Vec<u8>, ComposeError> {
+    if !protection.sign && !protection.encrypt {
+        return build_mime_message(message);
+    }
+    let entity = body(message).formatted();
+    // The CRLF before a boundary belongs to the boundary: the part, signed
+    // or encrypted, ends before it.
+    let entity = entity
+        .strip_suffix(b"\r\n")
+        .map(<[u8]>::to_vec)
+        .unwrap_or(entity);
+    let boundary = format!("rustle-{}", uuid::Uuid::new_v4().simple());
+    let (content_type, mut content) = if protection.encrypt {
+        let armored = crypto
+            .encrypt(&entity, protection.sign)
+            .map_err(ComposeError::Pgp)?;
+        let mut content = format!(
+            "This is an OpenPGP/MIME encrypted message (RFC 4880 and 3156)\r\n\
+             --{boundary}\r\n\
+             Content-Type: application/pgp-encrypted\r\n\
+             Content-Description: PGP/MIME version identification\r\n\r\n\
+             Version: 1\r\n\r\n\
+             --{boundary}\r\n\
+             Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\
+             Content-Description: OpenPGP encrypted message\r\n\
+             Content-Disposition: inline; filename=\"encrypted.asc\"\r\n\r\n"
+        )
+        .into_bytes();
+        content.extend_from_slice(&crlf(&armored));
+        (
+            format!(
+                "multipart/encrypted; protocol=\"application/pgp-encrypted\";\r\n boundary=\"{boundary}\""
+            ),
+            content,
+        )
+    } else {
+        let signature = crypto.sign(&entity).map_err(ComposeError::Pgp)?;
+        let mut content = format!(
+            "This is an OpenPGP/MIME signed message (RFC 4880 and 3156)\r\n--{boundary}\r\n"
+        )
+        .into_bytes();
+        content.extend_from_slice(&entity);
+        content.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\n\
+                 Content-Type: application/pgp-signature; name=\"signature.asc\"\r\n\
+                 Content-Description: OpenPGP digital signature\r\n\
+                 Content-Disposition: attachment; filename=\"signature.asc\"\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        content.extend_from_slice(&crlf(&signature));
+        (
+            format!(
+                "multipart/signed; micalg=pgp-sha256;\r\n protocol=\"application/pgp-signature\"; boundary=\"{boundary}\""
+            ),
+            content,
+        )
+    };
+    if !content.ends_with(b"\r\n") {
+        content.extend_from_slice(b"\r\n");
+    }
+    content.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    // The headers lettre writes, less the body's description, which is ours.
+    let shell = headers(message, false)?.body(String::new())?.formatted();
+    let shell = String::from_utf8_lossy(&shell);
+    let head = shell.split("\r\n\r\n").next().unwrap_or("");
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in head.split("\r\n") {
+        if !line.starts_with([' ', '\t']) {
+            let name = line.split(':').next().unwrap_or("").to_ascii_lowercase();
+            skipping = name == "content-type" || name == "content-transfer-encoding";
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    if !out.to_ascii_lowercase().contains("mime-version:") {
+        out.push_str("MIME-Version: 1.0\r\n");
+    }
+    out.push_str(&format!("Content-Type: {content_type}\r\n\r\n"));
+    let mut raw = out.into_bytes();
+    raw.extend_from_slice(&content);
+    Ok(raw)
+}
+
+/// Armored output as gpg writes it (LF) on the wire (CRLF).
+fn crlf(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + text.len() / 32);
+    let mut previous = 0u8;
+    for &byte in text {
+        if byte == b'\n' && previous != b'\r' {
+            out.push(b'\r');
+        }
+        out.push(byte);
+        previous = byte;
+    }
+    out
 }
 
 fn with_attachments(mut mixed: MultiPart, attachments: &[Attachment]) -> MultiPart {
@@ -563,6 +715,84 @@ pub fn first_recipient(to_header: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records what it was asked to sign or encrypt.
+    struct FakeCrypto(std::cell::RefCell<Vec<u8>>);
+
+    impl Crypto for FakeCrypto {
+        fn sign(&self, entity: &[u8]) -> Result<Vec<u8>, String> {
+            self.0.replace(entity.to_vec());
+            Ok(b"-----BEGIN PGP SIGNATURE-----\nsig\n-----END PGP SIGNATURE-----\n".to_vec())
+        }
+
+        fn encrypt(&self, entity: &[u8], _also_sign: bool) -> Result<Vec<u8>, String> {
+            self.0.replace(entity.to_vec());
+            Ok(b"-----BEGIN PGP MESSAGE-----\nct\n-----END PGP MESSAGE-----\n".to_vec())
+        }
+    }
+
+    #[test]
+    fn protected_messages_take_rfc_3156_shape() {
+        let to = vec!["Bob <bob@x.y>".to_string()];
+        let attachment = Attachment {
+            filename: "a.txt".into(),
+            mime_type: "text/plain".into(),
+            content: b"x".to_vec(),
+        };
+        let message = Outgoing {
+            from: "me@x.y",
+            to: &to,
+            subject: "Secret plans",
+            body_html: "<p>Hello <b>Bob</b></p>",
+            attachments: std::slice::from_ref(&attachment),
+            ..Outgoing::default()
+        };
+        let crypto = FakeCrypto(Default::default());
+        let signed = build_protected_message(
+            &message,
+            Protection {
+                sign: true,
+                encrypt: false,
+            },
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(crate::pgp::detect(&signed), crate::pgp::Protection::Signed);
+        // A verifier cuts out exactly the bytes that were signed.
+        let (cut, signature) = crate::pgp::signed_parts(&signed).unwrap();
+        assert_eq!(cut, *crypto.0.borrow());
+        assert!(signature.starts_with(b"-----BEGIN PGP SIGNATURE-----"));
+        let parsed = crate::mime::parse_message(&signed);
+        assert_eq!(parsed.subject, "Secret plans");
+        assert_eq!(parsed.to, ["Bob <bob@x.y>"]);
+
+        let encrypted = build_protected_message(
+            &message,
+            Protection {
+                sign: true,
+                encrypt: true,
+            },
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::pgp::detect(&encrypted),
+            crate::pgp::Protection::Encrypted
+        );
+        let text = String::from_utf8_lossy(&encrypted);
+        assert!(!text.contains("Hello"), "the body is inside the ciphertext");
+        assert!(
+            text.contains("Subject: Secret plans"),
+            "the headers stay outside"
+        );
+        assert_eq!(
+            crate::pgp::encrypted_payload(&encrypted).unwrap(),
+            b"-----BEGIN PGP MESSAGE-----\r\nct\r\n-----END PGP MESSAGE-----"
+        );
+        // What was encrypted is the whole body, attachment and all.
+        let inner = String::from_utf8_lossy(&crypto.0.borrow()).into_owned();
+        assert!(inner.contains("a.txt"), "{inner}");
+    }
 
     #[test]
     fn plain_text_messages_have_no_html_part() {
