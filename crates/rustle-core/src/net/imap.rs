@@ -155,15 +155,7 @@ impl ImapSession {
                 client
             }
         };
-        self.capabilities = client
-            .capabilities()?
-            .iter()
-            .map(|capability| match capability {
-                Capability::Imap4rev1 => "IMAP4REV1".to_string(),
-                Capability::Auth(name) => format!("AUTH={}", name.to_uppercase()),
-                Capability::Atom(name) => name.to_uppercase(),
-            })
-            .collect();
+        self.capabilities = capability_names(&client.capabilities()?);
         self.client = Some(client);
         Ok(())
     }
@@ -179,6 +171,11 @@ impl ImapSession {
         match result {
             Ok(session) => {
                 self.session = Some(session);
+                // What a server lists before sign-in is what an anonymous
+                // client may use; Dovecot and Gmail name UIDPLUS, MOVE and
+                // IDLE only after. Ask again, or those look missing.
+                let capabilities = self.command(|session| session.capabilities())?;
+                self.capabilities = capability_names(&capabilities);
                 Ok(())
             }
             Err((error, _client)) => Err(error.into()),
@@ -384,9 +381,6 @@ impl ImapSession {
         Ok(())
     }
 
-    /// Remove messages from the selected (writable) mailbox for good. With
-    /// UIDPLUS only these go; a plain EXPUNGE also clears anything else
-    /// already marked deleted there, which is what it was marked for.
     /// CREATE, RENAME and DELETE a mailbox, by its name on the wire.
     pub fn create_mailbox(&mut self, name: &str) -> Result<()> {
         self.command(|session| session.create(name))
@@ -400,16 +394,56 @@ impl ImapSession {
         self.command(|session| session.delete(name))
     }
 
+    /// Remove messages from the selected (writable) mailbox for good, or as
+    /// near as the server allows without touching anything else: see
+    /// `expunge_uids`.
     pub fn delete_uids(&mut self, uids: &[String]) -> Result<()> {
         for set in uid_sets(uids) {
             self.command(|session| session.uid_store(&set, "+FLAGS (\\Deleted)"))?;
         }
+        self.expunge_uids(uids)
+    }
+
+    /// Expunge `uids`, already marked \Deleted, and nothing else. UID
+    /// EXPUNGE (UIDPLUS) does exactly that. Without it there is only a
+    /// plain EXPUNGE, which also purges whatever else is marked \Deleted in
+    /// the mailbox -- mail another client marked and can still undelete. So
+    /// it is sent only when a search finds nothing marked but ours;
+    /// otherwise ours stay marked for a later expunge to take. A leftover
+    /// is a nuisance; another client's mail purged is gone for good. (One
+    /// marked in the round trip between search and expunge still goes.)
+    fn expunge_uids(&mut self, uids: &[String]) -> Result<()> {
         if self.has_capability("UIDPLUS") {
             for set in uid_sets(uids) {
                 self.command(|session| session.uid_expunge(&set))?;
             }
-        } else {
+            return Ok(());
+        }
+        let ours: HashSet<&str> = uids.iter().map(String::as_str).collect();
+        let marked = match self.command(|session| session.uid_search("DELETED")) {
+            Ok(marked) => marked,
+            // Refused: no way to be sure, so leave them marked.
+            Err(error) if self.is_usable() => {
+                debug!(
+                    "left {} message(s) marked deleted on {}: {error}",
+                    uids.len(),
+                    self.host
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if marked
+            .iter()
+            .all(|uid| ours.contains(uid.to_string().as_str()))
+        {
             self.command(|session| session.expunge())?;
+        } else {
+            debug!(
+                "left {} message(s) marked deleted on {}: others are marked too and it has no UIDPLUS",
+                uids.len(),
+                self.host
+            );
         }
         Ok(())
     }
@@ -627,6 +661,19 @@ fn handshake_error(error: native_tls::HandshakeError<TcpStream>) -> NetError {
             NetError::Protocol("TLS handshake would block".into())
         }
     }
+}
+
+/// Capability names as `has_capability` looks them up: upper case, with
+/// AUTH= mechanisms spelled out.
+fn capability_names(capabilities: &::imap::types::Capabilities) -> HashSet<String> {
+    capabilities
+        .iter()
+        .map(|capability| match capability {
+            Capability::Imap4rev1 => "IMAP4REV1".to_string(),
+            Capability::Auth(name) => format!("AUTH={}", name.to_uppercase()),
+            Capability::Atom(name) => name.to_uppercase(),
+        })
+        .collect()
 }
 
 /// Whether a failed command may have left part of its reply unread. Only a
