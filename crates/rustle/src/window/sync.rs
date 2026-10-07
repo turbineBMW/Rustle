@@ -185,6 +185,7 @@ impl MainWindow {
         };
         for account in accounts {
             self.drain_outbox(&account);
+            self.flush_queue(&account);
             let folder_name = open_folder
                 .as_ref()
                 .filter(|f| f.account_id == account.id)
@@ -226,7 +227,7 @@ impl MainWindow {
         !self.state().accounts.contains_key(&account.id)
     }
 
-    fn on_sync_done(&self, account: &Account, result: SyncResult) {
+    fn on_sync_done(&self, account: &Account, mut result: SyncResult) {
         // Before the staleness check: a dropped callback still has to release
         // the spinner and the Refresh button.
         self.set_syncing(account.id, false);
@@ -296,19 +297,8 @@ impl MainWindow {
             };
             target_id = target.id;
             let notify_folder = folders::notifies_on_arrival(&target.name);
-            let tombstoned: HashSet<String> = {
-                let state = self.state();
-                state
-                    .move_tombstones
-                    .keys()
-                    .filter(|(folder_id, _)| *folder_id == target.id)
-                    .map(|(_, uid)| uid.clone())
-                    .collect()
-            };
+            self.guard_fetched(&db, target.id, &mut result.messages);
             for message in &result.messages {
-                if tombstoned.contains(&message.uid) {
-                    continue;
-                }
                 match db.save_incoming_email(target.id, message) {
                     Ok(true) if message.is_unread && notify_folder => {
                         new_messages.push(message.clone())

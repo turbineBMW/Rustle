@@ -1,20 +1,16 @@
 //! Read/unread, star, and the row context menu.
 
 use super::{MainWindow, MAIL_ACTIONS, REPLY_FORWARD_ACTIONS};
-use crate::i18n::{self, gettext};
+use crate::i18n::gettext;
 use crate::objects::EmailObject;
-use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
-use rustle_core::models::Account;
-use rustle_core::net::errors::classify;
 use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
-use rustle_core::{secrets, sync};
+use rustle_core::queue::{Change, PendingOp};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 /// A window method bound to an action name.
 type ActionHandler = fn(&MainWindow);
@@ -24,17 +20,6 @@ enum FlagField {
     Unread,
     Starred,
     Pinned,
-}
-
-/// One IMAP flag edit to apply to a set of messages in one mailbox. A frozen
-/// snapshot for the worker, never a live object the main thread mutates.
-#[derive(Clone)]
-struct FlagChange {
-    account: Account,
-    folder_name: String,
-    uids: Vec<String>,
-    flag: &'static str,
-    should_add: bool,
 }
 
 fn register(
@@ -194,40 +179,29 @@ impl MainWindow {
             FlagField::Starred => mail.is_starred,
             FlagField::Pinned => mail.is_pinned,
         };
-        let mut originals: HashMap<i64, bool> = HashMap::new();
-        let mut any_set = false;
-        for email in emails {
-            email.with(|mail| {
-                originals.insert(mail.id, read(mail));
-                any_set |= read(mail);
-            });
-        }
-        let value = !any_set;
+        let value = !emails.iter().any(|email| email.with(read));
         let keep_id = if emails.len() == 1 {
             Some(emails[0].id())
         } else {
             None
         };
-
-        let objects: Vec<EmailObject> = emails.to_vec();
-        let db = self.db();
-        let write = move |values: &HashMap<i64, bool>| {
+        {
+            let db = self.db();
             let db = db.borrow();
-            for email in &objects {
+            for email in emails {
                 email.update(|mail| {
-                    let new_value = values.get(&mail.id).copied().unwrap_or(false);
                     let saved = match field {
                         FlagField::Unread => {
-                            mail.is_unread = new_value;
-                            db.set_email_unread(mail.id, new_value)
+                            mail.is_unread = value;
+                            db.set_email_unread(mail.id, value)
                         }
                         FlagField::Starred => {
-                            mail.is_starred = new_value;
-                            db.set_email_starred(mail.id, new_value)
+                            mail.is_starred = value;
+                            db.set_email_starred(mail.id, value)
                         }
                         FlagField::Pinned => {
-                            mail.is_pinned = new_value;
-                            db.set_email_pinned(mail.id, new_value)
+                            mail.is_pinned = value;
+                            db.set_email_pinned(mail.id, value)
                         }
                     };
                     if let Err(error) = saved {
@@ -235,24 +209,12 @@ impl MainWindow {
                     }
                 });
             }
-        };
-        let write = Rc::new(write);
-
-        let all_new: HashMap<i64, bool> = originals.keys().map(|id| (*id, value)).collect();
-        write(&all_new);
+        }
         self.after_flag_change(keep_id);
 
-        let revert_write = write.clone();
-        let window = self.downgrade();
-        let revert: Rc<dyn Fn()> = Rc::new(move || {
-            revert_write(&originals);
-            if let Some(window) = window.upgrade() {
-                window.after_flag_change(keep_id);
-            }
-        });
-
         // One STORE per mailbox rather than one per message: in the unified
-        // inbox a selection can span several accounts.
+        // inbox a selection can span several accounts. The queue sends it,
+        // and keeps it while the server can't be reached.
         let mut by_folder: HashMap<i64, Vec<String>> = HashMap::new();
         for email in emails {
             email.with(|c| {
@@ -262,25 +224,30 @@ impl MainWindow {
                     .extend(c.server_id.iter().cloned())
             });
         }
-        let (flag, should_add) = match field {
+        let (flag, add) = match field {
             FlagField::Unread => (FLAG_SEEN, !value),
             FlagField::Starred => (FLAG_FLAGGED, value),
             FlagField::Pinned => (FLAG_PINNED, value),
         };
         for (folder_id, uids) in by_folder {
+            if uids.is_empty() {
+                continue;
+            }
             let Some((account, folder)) = self.account_for_folder(folder_id) else {
                 continue;
             };
-            self.run_flag_worker(
-                FlagChange {
-                    account,
-                    folder_name: folder.name,
+            let op = PendingOp {
+                id: 0,
+                account_id: account.id,
+                folder_id,
+                folder: folder.name,
+                change: Change::Flag {
                     uids,
-                    flag,
-                    should_add,
+                    flag: flag.to_string(),
+                    add,
                 },
-                revert.clone(),
-            );
+            };
+            self.queue_change(&account, op);
         }
     }
 
@@ -289,61 +256,6 @@ impl MainWindow {
     fn after_flag_change(&self, keep_id: Option<i64>) {
         self.reload_folders();
         self.refresh_emails(keep_id);
-    }
-
-    fn run_flag_worker(&self, change: FlagChange, revert: Rc<dyn Fn()>) {
-        let job = change.clone();
-        workers::run(
-            move || -> Result<(), Option<String>> {
-                let Some(credential) = secrets::credential_for(&job.account) else {
-                    log::warn!("could not sign in to account {}", job.account.email);
-                    return Err(None);
-                };
-                sync::set_flag(
-                    &job.account,
-                    &credential,
-                    &job.folder_name,
-                    &job.uids,
-                    job.flag,
-                    job.should_add,
-                )
-                .map_err(|error| {
-                    log::error!(
-                        "could not set {} on {} message(s) in {} (account {}): {error}",
-                        job.flag,
-                        job.uids.len(),
-                        job.folder_name,
-                        job.account.email
-                    );
-                    Some(i18n::failure_message(&classify(
-                        &error,
-                        &job.account.imap_host,
-                    )))
-                })
-            },
-            glib::clone!(
-                #[weak(rename_to = window)]
-                self,
-                move |result: Result<(), Option<String>>| {
-                    // The row was already updated optimistically, so leaving
-                    // it would show a state the server never got.
-                    match result {
-                        Ok(()) => {}
-                        Err(None) => {
-                            revert();
-                            window.toast(&gettext("Could not sign in to this account."));
-                        }
-                        Err(Some(message)) => {
-                            revert();
-                            window.toast(&i18n::format(
-                                &gettext("Action failed: {msg}"),
-                                &[("msg", &message)],
-                            ));
-                        }
-                    }
-                }
-            ),
-        );
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.

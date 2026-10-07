@@ -1,19 +1,17 @@
 //! Archive, trash and move, with an undo window: the change is applied
-//! locally at once and the IMAP MOVE runs a few seconds later unless undone.
+//! locally at once and handed to the change queue a few seconds later unless
+//! undone. The queue runs the IMAP MOVE, and keeps it through being offline.
 
 use super::{MainWindow, MOVE_UNDO_MS};
 use crate::i18n::{self, gettext};
 use crate::objects::EmailObject;
-use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::{Account, Folder};
-use rustle_core::net::errors::classify;
-use rustle_core::sync::MoveResult;
-use rustle_core::{secrets, sync};
+use rustle_core::queue::{Change, PendingOp};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -300,20 +298,20 @@ impl MainWindow {
         let pending_moves = std::mem::take(&mut state.pending_moves);
         drop(state);
         for pending in pending_moves {
-            self.run_move_worker(pending);
+            self.queue_move(pending);
         }
     }
 
-    /// A newer action arrived: send the previous pending moves now instead
-    /// of waiting for their timer.
-    fn commit_pending_moves(&self) {
+    /// A newer action arrived, or the window is closing: send the previous
+    /// pending moves now instead of waiting for their timer.
+    pub(crate) fn commit_pending_moves(&self) {
         let toast = self.state().pending_toast.clone();
         let pending_moves = self.take_pending();
         if let Some(toast) = toast {
             toast.dismiss();
         }
         for pending in pending_moves {
-            self.run_move_worker(pending);
+            self.queue_move(pending);
         }
     }
 
@@ -346,16 +344,6 @@ impl MainWindow {
         }
     }
 
-    fn await_move_tombstones(&self, pending: &PendingMove, completed: usize) {
-        let mut state = self.state_mut();
-        for tombstone in pending.tombstones.iter().take(completed) {
-            if let Some(entry) = state.move_tombstones.get_mut(tombstone) {
-                entry.active -= 1;
-                entry.awaiting += 1;
-            }
-        }
-    }
-
     /// A newest-page sync says which UIDs the source still holds: any
     /// tombstone whose UID is gone has done its job.
     pub(super) fn confirm_move_tombstones(
@@ -377,105 +365,22 @@ impl MainWindow {
         }
     }
 
-    fn run_move_worker(&self, pending: PendingMove) {
-        let job = pending.clone();
-        workers::run(
-            move || -> Result<MoveResult, Option<String>> {
-                let Some(credential) = secrets::credential_for(&job.account) else {
-                    log::warn!("could not sign in to account {}", job.account.email);
-                    return Err(None);
-                };
-                sync::move_messages(
-                    &job.account,
-                    &credential,
-                    &job.source.name,
-                    &job.uids,
-                    &job.dest.name,
-                )
-                .map_err(|error| {
-                    log::error!(
-                        "could not move {} message(s) from {} to {} (account {}): {error}",
-                        job.uids.len(),
-                        job.source.name,
-                        job.dest.name,
-                        job.account.email
-                    );
-                    Some(i18n::failure_message(&classify(
-                        &error,
-                        &job.account.imap_host,
-                    )))
-                })
+    /// The undo window is over: hand the move to the change queue, which
+    /// keeps it until the server has it.
+    fn queue_move(&self, pending: PendingMove) {
+        let op = PendingOp {
+            id: 0,
+            account_id: pending.account.id,
+            folder_id: pending.source.id,
+            folder: pending.source.name.clone(),
+            change: Change::Move {
+                email_ids: pending.email_ids,
+                uids: pending.uids,
+                dest_id: pending.dest.id,
+                dest: pending.dest.name,
             },
-            glib::clone!(
-                #[weak(rename_to = window)]
-                self,
-                move |result: Result<MoveResult, Option<String>>| match result {
-                    Ok(result) => window.on_move_result(&pending, result),
-                    Err(None) => {
-                        // The messages were already moved locally, so they have to come back.
-                        window.restore_move(&pending);
-                        window.toast(&gettext("Could not sign in to this account."));
-                    }
-                    Err(Some(message)) => {
-                        window.restore_move(&pending);
-                        window.toast(&i18n::format(
-                            &gettext("Move failed: {msg}"),
-                            &[("msg", &message)],
-                        ));
-                    }
-                }
-            ),
-        );
-    }
-
-    fn on_move_result(&self, pending: &PendingMove, result: MoveResult) {
-        let completed = result.destination_uids.len();
-        self.await_move_tombstones(pending, completed);
-        let completed_moves: Vec<(i64, i64, Option<String>)> = pending
-            .email_ids
-            .iter()
-            .take(completed)
-            .zip(&result.destination_uids)
-            .map(|(id, uid)| (*id, pending.dest.id, uid.clone()))
-            .collect();
-        {
-            let db = self.db();
-            let mut db = db.borrow_mut();
-            if !completed_moves.is_empty() {
-                if let Err(error) = db.reconcile_moved_emails(&completed_moves) {
-                    log::error!(
-                        "could not reconcile {} moved message(s): {error}",
-                        completed_moves.len()
-                    );
-                }
-            }
-            let failed_index = result.failed_index.or(if completed < pending.uids.len() {
-                Some(completed)
-            } else {
-                None
-            });
-            if let Some(failed_index) = failed_index {
-                if let Err(error) = db.reconcile_moved_emails(&pending.originals[failed_index..]) {
-                    log::error!("could not restore the unmoved tail: {error}");
-                }
-                drop(db);
-                self.clear_move_tombstones(pending, failed_index);
-            }
-        }
-        self.reload_folders();
-        self.refresh_emails(None);
-        if let Some(error) = result.error {
-            log::warn!(
-                "move stopped after {completed} of {} message(s) from {} to {}: {error}",
-                pending.uids.len(),
-                pending.source.name,
-                pending.dest.name
-            );
-            self.toast(&i18n::format(
-                &gettext("Move failed: {msg}"),
-                &[("msg", &error)],
-            ));
-        }
+        };
+        self.queue_change(&pending.account, op);
     }
 
     /// A menu of every folder of the selection's account except the source,

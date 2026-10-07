@@ -151,7 +151,7 @@ impl MainWindow {
             self.state_mut().backfills.remove(&account.id);
             return;
         }
-        let result = match result {
+        let mut result = match result {
             Ok(result) => result,
             Err(_) => {
                 // Logged at the worker boundary. The next ordinary sync
@@ -188,19 +188,8 @@ impl MainWindow {
             }
             if let Some(target) = target {
                 fetched_folder = Some(target.id);
-                let tombstoned: HashSet<String> = {
-                    let state = self.state();
-                    state
-                        .move_tombstones
-                        .keys()
-                        .filter(|(folder_id, _)| *folder_id == target.id)
-                        .map(|(_, uid)| uid.clone())
-                        .collect()
-                };
+                self.guard_fetched(&db, target.id, &mut result.messages);
                 for message in &result.messages {
-                    if tombstoned.contains(&message.uid) {
-                        continue;
-                    }
                     match db.save_incoming_email(target.id, message) {
                         Ok(_) => saved += 1,
                         Err(error) => log::error!(
