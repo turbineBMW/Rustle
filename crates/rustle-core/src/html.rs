@@ -12,6 +12,20 @@ pub fn to_html(text: &str) -> String {
     escape(text).replace('\n', "<br>")
 }
 
+/// Plain text as the composer's editor writes it: a `<div>` per line, an
+/// empty line as `<div><br></div>`.
+pub fn to_editor_html(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                "<div><br></div>".to_string()
+            } else {
+                format!("<div>{}</div>", escape(line))
+            }
+        })
+        .collect()
+}
+
 /// Escape the characters that matter in text and attribute values.
 pub fn escape(text: &str) -> String {
     html_escape::encode_double_quoted_attribute(text).into_owned()
