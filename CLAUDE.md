@@ -65,6 +65,7 @@ crates/rustle/             the GTK layer
                account (manual) | online_accounts;  preferences;  src/composer.rs
   src/workers.rs  the threading model (below);  src/accent.rs  accent colour helpers
 data/                      gschema, desktop file, metainfo, D-Bus service, icons
+po/                        rustle.pot (`just pot` regenerates it) and <lang>.po; install.sh compiles them
 ```
 
 ## Rules

@@ -75,4 +75,14 @@ done
 install -Dm644 "data/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg" "$SHARE/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"
 gtk-update-icon-cache -q -t -f "$SHARE/icons/hicolor" 2>/dev/null || true
 update-desktop-database -q "$SHARE/applications" 2>/dev/null || true
+# Translations, when there are any: po/<lang>.po -> share/locale/<lang>/.
+if command -v msgfmt >/dev/null 2>&1; then
+  for po in po/*.po; do
+    [ -e "$po" ] || continue
+    lang=$(basename "$po" .po)
+    install -d "$SHARE/locale/$lang/LC_MESSAGES"
+    msgfmt -o "$SHARE/locale/$lang/LC_MESSAGES/rustle.mo" "$po"
+  done
+fi
+
 echo "Installed to $PREFIX. Run: $BIN/rustle"

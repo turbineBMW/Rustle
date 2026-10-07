@@ -11,10 +11,19 @@ pub fn init() {
     unsafe {
         setlocale(LocaleCategory::LcAll, "");
     }
-    // The locale directory of a system install; a checkout run simply has no
-    // translations, which gettext handles by returning the source string.
-    let _ = bindtextdomain(GETTEXT_DOMAIN, "/usr/share/locale");
+    let _ = bindtextdomain(GETTEXT_DOMAIN, locale_dir());
     let _ = textdomain(GETTEXT_DOMAIN);
+}
+
+/// Where install.sh put the translations: `share/locale` beside the `bin`
+/// the program runs from (~/.local by default, /usr system-wide). A
+/// checkout run finds none there and shows the source strings.
+fn locale_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("share/locale")))
+        .filter(|dir| dir.is_dir())
+        .unwrap_or_else(|| "/usr/share/locale".into())
 }
 
 /// `gettext` with `{name}` placeholders substituted, in a form that keeps the
