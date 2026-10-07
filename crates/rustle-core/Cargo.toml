@@ -13,6 +13,8 @@ phone = []
 [dependencies]
 log.workspace = true
 thiserror.workspace = true
+# Private files for gpg to verify a detached signature against (pgp.rs).
+tempfile = "3"
 chrono.workspace = true
 regex.workspace = true
 gio.workspace = true

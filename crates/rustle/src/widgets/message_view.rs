@@ -14,6 +14,7 @@ use rustle_core::darkmode;
 use rustle_core::invite::{Invitation, Response};
 use rustle_core::mime::{self, ParsedMessage, Unsubscribe};
 use rustle_core::models::{Account, Attachment, Email};
+use rustle_core::pgp;
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit::prelude::*;
@@ -298,11 +299,103 @@ impl MessageView {
             return;
         };
 
-        let parsed = mime::parse_message(&raw);
+        match pgp::detect(&raw) {
+            pgp::Protection::Encrypted | pgp::Protection::InlineEncrypted => {
+                self.decrypt_then_render(raw);
+            }
+            pgp::Protection::Signed => {
+                self.render(raw.clone(), &raw, None);
+                self.verify(raw);
+            }
+            pgp::Protection::None => self.render(raw.clone(), &raw, None),
+        }
+    }
+
+    /// Decrypt on a worker (gpg may wait for a passphrase), then show what
+    /// was inside -- held in memory only; the stored copy stays encrypted.
+    fn decrypt_then_render(&self, raw: Vec<u8>) {
+        let placeholder = gtk::Label::builder()
+            .label(gettext("Decrypting…"))
+            .margin_top(GUTTER)
+            .css_classes(["dim-label"])
+            .build();
+        self.body.append(&placeholder);
+        self.inner.borrow_mut().placeholder = Some(placeholder);
+        let job = raw.clone();
+        let this = self.clone();
+        crate::workers::run(
+            move || pgp::decrypt(&job).map_err(|error| error.to_string()),
+            move |result: Result<pgp::Decrypted, String>| {
+                {
+                    let mut inner = this.inner.borrow_mut();
+                    if inner.is_released {
+                        return;
+                    }
+                    if let Some(placeholder) = inner.placeholder.take() {
+                        this.body.remove(&placeholder);
+                    }
+                }
+                match result {
+                    Ok(decrypted) => {
+                        let note = pgp_note(true, decrypted.signature.as_ref());
+                        this.render(decrypted.raw, &raw, Some(note));
+                    }
+                    Err(message) => {
+                        log::warn!("could not decrypt an OpenPGP message: {message}");
+                        let note = (
+                            i18n::format(
+                                &gettext(
+                                    "This message is encrypted, and couldn't be decrypted: {msg}",
+                                ),
+                                &[("msg", &message)],
+                            ),
+                            true,
+                        );
+                        this.render(raw.clone(), &raw, Some(note));
+                    }
+                }
+            },
+        );
+    }
+
+    /// Check a signed message's signature on a worker, and say what it found.
+    fn verify(&self, raw: Vec<u8>) {
+        let this = self.clone();
+        crate::workers::run(
+            move || pgp::verify(&raw).map_err(|error| error.to_string()),
+            move |result: Result<pgp::SignatureStatus, String>| {
+                if this.inner.borrow().is_released {
+                    return;
+                }
+                let note = match result {
+                    Ok(status) => pgp_note(false, Some(&status)),
+                    Err(message) => {
+                        log::warn!("could not check an OpenPGP signature: {message}");
+                        (
+                            i18n::format(
+                                &gettext("This message is signed, but the signature couldn't be checked: {msg}"),
+                                &[("msg", &message)],
+                            ),
+                            true,
+                        )
+                    }
+                };
+                this.body.prepend(&pgp_banner(&note));
+            },
+        );
+    }
+
+    /// Show `shown` (the message, or what was decrypted out of it) while
+    /// `raw` -- what's stored, saved and shown as source -- stays as it came.
+    fn render(&self, shown: Vec<u8>, raw: &[u8], note: Option<(String, bool)>) {
+        let parsed = mime::parse_message(&shown);
         {
             let mut inner = self.inner.borrow_mut();
-            inner.raw = Some(raw);
+            inner.raw = Some(raw.to_vec());
             inner.parsed = Some(parsed.clone());
+        }
+        if let Some(note) = &note {
+            self.body.append(&pgp_banner(note));
         }
         self.show_recipients(&parsed);
         self.show_related();
@@ -753,6 +846,58 @@ impl MessageView {
         inner.raw = None;
         inner.parsed = None;
     }
+}
+
+/// What OpenPGP found, and whether it's a warning: (text, is_warning).
+fn pgp_note(was_encrypted: bool, signature: Option<&pgp::SignatureStatus>) -> (String, bool) {
+    let (signed, is_warning) = match signature {
+        None => (String::new(), false),
+        Some(pgp::SignatureStatus::Good {
+            signer,
+            is_trusted: true,
+        }) => (
+            i18n::format(&gettext("Signed by {signer}."), &[("signer", signer)]),
+            false,
+        ),
+        Some(pgp::SignatureStatus::Good {
+            signer,
+            is_trusted: false,
+        }) => (
+            i18n::format(
+                &gettext("Signed by {signer}, with a key you haven't confirmed is theirs."),
+                &[("signer", signer)],
+            ),
+            false,
+        ),
+        Some(pgp::SignatureStatus::Bad { .. }) => (
+            gettext("The signature doesn't match: the message changed after it was signed."),
+            true,
+        ),
+        Some(pgp::SignatureStatus::UnknownKey { key_id }) => (
+            i18n::format(
+                &gettext("Signed with a key you don't have ({key})."),
+                &[("key", key_id)],
+            ),
+            false,
+        ),
+    };
+    let text = match (was_encrypted, signed.is_empty()) {
+        (true, true) => gettext("Encrypted with OpenPGP."),
+        (true, false) => format!("{} {signed}", gettext("Encrypted with OpenPGP.")),
+        (false, _) => signed,
+    };
+    (text, is_warning)
+}
+
+fn pgp_banner((text, is_warning): &(String, bool)) -> adw::Banner {
+    let banner = adw::Banner::builder()
+        .title(text.as_str())
+        .revealed(true)
+        .build();
+    if *is_warning {
+        banner.add_css_class("unverified-banner");
+    }
+    banner
 }
 
 /// Scale a plain-text body the way WebKit zooms an HTML one.

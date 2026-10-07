@@ -85,8 +85,30 @@ impl Composer {
             });
             group.add_action(&action);
         }
+        for (name, is_encrypt) in [("pgp-sign", false), ("pgp-encrypt", true)] {
+            let action = gio::SimpleAction::new_stateful(name, None, &false.to_variant());
+            // Off until gpg has a key for the sender (checked below).
+            action.set_enabled(false);
+            let window = window.clone();
+            action.connect_change_state(move |action, state| {
+                let Some(on) = state.and_then(|s| s.get::<bool>()) else {
+                    return;
+                };
+                action.set_state(&on.to_variant());
+                if let Some(window) = window.upgrade() {
+                    let imp = window.imp();
+                    if is_encrypt {
+                        imp.pgp_encrypt.set(on);
+                    } else {
+                        imp.pgp_sign.set(on);
+                    }
+                }
+            });
+            group.add_action(&action);
+        }
         self.insert_action_group("composer", Some(&group));
         self.imp().tool_actions.replace(Some(group));
+        self.check_pgp_key();
         self.update_send_later();
         self.rebuild_more_menu();
 
@@ -146,6 +168,26 @@ impl Composer {
         );
         menu.append_section(None, &writing);
 
+        let has_pgp = self
+            .imp()
+            .tool_actions
+            .borrow()
+            .as_ref()
+            .and_then(|group| group.lookup_action("pgp-sign"))
+            .is_some_and(|action| action.is_enabled());
+        if has_pgp {
+            let pgp = gio::Menu::new();
+            pgp.append(
+                Some(&gettext("Sign with OpenPGP")),
+                Some("composer.pgp-sign"),
+            );
+            pgp.append(
+                Some(&gettext("Encrypt with OpenPGP")),
+                Some("composer.pgp-encrypt"),
+            );
+            menu.append_section(None, &pgp);
+        }
+
         let templates = gio::Menu::new();
         let saved = self.db().borrow().templates().unwrap_or_default();
         if !saved.is_empty() {
@@ -170,6 +212,43 @@ impl Composer {
         );
         menu.append_section(None, &templates);
         self.imp().more_button.set_menu_model(Some(&menu));
+    }
+
+    /// What OpenPGP does to this message on Send.
+    pub(super) fn protection(&self) -> rustle_core::compose::Protection {
+        let imp = self.imp();
+        rustle_core::compose::Protection {
+            sign: imp.pgp_sign.get(),
+            encrypt: imp.pgp_encrypt.get(),
+        }
+    }
+
+    /// Offer Sign and Encrypt once gpg is known to hold a secret key for
+    /// the sending address. Asked off the main thread: gpg starts its agent.
+    fn check_pgp_key(&self) {
+        let address = rustle_core::address::first_address(&self.account().email);
+        crate::workers::run(
+            move || rustle_core::pgp::is_available() && rustle_core::pgp::has_secret_key(&address),
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |has_key: bool| {
+                    let group = window.imp().tool_actions.borrow().clone();
+                    let Some(group) = group else { return };
+                    for name in ["pgp-sign", "pgp-encrypt"] {
+                        if let Some(action) = group
+                            .lookup_action(name)
+                            .and_downcast::<gio::SimpleAction>()
+                        {
+                            action.set_enabled(has_key);
+                        }
+                    }
+                    if has_key {
+                        window.rebuild_more_menu();
+                    }
+                }
+            ),
+        );
     }
 
     fn webview(&self) -> Option<webkit::WebView> {
