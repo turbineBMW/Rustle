@@ -276,6 +276,31 @@ impl ImapSession {
         Ok(())
     }
 
+    /// Upload a draft: `\Draft` so any client offers to finish it, `\Seen`
+    /// so it never counts as unread.
+    pub fn append_draft(&mut self, mailbox: &str, raw: &[u8]) -> Result<()> {
+        self.require()?
+            .append(mailbox, raw)
+            .flags([Flag::Draft, Flag::Seen])
+            .finish()?;
+        Ok(())
+    }
+
+    /// Remove messages from the selected (writable) mailbox for good. With
+    /// UIDPLUS only these go; a plain EXPUNGE also clears anything else
+    /// already marked deleted there, which is what it was marked for.
+    pub fn delete_uids(&mut self, uids: &str) -> Result<()> {
+        let has_uidplus = self.has_capability("UIDPLUS");
+        let session = self.require()?;
+        session.uid_store(uids, "+FLAGS (\\Deleted)")?;
+        if has_uidplus {
+            session.uid_expunge(uids)?;
+        } else {
+            session.expunge()?;
+        }
+        Ok(())
+    }
+
     /// Add or remove flags on a UID set: "7" or "7,9,20".
     pub fn store_flags(&mut self, uids: &str, flag: &str, should_add: bool) -> Result<()> {
         let command = if should_add { "+FLAGS" } else { "-FLAGS" };

@@ -1,5 +1,7 @@
 //! The composer: recipients, a contenteditable WebKit editor, attachments,
 //! and sending through the Outbox so a crash mid-send never loses a message.
+//! Closing it with something written asks whether to keep it as a draft in
+//! the account's Drafts mailbox.
 
 use crate::editor::{self, ColorKind, LinkInfo, FORMAT_COMMANDS};
 use crate::i18n::{self, gettext};
@@ -34,6 +36,27 @@ pub struct Draft {
     pub bcc: String,
     pub subject: String,
     pub body_html: String,
+    pub attachments: Vec<Attachment>,
+    /// Set when the composer is finishing a saved draft.
+    pub resumed: Option<ResumedDraft>,
+}
+
+/// A saved draft being finished: the row it was opened from, and the
+/// Message-ID its server copies carry, by which they are replaced or removed.
+#[derive(Clone, Debug)]
+pub struct ResumedDraft {
+    pub email_id: i64,
+    pub account_id: i64,
+    pub message_id: String,
+}
+
+/// What the fields hold, to tell whether anything was written since the
+/// composer opened.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Snapshot {
+    fields: [String; 4],
+    body: String,
+    attachments: usize,
 }
 
 /// A drop-down of known addresses under one recipient row. Gtk.EntryCompletion
@@ -272,6 +295,14 @@ mod imp {
         /// Bumped by every request to the assistant, so a late answer to an
         /// older one is dropped.
         pub assist_generation: Cell<u64>,
+        /// The Message-ID every save of this draft carries, so each save
+        /// replaces the copy the last one left.
+        pub message_id: RefCell<String>,
+        pub resumed: RefCell<Option<ResumedDraft>>,
+        /// What the fields held when it opened: closing unchanged asks nothing.
+        pub(super) opened_with: RefCell<Snapshot>,
+        /// Set once it is closing for good, so its window closes unasked.
+        pub is_done: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -296,11 +327,19 @@ mod imp {
             // finished: the message was sent, queued or saved as a draft, so
             // the folders changed. closed: the host should take it away.
             // pop-out: the inline composer asks for a window of its own.
+            // notice: something for the host to tell the user once the
+            // composer has gone, such as a draft that stayed on this device.
             SIGNALS.get_or_init(|| {
-                ["finished", "closed", "pop-out"]
+                let mut signals: Vec<_> = ["finished", "closed", "pop-out"]
                     .into_iter()
                     .map(|name| glib::subclass::Signal::builder(name).build())
-                    .collect()
+                    .collect();
+                signals.push(
+                    glib::subclass::Signal::builder("notice")
+                        .param_types([String::static_type()])
+                        .build(),
+                );
+                signals
             })
         }
 
@@ -342,6 +381,20 @@ pub fn present_in_window(app: Option<&gtk::Application>, composer: &Composer) ->
         window,
         move |_| window.close()
     ));
+    // The window's own close (a key, the compositor) asks like Cancel does.
+    window.connect_close_request(glib::clone!(
+        #[weak]
+        composer,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_| {
+            if composer.may_close() {
+                glib::Propagation::Proceed
+            } else {
+                glib::Propagation::Stop
+            }
+        }
+    ));
     window.present();
     composer.focus_first_field();
     window
@@ -364,6 +417,17 @@ impl Composer {
         imp.bcc_row.set_text(&draft.bcc);
         imp.subject_row.set_text(&draft.subject);
         window.build_editor();
+        for attachment in draft.attachments {
+            window.add_attachment(attachment);
+        }
+        let message_id = draft
+            .resumed
+            .as_ref()
+            .map(|resumed| resumed.message_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| compose::new_message_id(&account.email));
+        imp.message_id.replace(message_id);
+        imp.resumed.replace(draft.resumed);
 
         imp.cancel_button.connect_clicked(glib::clone!(
             #[weak]
@@ -415,6 +479,7 @@ impl Composer {
             .map(|row| AddressSuggestions::attach(row, known.clone()))
             .collect();
         imp.suggestions.replace(suggestions);
+        imp.opened_with.replace(window.snapshot());
         window
     }
 
@@ -439,6 +504,7 @@ impl Composer {
                 bcc: mailto.bcc,
                 subject: mailto.subject,
                 body_html,
+                ..Draft::default()
             },
         )
     }
@@ -453,6 +519,14 @@ impl Composer {
 
     pub fn connect_pop_out(&self, callback: impl Fn(&Self) + 'static) {
         self.connect_signal("pop-out", callback);
+    }
+
+    pub fn connect_notice(&self, callback: impl Fn(&str) + 'static) {
+        self.connect_local("notice", false, move |values| {
+            let text = values[1].get::<String>().expect("the notice text");
+            callback(&text);
+            None
+        });
     }
 
     fn connect_signal(&self, name: &str, callback: impl Fn(&Self) + 'static) {
@@ -487,6 +561,20 @@ impl Composer {
     /// Whether closing it now would lose anything.
     pub fn is_blank(&self) -> bool {
         !self.has_content()
+    }
+
+    /// Its window is being closed: true when nothing would be lost. Otherwise
+    /// it asks what to do with what was written, and closes itself after.
+    pub fn may_close(&self) -> bool {
+        let imp = self.imp();
+        if imp.is_done.get() || !self.is_changed() {
+            return true;
+        }
+        // Mid-send, the send closes it when it is through.
+        if imp.cancel_button.is_sensitive() {
+            self.ask_to_save();
+        }
+        false
     }
 
     fn db(&self) -> Rc<RefCell<Database>> {
@@ -1461,47 +1549,260 @@ impl Composer {
 
     // --- cancel / save draft ----------------------------------------------
 
+    fn snapshot(&self) -> Snapshot {
+        let imp = self.imp();
+        Snapshot {
+            fields: [&imp.to_row, &imp.cc_row, &imp.bcc_row, &imp.subject_row]
+                .map(|row| row.text().trim().to_string()),
+            body: self.preview_text(),
+            attachments: imp.attachments.borrow().len(),
+        }
+    }
+
+    /// Whether anything was written since it opened. A reply nobody typed
+    /// in, or a draft reopened and left alone, closes without asking.
+    fn is_changed(&self) -> bool {
+        self.has_content() && self.snapshot() != *self.imp().opened_with.borrow()
+    }
+
     fn on_cancel_clicked(&self) {
-        if self.has_content() {
-            let account = self.account();
-            let subject = self.imp().subject_row.text().trim().to_string();
-            let raw = compose::build_mime_message(
-                &account.email,
-                &self.to_addrs(),
-                &self.cc_addrs(),
-                &subject,
-                &self.imp().body_html.borrow(),
-                &self.attachments(),
-            );
+        if self.is_changed() {
+            self.ask_to_save();
+        } else {
+            self.close();
+        }
+    }
+
+    /// Closing with something written: keep it as a draft, or throw it away.
+    fn ask_to_save(&self) {
+        let is_resumed = self.imp().resumed.borrow().is_some();
+        let (heading, body, delete) = if is_resumed {
+            (
+                gettext("Save Changes to Draft?"),
+                gettext("The draft in this account's Drafts folder will be updated."),
+                gettext("Delete Draft"),
+            )
+        } else {
+            (
+                gettext("Save as Draft?"),
+                gettext(
+                    "The message will be kept in this account's Drafts folder to finish later.",
+                ),
+                gettext("Delete"),
+            )
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading(heading)
+            .body(body)
+            .build();
+        dialog.add_response("keep", &gettext("Keep Editing"));
+        dialog.add_response("delete", &delete);
+        dialog.add_response("save", &gettext("Save Draft"));
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("keep");
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_, response| match response {
+                    "save" => window.save_draft(),
+                    "delete" => window.delete_draft(),
+                    _ => {}
+                }
+            ),
+        );
+        dialog.present(Some(self));
+    }
+
+    /// Keep it in the account's Drafts: in the database at once, so it is
+    /// never lost, then on the server from a worker, replacing the copy an
+    /// earlier save left there.
+    fn save_draft(&self) {
+        let account = self.account();
+        let raw = match self.build_raw(&account, true) {
+            Ok(raw) => raw,
+            Err(error) => {
+                log::error!("could not build the draft for {}: {error}", account.email);
+                self.imp()
+                    .toast_overlay
+                    .add_toast(adw::Toast::new(&i18n::format(
+                        &gettext("Couldn't save the draft: {msg}"),
+                        &[("msg", &error.to_string())],
+                    )));
+                return;
+            }
+        };
+        let message_id = self.imp().message_id.borrow().clone();
+        let subject = self.imp().subject_row.text().trim().to_string();
+        let subject = if subject.is_empty() {
+            NO_SUBJECT.to_string()
+        } else {
+            subject
+        };
+        let resumed = self.imp().resumed.take();
+        let saved = {
             let db = self.db();
             let db = db.borrow();
-            let saved = db
-                .get_or_create_folder(
-                    account.id,
-                    folders::DRAFTS_FOLDER,
-                    folders::icon_for_folder(folders::DRAFTS_FOLDER),
-                )
-                .and_then(|folder| {
-                    let subject = if subject.is_empty() {
-                        NO_SUBJECT.to_string()
-                    } else {
-                        subject
-                    };
-                    let row = db.save_email(
-                        folder.id,
-                        &self.local_header(&self.recipients_display(), &subject),
-                    )?;
-                    if let Ok(raw) = &raw {
-                        db.save_raw_message(row.id, raw)?;
-                    }
-                    Ok(())
-                });
-            if let Err(error) = saved {
-                log::error!("could not save the draft for {}: {error}", account.email);
+            if let Some(resumed) = &resumed {
+                // The new copy takes its place, here and on the server.
+                if let Err(error) = db.delete_email(resumed.email_id) {
+                    log::warn!("could not remove the earlier copy of a draft: {error}");
+                }
             }
-            self.emit_by_name::<()>("finished", &[]);
+            db.drafts_folder(account.id).and_then(|folder| {
+                let mut header = self.local_header(&self.recipients_display(), &subject);
+                header.message_id = message_id.clone();
+                let row = db.save_email(folder.id, &header)?;
+                db.save_raw_message(row.id, &raw)?;
+                Ok((row.id, folder.name))
+            })
+        };
+        let (email_id, folder_name) = match saved {
+            Ok(saved) => saved,
+            Err(error) => {
+                log::error!("could not save the draft for {}: {error}", account.email);
+                self.imp()
+                    .toast_overlay
+                    .add_toast(adw::Toast::new(&i18n::format(
+                        &gettext("Couldn't save the draft: {msg}"),
+                        &[("msg", &error.to_string())],
+                    )));
+                return;
+            }
+        };
+        // Reopened from one account and saved from another: the old
+        // account's copy goes.
+        let moved_from = resumed
+            .filter(|resumed| resumed.account_id != account.id)
+            .and_then(|resumed| self.account_by_id(resumed.account_id));
+        // Strong: the composer has gone by the time the server answers,
+        // and its host still hears what became of the draft.
+        let composer = self.clone();
+        workers::run(
+            move || {
+                if let Some(old) = &moved_from {
+                    discard_draft_job(old, &message_id);
+                }
+                save_draft_job(&account, &raw, &message_id)
+            },
+            move |result| composer.on_draft_saved(result, email_id, &folder_name),
+        );
+        self.finish();
+    }
+
+    fn on_draft_saved(
+        &self,
+        result: Result<Option<sync::SavedDraft>, String>,
+        email_id: i64,
+        folder_name: &str,
+    ) {
+        let saved = match result {
+            Ok(Some(saved)) => saved,
+            Ok(None) => {
+                self.notice(&gettext(
+                    "This account has no Drafts folder on the server, so the draft is kept on this device only.",
+                ));
+                return;
+            }
+            Err(message) => {
+                self.notice(&i18n::format(
+                    &gettext(
+                        "Couldn't save the draft to the server: {msg}. It is kept on this device.",
+                    ),
+                    &[("msg", &message)],
+                ));
+                return;
+            }
+        };
+        // The row becomes the server copy, which the next sync then finds.
+        // Filed in a stand-in folder before the folder list synced, it gives
+        // way to the server copy instead.
+        let db = self.db();
+        let db = db.borrow();
+        let adopted = match saved.uid {
+            _ if saved.mailbox != folder_name => db.delete_email(email_id),
+            Some(uid) => db.adopt_server_uid(email_id, &uid),
+            None => Ok(()),
+        };
+        if let Err(error) = adopted {
+            log::warn!("could not match the draft to its server copy: {error}");
         }
+    }
+
+    /// Throw it away, and with it the saved draft it was finishing.
+    fn delete_draft(&self) {
+        if let Some(resumed) = self.imp().resumed.take() {
+            if let Err(error) = self.db().borrow().delete_email(resumed.email_id) {
+                log::warn!("could not delete a draft: {error}");
+            }
+            if let Some(account) = self.account_by_id(resumed.account_id) {
+                let message_id = resumed.message_id;
+                workers::run(move || discard_draft_job(&account, &message_id), |()| {});
+            }
+            self.finish();
+            return;
+        }
+        self.close();
+    }
+
+    /// It is going for good: sent, saved, thrown away or never written in.
+    fn close(&self) {
+        self.imp().is_done.set(true);
         self.emit_by_name::<()>("closed", &[]);
+    }
+
+    /// Close, then tell the host the folders changed. Closed first: the
+    /// refresh may move the selection, which would pop an inline composer
+    /// still there out into a window.
+    fn finish(&self) {
+        self.close();
+        self.emit_by_name::<()>("finished", &[]);
+    }
+
+    fn notice(&self, text: &str) {
+        self.emit_by_name::<()>("notice", &[&text.to_string()]);
+    }
+
+    fn account_by_id(&self, account_id: i64) -> Option<Account> {
+        self.imp()
+            .accounts
+            .borrow()
+            .iter()
+            .find(|account| account.id == account_id)
+            .cloned()
+    }
+
+    /// The message as it stands: for the wire, or as a draft, which keeps
+    /// its Bcc and whatever the address fields hold so far.
+    fn build_raw(
+        &self,
+        account: &Account,
+        is_draft: bool,
+    ) -> Result<Vec<u8>, compose::ComposeError> {
+        let imp = self.imp();
+        let (to, cc, bcc) = (self.to_addrs(), self.cc_addrs(), self.bcc_addrs());
+        let subject = imp.subject_row.text().trim().to_string();
+        let body_html = imp.body_html.borrow();
+        let attachments = self.attachments();
+        let message_id = imp.message_id.borrow();
+        let message = compose::Outgoing {
+            from: &account.email,
+            to: &to,
+            cc: &cc,
+            bcc: &bcc,
+            subject: &subject,
+            body_html: &body_html,
+            attachments: &attachments,
+            message_id: Some(&message_id),
+        };
+        if is_draft {
+            compose::build_draft_message(&message)
+        } else {
+            compose::build_mime_message(&message)
+        }
     }
 
     // --- send -------------------------------------------------------------
@@ -1526,14 +1827,7 @@ impl Composer {
             log::warn!("could not remember the recipients: {error}");
         }
 
-        let raw = match compose::build_mime_message(
-            &account.email,
-            &to_addrs,
-            &cc_addrs,
-            &subject,
-            &self.imp().body_html.borrow(),
-            &self.attachments(),
-        ) {
+        let raw = match self.build_raw(&account, false) {
             Ok(raw) => raw,
             Err(error) => {
                 self.imp()
@@ -1584,13 +1878,28 @@ impl Composer {
             }
         };
 
+        // Finishing a saved draft: the Outbox holds the message now, so the
+        // draft goes, here at once and on the server once the send has run.
+        let finished_draft = self.imp().resumed.take().map(|resumed| {
+            if let Err(error) = self.db().borrow().delete_email(resumed.email_id) {
+                log::warn!("could not remove the draft being sent: {error}");
+            }
+            (self.account_by_id(resumed.account_id), resumed.message_id)
+        });
+
         self.set_sending(true);
         let job_account = account.clone();
         let job_raw = raw.clone();
         let job_recipients = recipients.clone();
         let job_subject = subject.clone();
         workers::run(
-            move || send_job(&job_account, &job_subject, &job_recipients, &job_raw),
+            move || {
+                let sent = send_job(&job_account, &job_subject, &job_recipients, &job_raw);
+                if let Some((Some(draft_account), message_id)) = &finished_draft {
+                    discard_draft_job(draft_account, message_id);
+                }
+                sent
+            },
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
@@ -1620,8 +1929,7 @@ impl Composer {
             );
         }
         drop(db);
-        self.emit_by_name::<()>("finished", &[]);
-        self.emit_by_name::<()>("closed", &[]);
+        self.finish();
     }
 
     fn on_send_failed(&self, message: &str) {
@@ -1632,8 +1940,7 @@ impl Composer {
                 &gettext("Couldn't send: {msg}. Saved to Outbox."),
                 &[("msg", message)],
             )));
-        self.emit_by_name::<()>("finished", &[]);
-        self.emit_by_name::<()>("closed", &[]);
+        self.finish();
     }
 
     fn set_sending(&self, is_sending: bool) {
@@ -1702,4 +2009,40 @@ fn send_job(
             i18n::failure_message(&classify(&error, &account.smtp_host))
         },
     )
+}
+
+/// Runs on the worker thread: file a draft on the server.
+fn save_draft_job(
+    account: &Account,
+    raw: &[u8],
+    message_id: &str,
+) -> Result<Option<sync::SavedDraft>, String> {
+    let Some(credential) = secrets::credential_for(account) else {
+        log::warn!("could not sign in to account {}", account.email);
+        return Err(gettext("Could not sign in to this account."));
+    };
+    sync::save_draft(account, &credential, raw, message_id).map_err(|error: NetError| {
+        log::error!(
+            "could not save a draft to Drafts on {} (account {}): {error}",
+            account.imap_host,
+            account.email
+        );
+        i18n::failure_message(&classify(&error, &account.imap_host))
+    })
+}
+
+/// Runs on the worker thread: remove a draft's server copies. Nobody is
+/// waiting on this, so a failure is only logged.
+fn discard_draft_job(account: &Account, message_id: &str) {
+    let Some(credential) = secrets::credential_for(account) else {
+        log::warn!("could not sign in to account {}", account.email);
+        return;
+    };
+    if let Err(error) = sync::discard_draft(account, &credential, message_id) {
+        log::error!(
+            "could not delete a draft from Drafts on {} (account {}): {error}",
+            account.imap_host,
+            account.email
+        );
+    }
 }

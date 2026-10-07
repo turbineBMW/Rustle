@@ -4,9 +4,10 @@
 use crate::address::{self, Mailbox};
 use crate::html::{escape, html_to_text, to_html};
 use crate::models::Attachment;
-use lettre::message::header::ContentType;
+use lettre::address::Envelope;
+use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::{
-    Attachment as LettreAttachment, Mailbox as LettreMailbox, MultiPart, SinglePart,
+    Attachment as LettreAttachment, Mailbox as LettreMailbox, MessageBuilder, MultiPart, SinglePart,
 };
 use lettre::Message;
 use percent_encoding::percent_decode_str;
@@ -162,29 +163,114 @@ fn extract_inline_images(html: &str) -> (String, Vec<InlineImage>) {
     (html.into_owned(), images)
 }
 
+/// What goes into an outgoing message. `bcc` is only written into a draft:
+/// on a message being sent it belongs on the envelope.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Outgoing<'a> {
+    pub from: &'a str,
+    pub to: &'a [String],
+    pub cc: &'a [String],
+    pub bcc: &'a [String],
+    pub subject: &'a str,
+    pub body_html: &'a str,
+    pub attachments: &'a [Attachment],
+    /// The Message-ID header, angle brackets included; None makes one up.
+    pub message_id: Option<&'a str>,
+}
+
 /// The raw message bytes for the wire: text and HTML alternatives, inline
 /// images the HTML refers to, plus any attachments. Bcc is never written
 /// into it -- that goes on the envelope.
-pub fn build_mime_message(
-    from_addr: &str,
-    to_addrs: &[String],
-    cc_addrs: &[String],
-    subject: &str,
-    body_html: &str,
-    attachments: &[Attachment],
-) -> Result<Vec<u8>, ComposeError> {
-    let mut builder = Message::builder()
-        .from(lettre_mailbox(from_addr)?)
-        .subject(subject)
-        .date_now();
-    for to in to_addrs {
-        builder = builder.to(lettre_mailbox(to)?);
-    }
-    for cc in cc_addrs {
-        builder = builder.cc(lettre_mailbox(cc)?);
-    }
+pub fn build_mime_message(message: &Outgoing) -> Result<Vec<u8>, ComposeError> {
+    build_message(message, false)
+}
 
-    let (body_html, images) = extract_inline_images(body_html);
+/// A draft, for the Drafts mailbox: the same message, with its Bcc kept so
+/// whoever finishes it still has the addresses.
+pub fn build_draft_message(message: &Outgoing) -> Result<Vec<u8>, ComposeError> {
+    build_message(message, true)
+}
+
+/// A draft's recipients as typed. A half-written address is normal in a
+/// draft and must not stop it being saved, so a list that doesn't parse
+/// goes in as plain header text.
+fn draft_recipients(
+    builder: MessageBuilder,
+    name: &'static str,
+    texts: &[String],
+) -> MessageBuilder {
+    if texts.is_empty() {
+        return builder;
+    }
+    let mailboxes: Result<Vec<LettreMailbox>, _> =
+        texts.iter().map(|text| lettre_mailbox(text)).collect();
+    match mailboxes {
+        Ok(mailboxes) => mailboxes
+            .into_iter()
+            .fold(builder, |builder, mailbox| match name {
+                "To" => builder.to(mailbox),
+                "Cc" => builder.cc(mailbox),
+                _ => builder.bcc(mailbox),
+            }),
+        Err(_) => builder.raw_header(HeaderValue::new(
+            HeaderName::new_from_ascii_str(name),
+            texts.join(", "),
+        )),
+    }
+}
+
+/// A fresh Message-ID for a draft, kept across saves so each save can
+/// replace the copy before it.
+pub fn new_message_id(from_addr: &str) -> String {
+    let domain = address::first_address(from_addr)
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.to_string())
+        .filter(|domain| !domain.is_empty())
+        .unwrap_or_else(|| "rustle".to_string());
+    format!("<{}@{domain}>", uuid::Uuid::new_v4().simple())
+}
+
+/// The part of a stored HTML body the editor can take: what is inside
+/// <body> when the message is a whole document, otherwise all of it.
+pub fn editable_body(html: &str) -> String {
+    static BODY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?is)<body\b[^>]*>(.*?)(?:</body\s*>|$)").unwrap()
+    });
+    match BODY.captures(html) {
+        Some(captures) => captures[1].trim().to_string(),
+        None => html.trim().to_string(),
+    }
+}
+
+fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeError> {
+    let from = lettre_mailbox(message.from)?;
+    let mut builder = Message::builder()
+        .from(from.clone())
+        .subject(message.subject)
+        .date_now();
+    if let Some(id) = message.message_id {
+        builder = builder.message_id(Some(id.to_string()));
+    }
+    if is_draft {
+        // A draft goes nowhere, so its envelope is a formality, and one
+        // with no recipient yet is still a draft.
+        builder = builder
+            .envelope(Envelope::new(Some(from.email.clone()), vec![from.email])?)
+            .keep_bcc();
+        builder = draft_recipients(builder, "To", message.to);
+        builder = draft_recipients(builder, "Cc", message.cc);
+        builder = draft_recipients(builder, "Bcc", message.bcc);
+    } else {
+        for to in message.to {
+            builder = builder.to(lettre_mailbox(to)?);
+        }
+        for cc in message.cc {
+            builder = builder.cc(lettre_mailbox(cc)?);
+        }
+    }
+    let attachments = message.attachments;
+
+    let (body_html, images) = extract_inline_images(message.body_html);
     let alternative = MultiPart::alternative_plain_html(html_to_text(&body_html), body_html);
     let body = if images.is_empty() {
         alternative
@@ -419,18 +505,20 @@ mod tests {
 
     #[test]
     fn builds_and_reads_back() {
-        let raw = build_mime_message(
-            "me@example.com",
-            &["Ada <ada@example.com>".into()],
-            &["bob@example.org".into()],
-            "Hello",
-            "<div>Hi <b>there</b></div>",
-            &[Attachment {
+        let raw = build_mime_message(&Outgoing {
+            from: "me@example.com",
+            to: &["Ada <ada@example.com>".into()],
+            cc: &["bob@example.org".into()],
+            bcc: &["hidden@example.org".into()],
+            subject: "Hello",
+            body_html: "<div>Hi <b>there</b></div>",
+            attachments: &[Attachment {
                 filename: "a.txt".into(),
                 mime_type: "text/plain".into(),
                 content: b"x".to_vec(),
             }],
-        )
+            message_id: None,
+        })
         .unwrap();
         let text = String::from_utf8_lossy(&raw);
         assert!(text.contains("Subject: Hello"));
@@ -441,7 +529,58 @@ mod tests {
             extract_recipients(&raw),
             vec!["ada@example.com", "bob@example.org"]
         );
-        assert!(build_mime_message("nonsense", &[], &[], "s", "", &[]).is_err());
+        assert!(!text.contains("hidden@example.org"));
+        let nonsense = Outgoing {
+            from: "nonsense",
+            ..Outgoing::default()
+        };
+        assert!(build_mime_message(&nonsense).is_err());
+    }
+
+    #[test]
+    fn drafts_keep_bcc_and_their_message_id() {
+        let id = new_message_id("Me <me@example.com>");
+        assert!(id.starts_with('<') && id.ends_with("@example.com>"));
+        assert_ne!(id, new_message_id("me@example.com"));
+        assert!(new_message_id("").ends_with("@rustle>"));
+
+        let raw = build_draft_message(&Outgoing {
+            from: "me@example.com",
+            to: &["ada@example.com".into()],
+            bcc: &["hidden@example.org".into()],
+            subject: "Later",
+            body_html: "<div>half a thought</div>",
+            message_id: Some(&id),
+            ..Outgoing::default()
+        })
+        .unwrap();
+        let parsed = crate::mime::parse_message(&raw);
+        assert_eq!(parsed.bcc, vec!["hidden@example.org"]);
+        assert_eq!(parsed.message_id, id);
+        assert_eq!(parsed.subject, "Later");
+
+        // Nobody to send it to yet, or an address still being typed.
+        let raw = build_draft_message(&Outgoing {
+            from: "me@example.com",
+            cc: &["ada@exa".into(), "bob".into()],
+            ..Outgoing::default()
+        })
+        .unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("Cc: ada@exa, bob"), "{text}");
+        assert!(!text.contains("To:"));
+    }
+
+    #[test]
+    fn editable_body_unwraps_a_whole_document() {
+        assert_eq!(editable_body("<div>hi</div>"), "<div>hi</div>");
+        assert_eq!(
+            editable_body(
+                "<html><head><style>p{}</style></head><BODY class=x>\n<p>hi</p>\n</body></html>"
+            ),
+            "<p>hi</p>"
+        );
+        assert_eq!(editable_body("<html><body><p>cut short"), "<p>cut short");
     }
 
     #[test]
@@ -459,18 +598,18 @@ mod tests {
         // Undecodable data stays put rather than being dropped.
         assert!(html.contains("data:image/gif;base64,not base64!"));
 
-        let raw = build_mime_message(
-            "me@example.com",
-            &["ada@example.com".into()],
-            &[],
-            "Pic",
-            "<div><img src=\"data:image/png;base64,AQID\"></div>",
-            &[Attachment {
+        let raw = build_mime_message(&Outgoing {
+            from: "me@example.com",
+            to: &["ada@example.com".into()],
+            subject: "Pic",
+            body_html: "<div><img src=\"data:image/png;base64,AQID\"></div>",
+            attachments: &[Attachment {
                 filename: "a.txt".into(),
                 mime_type: "text/plain".into(),
                 content: b"x".to_vec(),
             }],
-        )
+            ..Outgoing::default()
+        })
         .unwrap();
         let text = String::from_utf8_lossy(&raw);
         assert!(text.contains("multipart/mixed"));

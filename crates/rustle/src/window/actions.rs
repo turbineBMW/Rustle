@@ -50,7 +50,7 @@ fn register(
 
 impl MainWindow {
     pub(super) fn setup_actions(&self) {
-        let plain: [(&str, ActionHandler); 12] = [
+        let plain: [(&str, ActionHandler); 13] = [
             ("toggle-read", |w| w.on_toggle_read()),
             ("toggle-star", |w| w.on_toggle_star()),
             ("toggle-pin", |w| w.on_toggle_pin()),
@@ -60,6 +60,7 @@ impl MainWindow {
             ("reply", |w| w.open_reply(false)),
             ("reply-all", |w| w.open_reply(true)),
             ("forward", |w| w.open_forward()),
+            ("edit-draft", |w| w.edit_draft()),
             ("refresh", |w| w.on_refresh_clicked()),
             ("search", |w| w.on_search_action()),
             ("manage-accounts", |w| w.on_manage_accounts()),

@@ -298,6 +298,15 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                         }
                       }
 
+                      // Only on a message in a Drafts folder.
+                      [start]
+                      Gtk.Button edit_draft_button {
+                        icon-name: "document-edit-symbolic";
+                        tooltip-text: _("Edit Draft");
+                        action-name: "win.edit-draft";
+                        visible: false;
+                      }
+
                       [start]
                       Gtk.Box {
                         styles ["linked"]
