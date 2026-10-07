@@ -5,6 +5,8 @@ mod account_colors;
 mod account_pictures;
 mod application;
 mod avatar_loader;
+#[cfg(feature = "graph")]
+mod bridge;
 mod composer;
 mod config;
 mod dialogs;
@@ -47,8 +49,10 @@ fn main() -> glib::ExitCode {
 /// but nothing stops a `{:?}` of a whole request struct that carries one.
 fn configure_logging() {
     let level = std::env::var("RUSTLE_LOG").unwrap_or_else(|_| "warn".to_string());
+    // The D-Bus library's internals reach the log through tracing; they're
+    // noise unless asked for by name (RUSTLE_LOG=zbus=debug still works).
     env_logger::Builder::new()
-        .parse_filters(&level)
+        .parse_filters(&format!("zbus=warn,tracing=warn,{level}"))
         .format_timestamp_secs()
         .init();
 }

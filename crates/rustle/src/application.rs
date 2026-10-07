@@ -63,6 +63,10 @@ mod imp {
             self.parent_startup();
             let app = self.obj();
             app.open_database();
+            // Before the first sync, so a bridged account's loopback
+            // server is up when it's first asked for mail.
+            #[cfg(feature = "graph")]
+            crate::bridge::start_if_needed();
             editor::follow_spell_check(&app.settings());
             let _ = self.media_activity.set(MediaActivity::new());
             app.load_css();
