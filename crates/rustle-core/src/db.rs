@@ -888,6 +888,19 @@ impl Database {
         Ok(removed)
     }
 
+    /// Remove the rows of some server messages: ones the server now holds
+    /// as marked \Deleted.
+    pub fn delete_server_emails(&self, folder_id: i64, uids: &[String]) -> Result<usize> {
+        let mut statement = self
+            .conn
+            .prepare("DELETE FROM emails WHERE folder_id = ?1 AND server_id = ?2")?;
+        let mut removed = 0;
+        for uid in uids {
+            removed += statement.execute(params![folder_id, uid])?;
+        }
+        Ok(removed)
+    }
+
     /// Individual emails across folders, pinned first and then newest first.
     pub fn emails_in_folders(&self, folder_ids: &[i64]) -> Result<Vec<Email>> {
         if folder_ids.is_empty() {
@@ -2138,6 +2151,32 @@ mod tests {
         let id = db.emails_in_folders(&[inbox.id]).unwrap()[1].id;
         db.set_email_pinned(id, true).unwrap();
         assert_eq!(subjects(&db), vec!["Old", "New"]);
+    }
+
+    #[test]
+    fn deleted_server_mail_leaves_the_folder_and_its_count() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let other = db.get_or_create_folder(account.id, "Archive", "a").unwrap();
+        for folder in [inbox.id, other.id] {
+            for uid in ["1", "2"] {
+                db.save_incoming_email(folder, &header(uid, "Hi", "2026-01-01T00:00:00Z", "Ada"))
+                    .unwrap();
+            }
+        }
+        assert_eq!(db.unread_count_in_folder(inbox.id).unwrap(), 2);
+        assert_eq!(
+            db.delete_server_emails(inbox.id, &["2".into(), "9".into()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.uids_in_folder(inbox.id).unwrap(),
+            HashSet::from(["1".to_string()])
+        );
+        assert_eq!(db.unread_count_in_folder(inbox.id).unwrap(), 1);
+        assert_eq!(db.uids_in_folder(other.id).unwrap().len(), 2, "per folder");
     }
 
     #[test]

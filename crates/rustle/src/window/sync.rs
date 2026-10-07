@@ -347,6 +347,9 @@ impl MainWindow {
                     log::error!("could not prune {}: {error}", target.name);
                 }
             }
+            if let Err(error) = db.delete_server_emails(target.id, &result.deleted_uids) {
+                log::error!("could not drop deleted mail from {}: {error}", target.name);
+            }
             // From every fetched header, not just the newly added ones, so an
             // existing install fills its contacts on the next sync.
             let addresses: Vec<(String, String)> = result
@@ -369,7 +372,7 @@ impl MainWindow {
         // and offer "more" only while messages remain beyond it.
         {
             let mut state = self.state_mut();
-            let reached = result.offset + result.messages.len() as u32;
+            let reached = result.offset + result.fetched;
             let loaded = result.exists.min(
                 state
                     .loaded_counts

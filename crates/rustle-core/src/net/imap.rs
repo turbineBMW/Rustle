@@ -73,6 +73,8 @@ pub struct FetchedHeader {
     pub is_seen: bool,
     pub is_flagged: bool,
     pub is_pinned: bool,
+    /// Marked \Deleted: waiting for an expunge, gone as far as we show.
+    pub is_deleted: bool,
     /// A snippet of the body, already decoded; empty when the server sent none.
     pub preview: String,
     /// The start of the body as text, for the search index: the same 4 KiB
@@ -459,9 +461,11 @@ impl ImapSession {
         Ok(())
     }
 
-    /// Every UID in the currently selected mailbox.
-    pub fn search_all_uids(&mut self) -> Result<HashSet<String>> {
-        let uids = self.command(|session| session.uid_search("ALL"))?;
+    /// Every UID in the currently selected mailbox not marked \Deleted.
+    /// A marked message is only waiting for an expunge -- ours may wait a
+    /// while (see `expunge_uids`) -- so it counts as gone.
+    pub fn search_undeleted_uids(&mut self) -> Result<HashSet<String>> {
+        let uids = self.command(|session| session.uid_search("UNDELETED"))?;
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
@@ -579,6 +583,7 @@ impl ImapSession {
                     flags.contains(&Flag::Flagged),
                     flags.iter().any(is_pinned_flag),
                 );
+                header.is_deleted = flags.contains(&Flag::Deleted);
                 (header.preview, header.body_text) =
                     crate::mime::texts_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
                 Some(header)
@@ -814,6 +819,7 @@ pub fn parse_header(
         is_seen,
         is_flagged,
         is_pinned,
+        is_deleted: false,
         preview: String::new(),
         body_text: String::new(),
         references: raw("References"),

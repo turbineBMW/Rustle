@@ -41,7 +41,13 @@ pub struct SyncResult {
     pub exists: u32,
     /// How far back from the newest this fetch reached.
     pub offset: u32,
-    /// Authoritative UID snapshot, only for the newest page.
+    /// How many messages the fetched window held, \Deleted ones included:
+    /// paging counts by position, and those still take one up.
+    pub fetched: u32,
+    /// Messages in the window marked \Deleted, left out of `messages`: any
+    /// row still kept for them goes.
+    pub deleted_uids: Vec<String>,
+    /// Authoritative UID snapshot (\Deleted left out), only for the newest page.
     pub all_uids: Option<HashSet<String>>,
     /// Server unread counts by mailbox name, for the folders not fetched.
     pub unread_counts: HashMap<String, u32>,
@@ -94,7 +100,7 @@ pub fn backfill(
                 continue;
             }
         };
-        let server_uids = session.search_all_uids()?;
+        let server_uids = session.search_undeleted_uids()?;
         let missing = missing_uids(&server_uids, &folder.local_uids);
         if missing.is_empty() {
             completed.push(folder.name.clone());
@@ -103,9 +109,11 @@ pub fn backfill(
         let batch = &missing[..missing.len().min(limit.max(1) as usize)];
         let raw = session.fetch_headers_by_uid(&uid_set(batch))?;
         release(account, credential, session);
+        // Marked \Deleted since the search: none of these is stored yet.
+        let (messages, _) = split_deleted(raw);
         return Ok(BackfillResult {
             folder: Some(folder.name.clone()),
-            messages: raw.into_iter().map(to_message_header).collect(),
+            messages,
             remaining: (missing.len() - batch.len()) as u32,
             exists,
             completed,
@@ -174,7 +182,7 @@ pub fn fetch_mailbox(
     };
     let exists = session.select(&target, false)?;
     let all_uids = if offset == 0 {
-        Some(session.search_all_uids()?)
+        Some(session.search_undeleted_uids()?)
     } else {
         None
     };
@@ -185,13 +193,17 @@ pub fn fetch_mailbox(
         HashMap::new()
     };
     release(account, credential, session);
+    let fetched = raw.len() as u32;
+    let (messages, deleted_uids) = split_deleted(raw);
 
     Ok(SyncResult {
         folders: mailboxes,
-        messages: raw.into_iter().map(to_message_header).collect(),
+        messages,
         folder: target,
         exists,
         offset,
+        fetched,
+        deleted_uids,
         all_uids,
         unread_counts,
     })
@@ -260,6 +272,16 @@ pub fn search_text(
     }
     release(account, credential, session);
     Ok(found)
+}
+
+/// Fetched headers, display-ready, apart from the UIDs of those marked
+/// \Deleted: those are shown nowhere, and nothing about them is kept.
+fn split_deleted(raw: Vec<FetchedHeader>) -> (Vec<MessageHeader>, Vec<String>) {
+    let (deleted, kept): (Vec<_>, Vec<_>) = raw.into_iter().partition(|header| header.is_deleted);
+    (
+        kept.into_iter().map(to_message_header).collect(),
+        deleted.into_iter().map(|header| header.uid).collect(),
+    )
 }
 
 /// Turn raw wire headers into the display-ready form: the sender becomes a
@@ -592,6 +614,23 @@ mod tests {
         let local = uids(&["2", "10"]);
         assert_eq!(missing_uids(&server, &local), vec![7, 3, 1]);
         assert!(missing_uids(&local, &server).is_empty());
+    }
+
+    #[test]
+    fn deleted_headers_are_left_out() {
+        let fetched = |uid: &str, is_deleted: bool| FetchedHeader {
+            uid: uid.into(),
+            is_deleted,
+            ..FetchedHeader::default()
+        };
+        let (messages, deleted) = split_deleted(vec![
+            fetched("1", false),
+            fetched("2", true),
+            fetched("3", false),
+        ]);
+        let uids: Vec<&str> = messages.iter().map(|m| m.uid.as_str()).collect();
+        assert_eq!(uids, ["1", "3"]);
+        assert_eq!(deleted, ["2"]);
     }
 
     #[test]
