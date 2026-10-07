@@ -105,6 +105,7 @@ impl MainWindow {
                     account_id: account.id,
                     message_id,
                 }),
+                ..Draft::default()
             },
         );
     }
@@ -122,6 +123,11 @@ impl MainWindow {
     }
 
     fn host_composer(&self, composer: Composer) {
+        composer.set_queue_handler(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |queued| window.on_send_queued(queued)
+        ));
         composer.connect_finished(glib::clone!(
             #[weak(rename_to = window)]
             self,

@@ -90,6 +90,19 @@ const MIGRATIONS: &[&str] = &[
      END;
      INSERT INTO emails_fts(emails_fts) VALUES ('rebuild');",
     "ALTER TABLE contacts ADD COLUMN sent_count INTEGER NOT NULL DEFAULT 0",
+    // An Outbox message's send time ('' = as soon as possible) and its
+    // envelope recipients, Bcc included, which its headers don't carry.
+    "CREATE TABLE outbox (
+        email_id INTEGER PRIMARY KEY,
+        send_at TEXT NOT NULL DEFAULT '',
+        recipients TEXT NOT NULL DEFAULT ''
+     );
+     CREATE TABLE templates (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        subject TEXT NOT NULL DEFAULT '',
+        body_html TEXT NOT NULL DEFAULT ''
+     );",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -126,6 +139,24 @@ fn fts_terms(terms: &[String]) -> String {
         .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// An Outbox message's schedule: `send_at` is an ISO-8601 instant, or ''
+/// for as soon as possible; `recipients` the envelope, Bcc included (empty
+/// means read them from the message's To and Cc).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutboxEntry {
+    pub send_at: String,
+    pub recipients: Vec<String>,
+}
+
+/// A saved message to start from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Template {
+    pub id: i64,
+    pub name: String,
+    pub subject: String,
+    pub body_html: String,
 }
 
 pub struct Database {
@@ -582,6 +613,10 @@ impl Database {
         transaction.execute(
             "DELETE FROM pending_ops WHERE account_id = ?1",
             [account_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM outbox WHERE email_id NOT IN (SELECT id FROM emails)",
+            [],
         )?;
         Ok(())
     }
@@ -1129,6 +1164,85 @@ impl Database {
     pub fn delete_email(&self, email_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM emails WHERE id = ?1", [email_id])?;
+        self.conn
+            .execute("DELETE FROM outbox WHERE email_id = ?1", [email_id])?;
+        Ok(())
+    }
+
+    // --- the Outbox's schedule ---------------------------------------------
+
+    /// When an Outbox message goes ('' = now) and to whom.
+    pub fn set_outbox_entry(&self, email_id: i64, entry: &OutboxEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO outbox (email_id, send_at, recipients) VALUES (?1, ?2, ?3)
+             ON CONFLICT (email_id) DO UPDATE SET
+                send_at = excluded.send_at, recipients = excluded.recipients",
+            params![email_id, entry.send_at, entry.recipients.join(",")],
+        )?;
+        Ok(())
+    }
+
+    pub fn outbox_entry(&self, email_id: i64) -> Result<Option<OutboxEntry>> {
+        self.conn
+            .query_row(
+                "SELECT send_at, recipients FROM outbox WHERE email_id = ?1",
+                [email_id],
+                |row| {
+                    let recipients: String = row.get(1)?;
+                    Ok(OutboxEntry {
+                        send_at: row.get(0)?,
+                        recipients: recipients
+                            .split(',')
+                            .filter(|r| !r.is_empty())
+                            .map(str::to_string)
+                            .collect(),
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// The soonest send time still to come, across every Outbox.
+    pub fn next_send_at(&self) -> Result<Option<String>> {
+        self.conn.query_row(
+            "SELECT min(send_at) FROM outbox
+             WHERE send_at != '' AND email_id IN (SELECT id FROM emails)",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    // --- templates -------------------------------------------------------
+
+    /// Save a template, replacing one of the same name.
+    pub fn save_template(&self, name: &str, subject: &str, body_html: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO templates (name, subject, body_html) VALUES (?1, ?2, ?3)
+             ON CONFLICT (name) DO UPDATE SET
+                subject = excluded.subject, body_html = excluded.body_html",
+            params![name, subject, body_html],
+        )?;
+        Ok(())
+    }
+
+    pub fn templates(&self) -> Result<Vec<Template>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, name, subject, body_html FROM templates ORDER BY name")?;
+        let rows = statement.query_map([], |row| {
+            Ok(Template {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                subject: row.get(2)?,
+                body_html: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn delete_template(&self, template_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM templates WHERE id = ?1", [template_id])?;
         Ok(())
     }
 
@@ -2058,5 +2172,50 @@ mod tests {
                 ("Ada <ada@x.y>".to_string(), 0)
             ]
         );
+    }
+
+    #[test]
+    fn outbox_entries_and_templates() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let outbox = db.get_or_create_folder(account.id, "Outbox", "o").unwrap();
+        let later = db
+            .save_email(
+                outbox.id,
+                &header("", "Later", "2026-01-01T00:00:00Z", "Me"),
+            )
+            .unwrap();
+        let soon = db
+            .save_email(outbox.id, &header("", "Soon", "2026-01-01T00:00:00Z", "Me"))
+            .unwrap();
+        let entry = OutboxEntry {
+            send_at: "2026-10-08T12:00:00Z".into(),
+            recipients: vec!["a@x.y".into(), "hidden@x.y".into()],
+        };
+        db.set_outbox_entry(later.id, &entry).unwrap();
+        let sooner = OutboxEntry {
+            send_at: "2026-10-08T09:00:00Z".into(),
+            ..entry.clone()
+        };
+        db.set_outbox_entry(soon.id, &sooner).unwrap();
+        assert_eq!(db.outbox_entry(later.id).unwrap(), Some(entry));
+        assert_eq!(
+            db.next_send_at().unwrap().as_deref(),
+            Some("2026-10-08T09:00:00Z")
+        );
+        db.delete_email(soon.id).unwrap();
+        assert_eq!(db.outbox_entry(soon.id).unwrap(), None);
+        assert_eq!(
+            db.next_send_at().unwrap().as_deref(),
+            Some("2026-10-08T12:00:00Z")
+        );
+
+        db.save_template("Weekly", "Status", "<p>a</p>").unwrap();
+        db.save_template("Weekly", "Status", "<p>b</p>").unwrap();
+        let templates = db.templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].body_html, "<p>b</p>");
+        db.delete_template(templates[0].id).unwrap();
+        assert!(db.templates().unwrap().is_empty());
     }
 }

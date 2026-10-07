@@ -16,6 +16,12 @@
 			<summary>Load remote images</summary>
 			<description>Load remote images in messages by default instead of asking.</description>
 		</key>
+		<key name="undo-send-seconds" type="i">
+			<range min="0" max="30"/>
+			<default>5</default>
+			<summary>Undo Send</summary>
+			<description>How many seconds a sent message waits in the Outbox, so it can be taken back. 0 sends at once.</description>
+		</key>
 		<key name="reader-zoom" type="d">
 			<range min="0.5" max="3.0"/>
 			<default>1.0</default>

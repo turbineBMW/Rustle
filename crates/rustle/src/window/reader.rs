@@ -164,6 +164,10 @@ impl MainWindow {
 
     /// Empty the reading pane and release its WebView.
     pub(super) fn clear_message(&self) {
+        let bar = self.state_mut().outbox_bar.take();
+        if let Some(bar) = bar {
+            self.imp().message_box.remove(&bar);
+        }
         let view = self.state_mut().message_view.take();
         if let Some(view) = view {
             self.imp().message_box.remove(view.widget());
@@ -199,6 +203,7 @@ impl MainWindow {
         } else {
             None
         };
+        let email_for_bar = email.clone();
         let view = MessageView::new(
             email,
             handlers,
@@ -208,6 +213,11 @@ impl MainWindow {
             account.as_ref(),
         );
         view.set_zoom(self.reader_zoom());
+        let bar = self.outbox_bar(&email_for_bar);
+        if let Some(bar) = &bar {
+            imp.message_box.append(bar);
+        }
+        self.state_mut().outbox_bar = bar;
         imp.message_box.append(view.widget());
         self.state_mut().message_view = Some(view);
         imp.reader_stack.set_visible_child_name(PAGE_MESSAGE);
