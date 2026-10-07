@@ -1,6 +1,6 @@
 //! Syncing, the Outbox, and the connection banner.
 
-use super::{MainWindow, PAGE_EMPTY, PAGE_LOADING};
+use super::{BannerSource, MainWindow, PAGE_EMPTY, PAGE_LOADING};
 use crate::application::RustleApplication;
 use crate::config::APP_ID;
 use crate::i18n::{self, gettext};
@@ -153,7 +153,13 @@ impl MainWindow {
                 errors.len() as u64,
                 &[("reason", &i18n::failure_message(first))],
             );
-            self.show_connection_banner(&message, &retry_button_label(first.is_auth()));
+            self.show_connection_banner(
+                BannerSource::Outbox,
+                &message,
+                &retry_button_label(first.is_auth()),
+            );
+        } else if sent_count > 0 {
+            self.hide_connection_banner(BannerSource::Outbox);
         }
     }
 
@@ -391,7 +397,7 @@ impl MainWindow {
 
         self.reload_folders();
         self.refresh_emails(keep_id);
-        self.imp().connection_banner.set_revealed(false);
+        self.hide_connection_banner(BannerSource::Sync);
         // A stuck queue keeps its banner through a sync that went fine.
         self.update_queue_status();
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
@@ -577,12 +583,33 @@ impl MainWindow {
             return;
         }
         self.show_connection_banner(
+            BannerSource::Sync,
             &i18n::failure_message(failure),
             &retry_button_label(failure.is_auth()),
         );
     }
 
-    fn show_connection_banner(&self, title: &str, button_label: &str) {
+    /// Put the banner up for `source`. Offline holds it against the rest,
+    /// and the queue takes it only when no one else has it.
+    pub(super) fn show_connection_banner(
+        &self,
+        source: BannerSource,
+        title: &str,
+        button_label: &str,
+    ) {
+        {
+            let mut state = self.state_mut();
+            let is_taken = match (state.banner, source) {
+                (Some(BannerSource::Offline), BannerSource::Offline) => false,
+                (Some(BannerSource::Offline), _) => true,
+                (Some(current), BannerSource::Queue) => current != BannerSource::Queue,
+                _ => false,
+            };
+            if is_taken {
+                return;
+            }
+            state.banner = Some(source);
+        }
         let banner = &self.imp().connection_banner;
         banner.set_title(&linkify(title));
         banner.set_button_label(if button_label.is_empty() {
@@ -593,13 +620,20 @@ impl MainWindow {
         banner.set_revealed(true);
     }
 
-    pub(super) fn show_offline_banner(&self) {
-        let waiting: usize = self
-            .db()
-            .borrow()
-            .pending_change_counts()
-            .map(|counts| counts.values().sum())
-            .unwrap_or(0);
+    /// Take the banner down if `source` is what it's showing.
+    pub(super) fn hide_connection_banner(&self, source: BannerSource) {
+        {
+            let mut state = self.state_mut();
+            if state.banner != Some(source) {
+                return;
+            }
+            state.banner = None;
+        }
+        self.imp().connection_banner.set_revealed(false);
+    }
+
+    /// `waiting`: the changes queued for the accounts on show.
+    pub(super) fn show_offline_banner(&self, waiting: usize) {
         let title = if waiting == 0 {
             gettext("You're offline. Rustle will reconnect when your connection returns.")
         } else {
@@ -610,17 +644,13 @@ impl MainWindow {
                 &[],
             )
         };
-        self.show_connection_banner(&title, "");
-    }
-
-    /// The connection banner with a Retry button.
-    pub(super) fn show_retry_banner(&self, title: &str) {
-        self.show_connection_banner(title, &gettext("Retry"));
+        self.show_connection_banner(BannerSource::Offline, &title, "");
     }
 
     pub(super) fn on_banner_retry(&self) {
+        self.state_mut().banner = None;
         self.imp().connection_banner.set_revealed(false);
-        self.state_mut().is_queue_banner_shown = false;
+        self.give_queue_another_chance();
         if !self.state().accounts.is_empty() {
             self.sync_all(false);
         }
@@ -632,6 +662,8 @@ impl MainWindow {
             return;
         }
         self.state_mut().is_online = is_available;
+        // Failures counted on the old network say nothing about this one.
+        self.state_mut().queue_failures.clear();
         // Parked connections went over the old network.
         rustle_core::net::pool::forget_all();
         self.sync_inbox_watchers();
@@ -640,7 +672,7 @@ impl MainWindow {
             self.update_queue_status();
             return;
         }
-        self.imp().connection_banner.set_revealed(false);
+        self.hide_connection_banner(BannerSource::Offline);
         self.update_queue_status();
         if !self.state().accounts.is_empty() {
             self.sync_all(false);

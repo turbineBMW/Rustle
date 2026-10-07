@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Rustle\n"
 "Report-Msgid-Bugs-To: https://github.com/turbineBMW/Rustle/issues\n"
-"POT-Creation-Date: 2026-10-07 12:25-0400\n"
+"POT-Creation-Date: 2026-10-07 18:35-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -26,236 +26,249 @@ msgstr ""
 msgid "translator-credits"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:397 crates/rustle/ui/main-window.blp:165
+#: crates/rustle/src/composer.rs:400 crates/rustle/ui/main-window.blp:165
 msgid "New Message"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:695
+#: crates/rustle/src/composer.rs:698
 #, rust-format
 msgid "Send from {email}"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:868
+#: crates/rustle/src/composer.rs:871
 #, rust-format
 msgid "Review or rewrite with {tool}"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:900
+#: crates/rustle/src/composer.rs:903
 msgid "Write something first."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:907
+#: crates/rustle/src/composer.rs:910
 #: crates/rustle/src/window/smart_search.rs:155
 #, rust-format
 msgid "Asking {tool}…"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:973
+#: crates/rustle/src/composer.rs:976
 msgid "Looks good: nothing to change."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:976
+#: crates/rustle/src/composer.rs:979
 #, rust-format
 msgid "{n} suggestion"
 msgid_plural "{n} suggestions"
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/rustle/src/composer.rs:997
+#: crates/rustle/src/composer.rs:1000
 msgid "Apply"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1056
+#: crates/rustle/src/composer.rs:1059
 msgid "Replacing keeps your signature and the quoted message."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1069
+#: crates/rustle/src/composer.rs:1072
 msgid "Replace Draft"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1105
+#: crates/rustle/src/composer.rs:1108
 msgid "Draft rewritten"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1106 crates/rustle/src/window/moves.rs:263
+#: crates/rustle/src/composer.rs:1109 crates/rustle/src/window/moves.rs:263
 #: crates/rustle/src/window/outbox.rs:32
 msgid "Undo"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1164
+#: crates/rustle/src/composer.rs:1167
 msgid "Default Colour"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1174
+#: crates/rustle/src/composer.rs:1177
 msgid "No Highlight"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1246
+#: crates/rustle/src/composer.rs:1249
 msgid "Edit Link…"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1247
+#: crates/rustle/src/composer.rs:1250
 msgid "Remove Link"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1348
+#: crates/rustle/src/composer.rs:1351
 #: crates/rustle/src/dialogs/signature.rs:179
 msgid "Small"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1349
+#: crates/rustle/src/composer.rs:1352
 msgid "Medium"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1350
+#: crates/rustle/src/composer.rs:1353
 #: crates/rustle/src/dialogs/signature.rs:181
 msgid "Large"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1351
+#: crates/rustle/src/composer.rs:1354
 msgid "Original"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1355
+#: crates/rustle/src/composer.rs:1358
 #, rust-format
 msgid "{label} ({width} px, {size})"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1369
+#: crates/rustle/src/composer.rs:1372
 #, rust-format
 msgid "Image, {size}"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1375
+#: crates/rustle/src/composer.rs:1378
 msgid "Remove Image"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1481
+#: crates/rustle/src/composer.rs:1484
 msgid "(no recipient)"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1552
+#: crates/rustle/src/composer.rs:1555
 msgid "Remove Attachment"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1616
+#: crates/rustle/src/composer.rs:1619
 msgid "Save Changes to Draft?"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1617
+#: crates/rustle/src/composer.rs:1620
 msgid "The draft in this account's Drafts folder will be updated."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1618
+#: crates/rustle/src/composer.rs:1621
 msgid "Delete Draft"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1622
+#: crates/rustle/src/composer.rs:1625
 msgid "Save as Draft?"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1624
+#: crates/rustle/src/composer.rs:1627
 msgid ""
 "The message will be kept in this account's Drafts folder to finish later."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1626 crates/rustle/src/window/actions.rs:421
+#: crates/rustle/src/composer.rs:1629 crates/rustle/src/window/actions.rs:421
 #: crates/rustle/src/window/folder_admin.rs:185
-#: crates/rustle/src/window/sync.rs:536 crates/rustle/ui/main-window.blp:366
+#: crates/rustle/src/window/sync.rs:544 crates/rustle/ui/main-window.blp:366
 msgid "Delete"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1633
+#: crates/rustle/src/composer.rs:1636
 msgid "Keep Editing"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1635
+#: crates/rustle/src/composer.rs:1638
 msgid "Save Draft"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1667 crates/rustle/src/composer.rs:1705
+#: crates/rustle/src/composer.rs:1670 crates/rustle/src/composer.rs:1708
 #, rust-format
 msgid "Couldn't save the draft: {msg}"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1741
+#: crates/rustle/src/composer.rs:1725
+msgid ""
+"The draft is kept on this device only, as the message is to be encrypted."
+msgstr ""
+
+#: crates/rustle/src/composer.rs:1753
 msgid ""
 "This account has no Drafts folder on the server, so the draft is kept on "
 "this device only."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1748
+#: crates/rustle/src/composer.rs:1760
 #, rust-format
 msgid ""
 "Couldn't save the draft to the server: {msg}. It is kept on this device."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:1872
+#: crates/rustle/src/composer.rs:1894
 #, rust-format
 msgid "Couldn't send: {msg}"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2013
+#: crates/rustle/src/composer.rs:2124
 #, rust-format
 msgid "Couldn't send: {msg}. Saved to Outbox."
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2037
+#: crates/rustle/src/composer.rs:2148
 msgid "the answer wasn't in the expected form"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2042
+#: crates/rustle/src/composer.rs:2153
 msgid "Shorter"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2043
+#: crates/rustle/src/composer.rs:2154
 msgid "Friendlier"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2044
+#: crates/rustle/src/composer.rs:2155
 msgid "More Formal"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2045
+#: crates/rustle/src/composer.rs:2156
 msgid "Clearer"
 msgstr ""
 
-#: crates/rustle/src/composer.rs:2072 crates/rustle/src/composer.rs:2095
+#: crates/rustle/src/composer.rs:2183 crates/rustle/src/composer.rs:2206
 #: crates/rustle/src/i18n.rs:68 crates/rustle/src/window/folder_admin.rs:285
 #: crates/rustle/src/window/reader.rs:276
 msgid "Could not sign in to this account."
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:142
+#: crates/rustle/src/composer/tools.rs:164
 msgid "Plain Text"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:144
+#: crates/rustle/src/composer/tools.rs:166
 msgid "Paste Without Formatting"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:164
+#: crates/rustle/src/composer/tools.rs:181
+msgid "Sign with OpenPGP"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:185
+msgid "Encrypt with OpenPGP"
+msgstr ""
+
+#: crates/rustle/src/composer/tools.rs:206
 msgid "Insert Template"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:165
+#: crates/rustle/src/composer/tools.rs:207
 msgid "Delete Template"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:168
+#: crates/rustle/src/composer/tools.rs:210
 msgid "Save as Template…"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:210
+#: crates/rustle/src/composer/tools.rs:289
 msgid "Save as Template"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:212
+#: crates/rustle/src/composer/tools.rs:291
 msgid "The subject and what you wrote are saved, to start other messages from."
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:216
-#: crates/rustle/src/composer/tools.rs:410
+#: crates/rustle/src/composer/tools.rs:295
+#: crates/rustle/src/composer/tools.rs:489
 #: crates/rustle/src/dialogs/rules.rs:318
 #: crates/rustle/src/dialogs/signature.rs:67 crates/rustle/src/editor.rs:811
 #: crates/rustle/src/window/folder_admin.rs:184
@@ -266,13 +279,13 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:216
+#: crates/rustle/src/composer/tools.rs:295
 #: crates/rustle/src/dialogs/rules.rs:318
 #: crates/rustle/src/dialogs/signature.rs:76 crates/rustle/src/editor.rs:815
 msgid "Save"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:334
+#: crates/rustle/src/composer/tools.rs:413
 #, rust-format
 msgid "Someone new is on this reply. Attach the original's attachment?"
 msgid_plural ""
@@ -280,23 +293,23 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/rustle/src/composer/tools.rs:379
+#: crates/rustle/src/composer/tools.rs:458
 msgid "In 1 Hour"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:380
+#: crates/rustle/src/composer/tools.rs:459
 msgid "Tomorrow Morning"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:382
+#: crates/rustle/src/composer/tools.rs:461
 msgid "Monday Morning"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:407
+#: crates/rustle/src/composer/tools.rs:486
 msgid "Send Later"
 msgstr ""
 
-#: crates/rustle/src/composer/tools.rs:411
+#: crates/rustle/src/composer/tools.rs:490
 msgid "Schedule"
 msgstr ""
 
@@ -577,7 +590,7 @@ msgid "From"
 msgstr ""
 
 #: crates/rustle/src/dialogs/rules.rs:47
-#: crates/rustle/src/widgets/message_view.rs:331
+#: crates/rustle/src/widgets/message_view.rs:424
 #: crates/rustle/ui/composer.blp:172
 msgid "To"
 msgstr ""
@@ -818,6 +831,20 @@ msgstr ""
 msgid "All Inboxes"
 msgstr ""
 
+#: crates/rustle/src/widgets/folder_row.rs:169
+#, rust-format
+msgid "{n} waiting"
+msgid_plural "{n} waiting"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/widgets/folder_row.rs:175
+#, rust-format
+msgid "{n} change is waiting to reach the server"
+msgid_plural "{n} changes are waiting to reach the server"
+msgstr[0] ""
+msgstr[1] ""
+
 #: crates/rustle/src/widgets/invitation.rs:64
 msgid "Was"
 msgstr ""
@@ -913,69 +940,107 @@ msgstr ""
 msgid "Event"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:268
+#: crates/rustle/src/widgets/message_view.rs:269
 msgid "Loading…"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:292
+#: crates/rustle/src/widgets/message_view.rs:293
 msgid "Couldn't load this message."
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:332
+#: crates/rustle/src/widgets/message_view.rs:318
+msgid "Decrypting…"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:348
+#, rust-format
+msgid "This message is encrypted, and couldn't be decrypted: {msg}"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:376
+#, rust-format
+msgid "This message is signed, but the signature couldn't be checked: {msg}"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:425
 #: crates/rustle/ui/composer.blp:176
 msgid "Cc"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:333
+#: crates/rustle/src/widgets/message_view.rs:426
 #: crates/rustle/ui/composer.blp:180
 msgid "Bcc"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:416
+#: crates/rustle/src/widgets/message_view.rs:509
 #, rust-format
 msgid "{n} related message"
 msgid_plural "{n} related messages"
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/rustle/src/widgets/message_view.rs:438
+#: crates/rustle/src/widgets/message_view.rs:531
 msgid ""
 "Your mail provider couldn't verify who sent this. Be careful with its links, "
 "attachments and requests."
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:449
+#: crates/rustle/src/widgets/message_view.rs:542
 msgid "This looks like a newsletter."
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:451
+#: crates/rustle/src/widgets/message_view.rs:544
 msgid "You're subscribed to this mailing list."
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:455
+#: crates/rustle/src/widgets/message_view.rs:548
 #: crates/rustle/src/window/reader.rs:584
 #: crates/rustle/src/window/reader.rs:675
 msgid "Unsubscribe"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:563
+#: crates/rustle/src/widgets/message_view.rs:656
 msgid "Remote images are blocked to protect your privacy."
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:565
+#: crates/rustle/src/widgets/message_view.rs:658
 msgid "Show Images"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:669
+#: crates/rustle/src/widgets/message_view.rs:762
 msgid "Attachments"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:719
+#: crates/rustle/src/widgets/message_view.rs:812
 msgid "Open with the default app"
 msgstr ""
 
-#: crates/rustle/src/widgets/message_view.rs:732
+#: crates/rustle/src/widgets/message_view.rs:825
 msgid "Save Attachment"
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:859
+#, rust-format
+msgid "Signed by {signer}."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:867
+#, rust-format
+msgid "Signed by {signer}, with a key you haven't confirmed is theirs."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:873
+msgid "The signature doesn't match: the message changed after it was signed."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:878
+#, rust-format
+msgid "Signed with a key you don't have ({key})."
+msgstr ""
+
+#: crates/rustle/src/widgets/message_view.rs:885
+#: crates/rustle/src/widgets/message_view.rs:886
+msgid "Encrypted with OpenPGP."
 msgstr ""
 
 #: crates/rustle/src/widgets/sound_row.rs:42
@@ -1019,7 +1084,7 @@ msgid "Choose a Notification Sound"
 msgstr ""
 
 #: crates/rustle/src/window/actions.rs:395
-#: crates/rustle/src/window/reader.rs:163 crates/rustle/src/window/sync.rs:534
+#: crates/rustle/src/window/reader.rs:163 crates/rustle/src/window/sync.rs:542
 #: crates/rustle/ui/main-window.blp:317
 msgid "Mark Read"
 msgstr ""
@@ -1109,7 +1174,7 @@ msgstr ""
 msgid "Unarchive"
 msgstr ""
 
-#: crates/rustle/src/window/moves.rs:50 crates/rustle/src/window/sync.rs:535
+#: crates/rustle/src/window/moves.rs:50 crates/rustle/src/window/sync.rs:543
 #: crates/rustle/ui/main-window.blp:355 crates/rustle/ui/main-window.blp:360
 msgid "Archive"
 msgstr ""
@@ -1181,9 +1246,20 @@ msgstr ""
 msgid "Send Now"
 msgstr ""
 
-#: crates/rustle/src/window/queue.rs:150
+#: crates/rustle/src/window/queue.rs:165
 #, rust-format
 msgid "Action failed: {msg}"
+msgstr ""
+
+#: crates/rustle/src/window/queue.rs:228
+#, rust-format
+msgid "{n} change hasn't reached the server yet."
+msgid_plural "{n} changes haven't reached the server yet."
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/queue.rs:233 crates/rustle/src/window/sync.rs:747
+msgid "Retry"
 msgstr ""
 
 #: crates/rustle/src/window/reader.rs:258
@@ -1335,27 +1411,30 @@ msgid_plural "Couldn't send {n} queued messages. {reason}"
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/rustle/src/window/sync.rs:494 crates/rustle/src/window/sync.rs:553
+#: crates/rustle/src/window/sync.rs:502 crates/rustle/src/window/sync.rs:561
 #, rust-format
 msgid "{n} new message"
 msgid_plural "{n} new messages"
 msgstr[0] ""
 msgstr[1] ""
 
-#: crates/rustle/src/window/sync.rs:596
+#: crates/rustle/src/window/sync.rs:638
 msgid "You're offline. Rustle will reconnect when your connection returns."
 msgstr ""
 
-#: crates/rustle/src/window/sync.rs:638
+#: crates/rustle/src/window/sync.rs:641
+#, rust-format
+msgid "You're offline. {n} change will be sent when you reconnect."
+msgid_plural "You're offline. {n} changes will be sent when you reconnect."
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/rustle/src/window/sync.rs:693
 msgid "Rustle is running in the background"
 msgstr ""
 
-#: crates/rustle/src/window/sync.rs:640
+#: crates/rustle/src/window/sync.rs:695
 msgid "It will keep checking for new mail. Quit to stop."
-msgstr ""
-
-#: crates/rustle/src/window/sync.rs:692
-msgid "Retry"
 msgstr ""
 
 #: crates/rustle/ui/account-dialog.blp:5

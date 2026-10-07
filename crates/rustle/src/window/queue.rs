@@ -4,10 +4,9 @@
 //! change the server couldn't be reached for stays queued and goes out on the
 //! next flush: the next sync, the network coming back, the next launch.
 
-use super::MainWindow;
+use super::{BannerSource, MainWindow};
 use crate::i18n::{self, gettext};
 use crate::workers;
-use adw::subclass::prelude::*;
 use rustle_core::db::Database;
 use rustle_core::models::{Account, MessageHeader};
 use rustle_core::net::errors::Failure;
@@ -88,7 +87,9 @@ impl MainWindow {
     fn on_replayed(&self, account: &Account, ops: &[PendingOp], replay: Replay) {
         self.state_mut().flushing_account_ids.remove(&account.id);
         if self.is_stale(account) {
-            self.state_mut().flush_again.remove(&account.id);
+            let mut state = self.state_mut();
+            state.flush_again.remove(&account.id);
+            state.queue_failures.remove(&account.id);
             return;
         }
         let op = |id: i64| ops.iter().find(|op| op.id == id);
@@ -140,11 +141,11 @@ impl MainWindow {
                 "{waiting} change(s) for {} stay queued until the server can be reached: {failure:?}",
                 account.email
             );
-            *self
-                .state_mut()
-                .queue_failures
-                .entry(account.id)
-                .or_default() += 1;
+            // A try cut off by the network going away isn't the server's doing.
+            let mut state = self.state_mut();
+            if state.is_online {
+                *state.queue_failures.entry(account.id).or_default() += 1;
+            }
         } else {
             self.state_mut().queue_failures.remove(&account.id);
         }
@@ -174,7 +175,8 @@ impl MainWindow {
     /// Show what's waiting: a count on each account whose changes can't go
     /// out yet (offline, or the last try failed), the total in the offline
     /// banner, and a Retry banner once tries keep failing while online. A
-    /// change that goes straight through shows nothing.
+    /// change that goes straight through shows nothing. Only accounts on
+    /// show count: a hidden one's changes wait for it to come back.
     pub(super) fn update_queue_status(&self) {
         let counts = match self.db().borrow().pending_change_counts() {
             Ok(counts) => counts,
@@ -183,24 +185,30 @@ impl MainWindow {
                 return;
             }
         };
-        let (shown, is_online, is_stuck) = {
-            let state = self.state();
+        let (shown, is_online, stuck) = {
+            let mut state = self.state_mut();
+            let state = &mut *state;
+            let accounts = &state.accounts;
+            state
+                .queue_failures
+                .retain(|id, _| accounts.contains_key(id));
+            let failures = |id: &i64| state.queue_failures.get(id).copied().unwrap_or(0);
             let shown: HashMap<i64, usize> = counts
                 .iter()
-                .filter(|(id, _)| {
-                    !state.is_online || state.queue_failures.get(id).is_some_and(|n| *n > 0)
-                })
+                .filter(|(id, count)| **count > 0 && accounts.contains_key(id))
+                .filter(|(id, _)| !state.is_online || failures(id) > 0)
                 .map(|(id, count)| (*id, *count))
                 .collect();
-            let is_stuck = state.is_online
-                && counts.iter().any(|(id, count)| {
-                    *count > 0
-                        && state
-                            .queue_failures
-                            .get(id)
-                            .is_some_and(|n| *n >= STUCK_AFTER)
-                });
-            (shown, state.is_online, is_stuck)
+            let stuck: usize = if state.is_online {
+                shown
+                    .iter()
+                    .filter(|(id, _)| failures(id) >= STUCK_AFTER)
+                    .map(|(_, count)| count)
+                    .sum()
+            } else {
+                0
+            };
+            (shown, state.is_online, stuck)
         };
         let rows: Vec<(i64, crate::widgets::folder_row::FolderRow)> = self
             .state()
@@ -214,17 +222,28 @@ impl MainWindow {
         let total: usize = shown.values().sum();
         self.state_mut().pending_shown = shown;
         if !is_online {
-            self.show_offline_banner();
-        } else if is_stuck {
-            self.state_mut().is_queue_banner_shown = true;
-            self.show_retry_banner(&i18n::plural(
-                "{n} change hasn't reached the server yet.",
-                "{n} changes haven't reached the server yet.",
-                total as u64,
-                &[],
-            ));
-        } else if std::mem::take(&mut self.state_mut().is_queue_banner_shown) {
-            self.imp().connection_banner.set_revealed(false);
+            self.show_offline_banner(total);
+        } else if stuck > 0 {
+            self.show_connection_banner(
+                BannerSource::Queue,
+                &i18n::plural(
+                    "{n} change hasn't reached the server yet.",
+                    "{n} changes haven't reached the server yet.",
+                    stuck as u64,
+                    &[],
+                ),
+                &gettext("Retry"),
+            );
+        } else {
+            self.hide_connection_banner(BannerSource::Queue);
+        }
+    }
+
+    /// Retry asked for: a stuck account's next failure is what brings the
+    /// banner back, not the count it had before. Its badge stays meanwhile.
+    pub(super) fn give_queue_another_chance(&self) {
+        for failures in self.state_mut().queue_failures.values_mut() {
+            *failures = (*failures).min(STUCK_AFTER - 1);
         }
     }
 

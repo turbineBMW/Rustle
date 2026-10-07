@@ -1578,8 +1578,9 @@ impl Database {
         rows.collect()
     }
 
-    /// How many messages each account has changes queued for (a change to
-    /// several messages counts each).
+    /// How many changes each account has queued, counted per message: a
+    /// move of three counts three, and a message flagged then moved counts
+    /// twice, as two changes are waiting.
     pub fn pending_change_counts(&self) -> Result<std::collections::HashMap<i64, usize>> {
         let mut statement = self.conn.prepare(
             "SELECT account_id,

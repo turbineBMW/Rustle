@@ -165,9 +165,11 @@ impl FolderRow {
             badge.set_tooltip_text(None);
             return;
         }
-        badge.set_label(&i18n::format(
-            &gettext("{n} waiting"),
-            &[("n", &count.to_string())],
+        badge.set_label(&i18n::plural(
+            "{n} waiting",
+            "{n} waiting",
+            count as u64,
+            &[],
         ));
         badge.set_tooltip_text(Some(&i18n::plural(
             "{n} change is waiting to reach the server",
@@ -179,6 +181,8 @@ impl FolderRow {
 
     fn set_badge(&self, unread_count: i64) {
         let badge = &self.imp().badge;
+        // The row may have been an account's, with a pending-changes tooltip.
+        badge.set_tooltip_text(None);
         badge.set_label(&unread_count.to_string());
         badge.set_visible(unread_count > 0);
     }

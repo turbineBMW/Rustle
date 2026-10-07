@@ -102,6 +102,21 @@ pub struct Tombstone {
     pub awaiting: i32,
 }
 
+/// What put the connection banner up. Each source hides only its own, so
+/// one recovering doesn't take down another's message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BannerSource {
+    /// No network: overrides everything until it comes back.
+    Offline,
+    /// A sync couldn't reach or sign in to a server.
+    Sync,
+    /// Queued mail in the Outbox couldn't be sent.
+    Outbox,
+    /// Queued changes keep failing to reach the server. Takes the banner
+    /// only when nothing else holds it.
+    Queue,
+}
+
 /// Everything the window mutates. Kept in one `RefCell` behind short
 /// borrows: read what you need, drop the borrow, then act.
 #[derive(Default)]
@@ -128,8 +143,8 @@ pub struct State {
     pub queue_failures: HashMap<i64, u32>,
     /// What each account row shows as waiting (0 or absent: nothing).
     pub pending_shown: HashMap<i64, usize>,
-    /// The connection banner is ours, saying the queue is stuck.
-    pub is_queue_banner_shown: bool,
+    /// Who the connection banner is showing for; None when it's hidden.
+    pub banner: Option<BannerSource>,
     /// Load-on-scroll paging state, keyed by folder id.
     pub loaded_counts: HashMap<i64, u32>,
     pub folders_with_more_mail: HashMap<i64, bool>,
@@ -471,7 +486,7 @@ impl MainWindow {
         window.set_reply_forward_enabled(false);
 
         if !window.state().is_online {
-            window.show_offline_banner();
+            window.show_offline_banner(0);
         }
 
         // Accounts live in Evolution Data Server; what the database holds
