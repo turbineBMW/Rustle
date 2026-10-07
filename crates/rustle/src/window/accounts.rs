@@ -319,6 +319,14 @@ impl MainWindow {
                 cc,
                 subject: compose::reply_subject(&parsed.subject),
                 body_html,
+                original_people: [&parsed.from_header, &parsed.reply_to_header]
+                    .into_iter()
+                    .chain(&parsed.to)
+                    .chain(&parsed.cc)
+                    .flat_map(|text| rustle_core::address::parse_list(text))
+                    .map(|mailbox| mailbox.address)
+                    .collect(),
+                original_attachments: parsed.attachments.clone(),
                 ..Draft::default()
             },
         );
@@ -343,6 +351,8 @@ impl MainWindow {
             Draft {
                 subject: compose::forward_subject(&parsed.subject),
                 body_html,
+                // A forward passes the whole message on, files included.
+                attachments: parsed.attachments.clone(),
                 ..Draft::default()
             },
         );

@@ -49,6 +49,8 @@ mod imp {
         #[template_child]
         pub spell_check_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub undo_send_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub autostart_row: TemplateChild<adw::SwitchRow>,
@@ -130,6 +132,9 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::RUN_IN_BACKGROUND, &*imp.background_row, "active")
+            .build();
+        settings
+            .bind(keys::UNDO_SEND_SECONDS, &*imp.undo_send_row, "value")
             .build();
         settings
             .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")

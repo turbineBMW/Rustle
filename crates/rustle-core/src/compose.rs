@@ -176,6 +176,8 @@ pub struct Outgoing<'a> {
     pub attachments: &'a [Attachment],
     /// The Message-ID header, angle brackets included; None makes one up.
     pub message_id: Option<&'a str>,
+    /// Send text/plain alone: the body's text, no HTML part.
+    pub plain_text: bool,
 }
 
 /// The raw message bytes for the wire: text and HTML alternatives, inline
@@ -296,6 +298,19 @@ fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeE
     }
     let attachments = message.attachments;
 
+    if message.plain_text {
+        let text = SinglePart::plain(html_to_text(message.body_html));
+        let message = if attachments.is_empty() {
+            builder.singlepart(text)?
+        } else {
+            builder.multipart(with_attachments(
+                MultiPart::mixed().singlepart(text),
+                attachments,
+            ))?
+        };
+        return Ok(message.formatted());
+    }
+
     let (body_html, images) = extract_inline_images(message.body_html);
     let alternative = MultiPart::alternative_plain_html(html_to_text(&body_html), body_html);
     let body = if images.is_empty() {
@@ -315,18 +330,24 @@ fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeE
     let message = if attachments.is_empty() {
         builder.multipart(body)?
     } else {
-        let mut mixed = MultiPart::mixed().multipart(body);
-        for attachment in attachments {
-            let content_type = ContentType::parse(&attachment.mime_type)
-                .or_else(|_| ContentType::parse("application/octet-stream"))
-                .expect("octet-stream is a valid content type");
-            let part: SinglePart = LettreAttachment::new(attachment.filename.clone())
-                .body(attachment.content.clone(), content_type);
-            mixed = mixed.singlepart(part);
-        }
-        builder.multipart(mixed)?
+        builder.multipart(with_attachments(
+            MultiPart::mixed().multipart(body),
+            attachments,
+        ))?
     };
     Ok(message.formatted())
+}
+
+fn with_attachments(mut mixed: MultiPart, attachments: &[Attachment]) -> MultiPart {
+    for attachment in attachments {
+        let content_type = ContentType::parse(&attachment.mime_type)
+            .or_else(|_| ContentType::parse("application/octet-stream"))
+            .expect("octet-stream is a valid content type");
+        let part: SinglePart = LettreAttachment::new(attachment.filename.clone())
+            .body(attachment.content.clone(), content_type);
+        mixed = mixed.singlepart(part);
+    }
+    mixed
 }
 
 /// Read the To/Cc headers back out of a stored message, for retrying from the
@@ -544,6 +565,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plain_text_messages_have_no_html_part() {
+        let to = vec!["bob@x.y".to_string()];
+        let message = Outgoing {
+            from: "me@x.y",
+            to: &to,
+            subject: "Hi",
+            body_html: "<p>Hello <b>Bob</b></p>",
+            plain_text: true,
+            ..Outgoing::default()
+        };
+        let raw = build_mime_message(&message).unwrap();
+        let parsed = crate::mime::parse_message(&raw);
+        assert!(
+            parsed.html_body.is_none(),
+            "{}",
+            String::from_utf8_lossy(&raw)
+        );
+        assert_eq!(
+            parsed.text_body.as_deref().map(str::trim),
+            Some("Hello Bob")
+        );
+        let attachment = Attachment {
+            filename: "a.txt".into(),
+            mime_type: "text/plain".into(),
+            content: b"x".to_vec(),
+        };
+        let with_file = Outgoing {
+            attachments: std::slice::from_ref(&attachment),
+            ..message
+        };
+        let parsed = crate::mime::parse_message(&build_mime_message(&with_file).unwrap());
+        assert!(parsed.html_body.is_none());
+        assert_eq!(parsed.attachments.len(), 1);
+    }
+
+    #[test]
     fn invitation_replies_carry_the_calendar_part() {
         let ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\nUID:1\r\n\
                    DTSTART:20261008T180000Z\r\nATTENDEE;PARTSTAT=DECLINED:mailto:me@x.y\r\n\
@@ -616,6 +673,7 @@ mod tests {
                 content: b"x".to_vec(),
             }],
             message_id: None,
+            plain_text: false,
         })
         .unwrap();
         let text = String::from_utf8_lossy(&raw);

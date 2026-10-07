@@ -28,12 +28,23 @@ template $RustleComposer: Adw.Bin {
           styles ["from-dropdown"]
         }
 
+        // The arrow holds Send Later.
         [end]
-        Gtk.Button send_button {
+        Adw.SplitButton send_button {
           label: _("Send");
           sensitive: false;
+          menu-model: send_menu;
+          dropdown-tooltip: _("More Ways to Send");
 
           styles ["suggested-action"]
+        }
+
+        // Plain text, pasting without formatting, and templates; its menu
+        // is built in Rust, where the templates are.
+        [end]
+        Gtk.MenuButton more_button {
+          icon-name: "view-more-symbolic";
+          tooltip-text: _("More Options");
         }
 
         // Only there once a tool is picked in Preferences.
@@ -55,6 +66,14 @@ template $RustleComposer: Adw.Bin {
         Gtk.Spinner send_spinner {
           visible: false;
         }
+      }
+
+      // A reply that gained a recipient the original never went to: the
+      // newcomer hasn't seen its attachments.
+      [top]
+      Adw.Banner originals_banner {
+        button-label: _("Attach");
+        revealed: false;
       }
 
       // The assistant's panel sits beside the message, or over it when
@@ -184,7 +203,7 @@ template $RustleComposer: Adw.Bin {
 
               styles ["card"]
 
-              Gtk.Box {
+              Gtk.Box format_bar {
                 spacing: 6;
 
                 styles ["toolbar"]
@@ -274,4 +293,11 @@ template $RustleComposer: Adw.Bin {
       };
     };
   };
+}
+
+menu send_menu {
+  item {
+    label: _("Send _Later…");
+    action: "composer.send-later";
+  }
 }

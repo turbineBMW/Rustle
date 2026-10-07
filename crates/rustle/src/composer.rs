@@ -17,7 +17,7 @@ use gtk::pango;
 use rustle_core::assistant::{self, Harness, RewriteStyle, Suggestion};
 use rustle_core::compose;
 use rustle_core::dates;
-use rustle_core::db::Database;
+use rustle_core::db::{Database, OutboxEntry};
 use rustle_core::folders;
 use rustle_core::models::NO_SUBJECT;
 use rustle_core::models::{Account, Attachment, MessageHeader};
@@ -39,6 +39,10 @@ pub struct Draft {
     pub attachments: Vec<Attachment>,
     /// Set when the composer is finishing a saved draft.
     pub resumed: Option<ResumedDraft>,
+    /// For a reply: the original's attachments, offered if a recipient is
+    /// added who wasn't on it, and the addresses that were (lowercase).
+    pub original_attachments: Vec<Attachment>,
+    pub original_people: Vec<String>,
 }
 
 /// A saved draft being finished: the row it was opened from, and the
@@ -202,6 +206,9 @@ enum FromItem {
     Row,
 }
 
+mod tools;
+pub use tools::QueuedSend;
+
 mod imp {
     use super::*;
 
@@ -231,7 +238,13 @@ mod imp {
         #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
-        pub send_button: TemplateChild<gtk::Button>,
+        pub send_button: TemplateChild<adw::SplitButton>,
+        #[template_child]
+        pub more_button: TemplateChild<gtk::MenuButton>,
+        #[template_child]
+        pub originals_banner: TemplateChild<adw::Banner>,
+        #[template_child]
+        pub format_bar: TemplateChild<gtk::Box>,
         #[template_child]
         pub send_spinner: TemplateChild<gtk::Spinner>,
         #[template_child]
@@ -303,6 +316,17 @@ mod imp {
         pub(super) opened_with: RefCell<Snapshot>,
         /// Set once it is closing for good, so its window closes unasked.
         pub is_done: Cell<bool>,
+        /// Send text/plain alone.
+        pub plain_text: Cell<bool>,
+        /// Set by a host that can hold a sent message back for Undo or a
+        /// later time; without one, Send sends at once.
+        pub queue_handler: RefCell<Option<tools::QueueHandler>>,
+        /// The time Send Later picked, for the send it starts.
+        pub scheduled_for: Cell<Option<chrono::DateTime<chrono::Local>>>,
+        /// A reply's original attachments, and everyone it already went to.
+        pub originals: RefCell<Vec<Attachment>>,
+        pub original_people: RefCell<std::collections::HashSet<String>>,
+        pub tool_actions: RefCell<Option<gio::SimpleActionGroup>>,
     }
 
     #[glib::object_subclass]
@@ -428,6 +452,14 @@ impl Composer {
             .unwrap_or_else(|| compose::new_message_id(&account.email));
         imp.message_id.replace(message_id);
         imp.resumed.replace(draft.resumed);
+        imp.originals.replace(draft.original_attachments);
+        imp.original_people.replace(
+            draft
+                .original_people
+                .iter()
+                .map(|address| address.to_lowercase())
+                .collect(),
+        );
 
         imp.cancel_button.connect_clicked(glib::clone!(
             #[weak]
@@ -472,6 +504,7 @@ impl Composer {
         window.update_send_sensitivity();
 
         window.setup_assistant();
+        window.setup_tools();
 
         let ranked = db.borrow().ranked_contacts().unwrap_or_default();
         let book = rustle_core::address_book::eds_contacts();
@@ -1799,6 +1832,7 @@ impl Composer {
             body_html: &body_html,
             attachments: &attachments,
             message_id: Some(&message_id),
+            plain_text: imp.plain_text.get(),
         };
         if is_draft {
             compose::build_draft_message(&message)
@@ -1888,6 +1922,43 @@ impl Composer {
             }
             (self.account_by_id(resumed.account_id), resumed.message_id)
         });
+
+        // Held back for Undo, or until the time Send Later picked, when the
+        // host can do that; the Outbox sends it then.
+        let delay = self
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map_or(0, |settings| settings.int(keys::UNDO_SEND_SECONDS).max(0));
+        let scheduled = self.imp().scheduled_for.take();
+        let handler = self.imp().queue_handler.borrow().clone();
+        let send_at = scheduled.or_else(|| {
+            (delay > 0).then(|| chrono::Local::now() + chrono::Duration::seconds(delay.into()))
+        });
+        let entry = OutboxEntry {
+            send_at: send_at.map(dates::to_utc_iso).unwrap_or_default(),
+            recipients: recipients.clone(),
+        };
+        if let Err(error) = self.db().borrow().set_outbox_entry(email_id, &entry) {
+            log::error!("could not record when to send queued message {email_id}: {error}");
+        }
+        if let (Some(handler), Some(send_at)) = (handler, send_at) {
+            if let Some((Some(draft_account), message_id)) = finished_draft {
+                workers::run(
+                    move || discard_draft_job(&draft_account, &message_id),
+                    |_| {},
+                );
+            }
+            handler(QueuedSend {
+                account,
+                email_id,
+                send_at,
+                is_scheduled: scheduled.is_some(),
+            });
+            self.finish();
+            return;
+        }
 
         self.set_sending(true);
         let job_account = account.clone();

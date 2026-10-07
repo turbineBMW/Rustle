@@ -11,6 +11,7 @@ mod folders;
 mod list;
 mod message_tools;
 mod moves;
+mod outbox;
 #[cfg(feature = "phone")]
 mod phone;
 mod queue;
@@ -174,6 +175,12 @@ pub struct State {
     pub typed_matches: (String, HashSet<i64>),
     pub typed_generation: u64,
     pub typed_pending: u32,
+    /// Wakes the window when the soonest scheduled Outbox message is due.
+    pub outbox_timer: Option<glib::SourceId>,
+    /// Outbox messages a drain is sending, which can't be taken back.
+    pub sending_ids: HashSet<i64>,
+    /// The bar above a message waiting in the Outbox.
+    pub outbox_bar: Option<gtk::Box>,
     /// The composer open in the reader pane, if any.
     pub inline_composer: Option<InlineComposer>,
     /// Actions whose accelerators the inline composer's editor needs, held

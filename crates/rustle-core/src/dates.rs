@@ -19,6 +19,12 @@ pub fn now_iso() -> String {
     Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// An instant as "2026-10-08T12:00:00Z": always UTC, so two of them
+/// compare as text in time order (the Outbox's send times rely on it).
+pub fn to_utc_iso<Tz: chrono::TimeZone>(at: chrono::DateTime<Tz>) -> String {
+    at.to_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 /// "Jul 16, 2026 10:00", the long form the reader's Details section shows.
 pub fn long_label(rfc822: &str) -> String {
     match parse(rfc822) {

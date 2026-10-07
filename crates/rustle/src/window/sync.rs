@@ -42,23 +42,35 @@ impl MainWindow {
             else {
                 return;
             };
+            let now = dates::to_utc_iso(chrono::Utc::now());
+            let sending = self.state().sending_ids.clone();
             db.emails_in_folder(outbox.id)
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|mail| !sending.contains(&mail.id))
                 .filter_map(|mail| {
+                    let entry = db.outbox_entry(mail.id).ok().flatten().unwrap_or_default();
+                    // Held for Undo, or for later: not yet.
+                    if !entry.send_at.is_empty() && entry.send_at > now {
+                        return None;
+                    }
                     let raw = db.raw_message(mail.id).ok().flatten()?;
-                    Some((
-                        mail.id,
-                        mail.subject,
-                        compose::extract_recipients(&raw),
-                        raw,
-                    ))
+                    // The envelope kept at Send carries Bcc; the headers don't.
+                    let recipients = if entry.recipients.is_empty() {
+                        compose::extract_recipients(&raw)
+                    } else {
+                        entry.recipients
+                    };
+                    Some((mail.id, mail.subject, recipients, raw))
                 })
                 .collect()
         };
         if jobs.is_empty() {
             return;
         }
+        self.state_mut()
+            .sending_ids
+            .extend(jobs.iter().map(|(id, ..)| *id));
         let job_account = account.clone();
         workers::run(
             move || outbox_job(&job_account, jobs),
@@ -76,6 +88,12 @@ impl MainWindow {
     /// open one; dropping a stale one would leave the mail in the Outbox to
     /// go out twice.
     fn on_outbox_drained(&self, account: &Account, results: Vec<OutboxResult>) {
+        {
+            let mut state = self.state_mut();
+            for result in &results {
+                state.sending_ids.remove(&result.email_id);
+            }
+        }
         let mut sent_count = 0u64;
         let mut errors = Vec::new();
         {
@@ -183,6 +201,8 @@ impl MainWindow {
             accounts.sort_by_key(|a| a.id);
             accounts
         };
+        // Also arms the timer for a message scheduled in an earlier session.
+        self.schedule_outbox();
         for account in accounts {
             self.drain_outbox(&account);
             self.flush_queue(&account);
