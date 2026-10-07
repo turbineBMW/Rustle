@@ -21,6 +21,7 @@ const INTERFACE_SCHEMA: &str = "org.gnome.desktop.interface";
 thread_local! {
     static FALLBACK: RefCell<Option<Fallback>> = const { RefCell::new(None) };
     static OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SCHEME: RefCell<Option<rustle_core::darkmode::Scheme>> = const { RefCell::new(None) };
     static WATCHERS: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -85,6 +86,20 @@ pub fn set_override(accent: Option<String>) -> bool {
 }
 
 /// Run every [`watch`] callback.
+/// The colours dark mail is adapted to: the followed Omarchy theme's,
+/// else the reader's own.
+pub fn reader_scheme() -> rustle_core::darkmode::Scheme {
+    SCHEME.with(|scheme| scheme.borrow().unwrap_or_default())
+}
+
+/// Set the theme's reader colours. True when that changed what the reader
+/// paints, so the caller can re-render.
+pub fn set_reader_scheme(colours: Option<(String, String)>) -> bool {
+    let scheme =
+        colours.and_then(|(canvas, text)| rustle_core::darkmode::Scheme::new(&canvas, &text));
+    SCHEME.with(|current| current.replace(scheme) != scheme)
+}
+
 pub fn notify() {
     let watchers = WATCHERS.with(|cell| cell.borrow().clone());
     for on_change in watchers {

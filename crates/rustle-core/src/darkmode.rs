@@ -6,6 +6,12 @@
 //! The reader runs with JavaScript off, so this is a source rewrite: inline
 //! `style` attributes, the legacy colour attributes (`bgcolor`, `color`,
 //! `text`, …) and `<style>` blocks. Layout is never altered.
+//!
+//! Two ideas come from Dark Reader's dynamic theme. Lightness is anchored to
+//! a `Scheme` -- white lands exactly on its canvas, black on its text -- so
+//! with an Omarchy theme a message sits in the theme's own colours, and a
+//! grey takes the theme's tint rather than staying neutral. And colours are
+//! found wherever they are: each stop of a gradient, SVG strokes and stops.
 
 use std::sync::LazyLock;
 
@@ -16,8 +22,47 @@ use regex::{Captures, Regex};
 pub const CANVAS: &str = "#1a1a1a";
 pub const TEXT: &str = "#f0f0f0";
 
-/// Rewrite `html` for a dark canvas.
+/// The colours a message is adapted towards: its canvas and its ink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scheme {
+    canvas: Rgba,
+    text: Rgba,
+}
+
+impl Default for Scheme {
+    fn default() -> Self {
+        Scheme {
+            canvas: parse(CANVAS).expect("CANVAS is a colour"),
+            text: parse(TEXT).expect("TEXT is a colour"),
+        }
+    }
+}
+
+impl Scheme {
+    /// A scheme from a theme's background and foreground. None unless they
+    /// make a dark canvas with light ink: anything else would leave text
+    /// unreadable after the rewrite.
+    pub fn new(canvas: &str, text: &str) -> Option<Self> {
+        let (canvas, text) = (parse(canvas)?, parse(text)?);
+        (canvas.luma() < 0.35 && text.luma() > 0.6).then_some(Scheme { canvas, text })
+    }
+
+    pub fn canvas_css(&self) -> String {
+        self.canvas.to_css()
+    }
+
+    pub fn text_css(&self) -> String {
+        self.text.to_css()
+    }
+}
+
+/// Rewrite `html` for the default dark canvas.
 pub fn adapt(html: &str) -> String {
+    adapt_with(html, &Scheme::default())
+}
+
+/// Rewrite `html` for `scheme`'s canvas.
+pub fn adapt_with(html: &str, scheme: &Scheme) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len() + html.len() / 8);
     let mut pos = 0;
@@ -42,13 +87,13 @@ pub fn adapt(html: &str) -> String {
         };
         let close = open + close;
         let tag = &html[open..=close];
-        out.push_str(&rewrite_tag(tag));
+        out.push_str(&rewrite_tag(tag, scheme));
         pos = close + 1;
         if after.starts_with("style")
             && !after[5..].starts_with(|c: char| c.is_ascii_alphanumeric())
         {
             let end = lower[pos..].find("</style").map_or(html.len(), |e| pos + e);
-            out.push_str(&rewrite_stylesheet(&html[pos..end]));
+            out.push_str(&rewrite_stylesheet(&html[pos..end], scheme));
             pos = end;
         }
     }
@@ -78,7 +123,7 @@ static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("attribute pattern is valid")
 });
 
-fn rewrite_tag(tag: &str) -> String {
+fn rewrite_tag(tag: &str, scheme: &Scheme) -> String {
     ATTRIBUTE
         .replace_all(tag, |caps: &Captures| {
             let name = caps[2].to_ascii_lowercase();
@@ -89,10 +134,10 @@ fn rewrite_tag(tag: &str) -> String {
                 _ => unreachable!(),
             };
             let new = match name.as_str() {
-                "style" => rewrite_declarations(value),
-                "bgcolor" => rewrite_colours(value, Role::Background),
-                "bordercolor" => rewrite_colours(value, Role::Border),
-                _ => rewrite_colours(value, Role::Text),
+                "style" => rewrite_declarations(value, scheme),
+                "bgcolor" => rewrite_colours(value, Role::Background, scheme),
+                "bordercolor" => rewrite_colours(value, Role::Border, scheme),
+                _ => rewrite_colours(value, Role::Text, scheme),
             };
             format!("{}{quote}{new}{quote}", &caps[1])
         })
@@ -102,17 +147,17 @@ fn rewrite_tag(tag: &str) -> String {
 static RULE_BODY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").expect("rule pattern is valid"));
 
-fn rewrite_stylesheet(css: &str) -> String {
+fn rewrite_stylesheet(css: &str, scheme: &Scheme) -> String {
     RULE_BODY
         .replace_all(css, |caps: &Captures| {
-            format!("{{{}}}", rewrite_declarations(&caps[1]))
+            format!("{{{}}}", rewrite_declarations(&caps[1], scheme))
         })
         .into_owned()
 }
 
 /// Rewrite a `prop: value; prop: value` list, leaving unknown properties as
 /// they are.
-fn rewrite_declarations(style: &str) -> String {
+fn rewrite_declarations(style: &str, scheme: &Scheme) -> String {
     split_declarations(style)
         .into_iter()
         .map(|declaration| {
@@ -122,7 +167,7 @@ fn rewrite_declarations(style: &str) -> String {
             let Some(role) = Role::of(property.trim()) else {
                 return declaration.to_string();
             };
-            format!("{property}:{}", rewrite_colours(value, role))
+            format!("{property}:{}", rewrite_colours(value, role, scheme))
         })
         .collect::<Vec<_>>()
         .join(";")
@@ -159,8 +204,10 @@ impl Role {
     fn of(property: &str) -> Option<Self> {
         let property = property.to_ascii_lowercase();
         Some(match property.as_str() {
-            "background" | "background-color" => Role::Background,
-            "color" | "-webkit-text-fill-color" | "fill" => Role::Text,
+            "background" | "background-color" | "background-image" | "stop-color" => {
+                Role::Background
+            }
+            "color" | "-webkit-text-fill-color" | "fill" | "stroke" => Role::Text,
             p if p.starts_with("border") || p.starts_with("outline") => Role::Border,
             "box-shadow" | "text-decoration-color" | "column-rule-color" => Role::Border,
             _ => return None,
@@ -169,18 +216,18 @@ impl Role {
 }
 
 static COLOUR_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)url\([^)]*\)|[a-z-]+-gradient\([^)]*\)|#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|[a-z]+",
-    )
-    .expect("colour token pattern is valid")
+    Regex::new(r"(?i)url\([^)]*\)|#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|[a-z]+")
+        .expect("colour token pattern is valid")
 });
 
-fn rewrite_colours(value: &str, role: Role) -> String {
+/// Every colour in a value, wherever it sits -- a gradient's stops among
+/// them. A url() is passed over whole, so nothing inside it is touched.
+fn rewrite_colours(value: &str, role: Role, scheme: &Scheme) -> String {
     COLOUR_TOKEN
         .replace_all(value, |caps: &Captures| {
             let token = &caps[0];
             match parse(token) {
-                Some(colour) => adapt_colour(colour, role)
+                Some(colour) => adapt_colour(colour, role, scheme)
                     .map(|c| c.to_css())
                     .unwrap_or_else(|| token.to_string()),
                 None => token.to_string(),
@@ -296,25 +343,38 @@ impl Rgba {
     }
 }
 
+/// Below this saturation a colour reads as grey, and takes the scheme's tint.
+const GREY: f64 = 0.08;
+
 /// Map a colour for its role, or `None` when it is fine as it is.
-fn adapt_colour(colour: Rgba, role: Role) -> Option<Rgba> {
+fn adapt_colour(colour: Rgba, role: Role, scheme: &Scheme) -> Option<Rgba> {
     if colour.a <= 0.0 {
         return None;
     }
     let luma = colour.luma();
     let (h, s, _) = colour.to_hsl();
-    let lightness = match role {
-        // Light canvases go dark: white lands on CANVAS, and a pale tint or
-        // a highlight keeps its hue at a deep shade.
-        Role::Background if luma > 0.5 => 0.10 + (1.0 - luma) * 0.35,
-        // Dark ink goes light: black becomes TEXT, a dark brand colour a
-        // pastel of itself.
-        Role::Text if luma < 0.5 => 0.94 - luma * 0.6,
+    let (_, _, canvas) = scheme.canvas.to_hsl();
+    let (_, _, ink) = scheme.text.to_hsl();
+    let (lightness, anchor) = match role {
+        // Light canvases go dark: white lands on the scheme's canvas, and a
+        // pale tint or a highlight keeps its hue at a deep shade.
+        Role::Background if luma > 0.5 => (canvas + (1.0 - luma) * 0.35, scheme.canvas),
+        // Dark ink goes light: black becomes the scheme's text, a dark brand
+        // colour a pastel of itself.
+        Role::Text if luma < 0.5 => (ink - luma * 0.6, scheme.text),
         // Rules and frames lift too, but stay quieter than text.
-        Role::Border if luma < 0.5 => 0.75 - luma * 0.5,
+        Role::Border if luma < 0.5 => (ink * (0.75 / 0.94) - luma * 0.5, scheme.text),
         _ => return None,
     };
-    Some(Rgba::from_hsl(h, s, lightness, colour.a))
+    // A grey takes the scheme's hue, so a theme's tinted canvas doesn't
+    // sit under neutral grey panels.
+    let (h, s) = if s < GREY {
+        let (anchor_h, anchor_s, _) = anchor.to_hsl();
+        (anchor_h, anchor_s)
+    } else {
+        (h, s)
+    };
+    Some(Rgba::from_hsl(h, s, lightness.clamp(0.0, 1.0), colour.a))
 }
 
 fn parse(token: &str) -> Option<Rgba> {
@@ -631,9 +691,43 @@ mod tests {
         );
         assert!(out.contains("<!-- <p style=\"color:#000\"> -->"));
         assert!(
-            out.contains("url(data:image/png;base64,AA;BB) #1f1f1f"),
+            out.contains("url(data:image/png;base64,AA;BB) #202020"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn gradients_and_svg_paint_adapt() {
+        let out = adapt(
+            r#"<td style="background-image: linear-gradient(to bottom, #ffffff 0%, rgba(240,240,240,1) 100%)"><svg><path style="stroke: #000; stop-color: white"/></svg>"#,
+        );
+        assert!(
+            out.contains("linear-gradient(to bottom, #1a1a1a 0%, #1f1f1f 100%)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("stroke: #f0f0f0; stop-color: #1a1a1a"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_theme_anchors_the_canvas_and_tints_greys() {
+        // Catppuccin-like: a blue-tinted canvas and lavender ink.
+        let scheme = Scheme::new("#1e1e2e", "#cdd6f4").unwrap();
+        let out = adapt_with(
+            r#"<div style="background: #ffffff; color: #000; border-color: #e74c3c">"#,
+            &scheme,
+        );
+        assert!(out.contains("background: #1e1e2e"), "{out}");
+        assert!(out.contains("color: #cdd6f4"), "{out}");
+        // A grey panel picks up the canvas's blue, not neutral grey.
+        let panel = adapt_with(r#"<div style="background: #eeeeee">"#, &scheme);
+        let tinted = panel.split("background: ").nth(1).unwrap();
+        let colour = parse(&tinted[..7]).unwrap();
+        assert!(colour.b > colour.r, "{panel}");
+        // A light theme's colours can't be a dark scheme.
+        assert!(Scheme::new("#eff1f5", "#4c4f69").is_none());
     }
 
     #[test]
