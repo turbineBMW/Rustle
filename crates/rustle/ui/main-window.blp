@@ -178,9 +178,41 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                   Gtk.SearchBar search_bar {
                     search-mode-enabled: bind search_button.active bidirectional;
 
-                    child: Gtk.SearchEntry search_entry {
-                      hexpand: true;
-                      placeholder-text: _("Search mail");
+                    child: Gtk.Box search_box {
+                      orientation: vertical;
+                      spacing: 6;
+
+                      Gtk.Box search_row {
+                        spacing: 6;
+
+                        Gtk.SearchEntry search_entry {
+                          hexpand: true;
+                          placeholder-text: _("Search mail");
+                        }
+
+                        Gtk.Spinner ask_spinner {
+                          visible: false;
+                        }
+
+                        // Only there once a tool is picked in Preferences
+                        // (window/smart_search.rs).
+                        Gtk.ToggleButton ask_button {
+                          icon-name: "assistant-symbolic";
+                          tooltip-text: _("Smart Search");
+                          visible: false;
+
+                          styles ["flat"]
+                        }
+                      }
+
+                      // What the assistant made of the request.
+                      Gtk.Label smart_summary {
+                        xalign: 0;
+                        wrap: true;
+                        visible: false;
+
+                        styles ["caption", "dim-label"]
+                      }
                     };
                   }
 

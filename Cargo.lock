@@ -2272,6 +2272,8 @@ dependencies = [
  "percent-encoding",
  "regex",
  "rusqlite",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",

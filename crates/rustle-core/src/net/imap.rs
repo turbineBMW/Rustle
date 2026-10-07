@@ -290,6 +290,12 @@ impl ImapSession {
         Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
     }
 
+    /// The UIDs in the selected mailbox matching a SEARCH `criteria`.
+    pub fn search_uids(&mut self, criteria: &str) -> Result<Vec<String>> {
+        let uids = self.require()?.uid_search(criteria)?;
+        Ok(uids.into_iter().map(|uid| uid.to_string()).collect())
+    }
+
     /// Move one message and return its destination UID when reported.
     /// COPYUID is the response code used by most servers; MOVEUID by some
     /// implementing RFC 6851. Both arrive on the tagged OK line, which the

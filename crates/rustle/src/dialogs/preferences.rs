@@ -10,6 +10,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gio;
 use gtk::glib;
+use rustle_core::assistant::Harness;
 use std::cell::{Cell, RefCell};
 
 /// The sync-interval combo, in row order: the minute value stored in
@@ -55,6 +56,10 @@ mod imp {
         pub interval_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub all_mail_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub assistant_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub assistant_model_row: TemplateChild<adw::EntryRow>,
         #[template_child]
         pub appearance_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
@@ -130,6 +135,8 @@ impl PreferencesDialog {
             .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")
             .build();
 
+        dialog.setup_assistant(settings);
+
         // Only offered where there is an Omarchy theme to follow; the key
         // is inert everywhere else. `omarchy.rs` reacts to the change.
         imp.appearance_group.set_visible(omarchy::detected());
@@ -171,6 +178,54 @@ impl PreferencesDialog {
             move |row| dialog.on_autostart_toggled(row.is_active())
         ));
         dialog
+    }
+
+    /// Off, or one of the tools; one not on this machine says so. The
+    /// model is the tool's own name for it, so it is free text.
+    fn setup_assistant(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        let mut labels = vec![gettext("Off")];
+        labels.extend(Harness::ALL.iter().map(|harness| {
+            if harness.program().is_some() {
+                harness.label().to_string()
+            } else {
+                i18n::format(
+                    &gettext("{tool} (not installed)"),
+                    &[("tool", harness.label())],
+                )
+            }
+        }));
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        imp.assistant_row
+            .set_model(Some(&gtk::StringList::new(&labels)));
+        let current = Harness::parse(&settings.string(keys::ASSISTANT));
+        let index = current
+            .and_then(|harness| Harness::ALL.iter().position(|each| *each == harness))
+            .map_or(0, |position| position + 1);
+        imp.assistant_row.set_selected(index as u32);
+        imp.assistant_row.connect_selected_notify(glib::clone!(
+            #[weak(rename_to = dialog)]
+            self,
+            move |row| {
+                let id = match row.selected() {
+                    0 => "",
+                    n => Harness::ALL
+                        .get(n as usize - 1)
+                        .map_or("", |harness| harness.id()),
+                };
+                if let Some(settings) = dialog.imp().settings.borrow().as_ref() {
+                    let _ = settings.set_string(keys::ASSISTANT, id);
+                }
+            }
+        ));
+        settings
+            .bind(keys::ASSISTANT_MODEL, &*imp.assistant_model_row, "text")
+            .build();
+        settings
+            .bind(keys::ASSISTANT, &*imp.assistant_model_row, "sensitive")
+            .get_only()
+            .mapping(|value, _| Some((!value.get::<String>()?.is_empty()).to_value()))
+            .build();
     }
 
     /// The combo row for a stored interval, falling back to the default.
