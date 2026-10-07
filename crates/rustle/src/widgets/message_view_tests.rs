@@ -77,6 +77,7 @@ fn reader_layout_keeps_header_compact_and_body_visible() {
                 on_open_attachment: Rc::new(|_| {}),
                 on_save_attachment: Rc::new(|_| {}),
                 on_unsubscribe: Rc::new(|_, _| {}),
+                on_respond: Rc::new(|_, _, _| false),
             });
             let view = MessageView::new(email, handlers, Box::new(|| {}), true, &avatars, None);
             let messages = gtk::Box::new(gtk::Orientation::Vertical, 0);

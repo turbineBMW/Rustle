@@ -8,11 +8,14 @@ use crate::widgets::message_view::{Handlers, LoadCallback, MessageView, Rendered
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use chrono::Utc;
 use gtk::gio;
 use gtk::glib;
+use rustle_core::invite::{self, Invitation, Person, Response};
 use rustle_core::mime::Unsubscribe;
-use rustle_core::models::{Attachment, Email};
+use rustle_core::models::{Attachment, Email, MessageHeader};
 use rustle_core::net::errors::classify;
+use rustle_core::{compose, dates, folders};
 use rustle_core::{secrets, sync};
 use std::path::Path;
 use std::rc::Rc;
@@ -52,16 +55,25 @@ impl MainWindow {
                 }
             }
         };
-        let on_unsubscribe = move |target: &Unsubscribe, on_done: Box<dyn Fn()>| {
-            if let Some(window) = window.upgrade() {
-                window.on_unsubscribe(target, on_done);
+        let on_unsubscribe = {
+            let window = window.clone();
+            move |target: &Unsubscribe, on_done: Box<dyn Fn()>| {
+                if let Some(window) = window.upgrade() {
+                    window.on_unsubscribe(target, on_done);
+                }
             }
+        };
+        let on_respond = move |email: &Email, invitation: &Invitation, response: Response| {
+            window
+                .upgrade()
+                .is_some_and(|window| window.respond_to_invitation(email, invitation, response))
         };
         self.state_mut().message_handlers = Some(Rc::new(Handlers {
             on_load: Rc::new(on_load),
             on_save_attachment: Rc::new(on_save),
             on_open_attachment: Rc::new(on_open),
             on_unsubscribe: Rc::new(on_unsubscribe),
+            on_respond: Rc::new(on_respond),
         }));
     }
 
@@ -351,6 +363,113 @@ impl MainWindow {
                 }
             ),
         );
+    }
+
+    /// Answer an invitation: mail the organizer an iTIP reply from the
+    /// account the invitation came to. It goes through the Outbox like any
+    /// sent mail, so it survives being offline. True once it's queued.
+    fn respond_to_invitation(
+        &self,
+        email: &Email,
+        invitation: &Invitation,
+        response: Response,
+    ) -> bool {
+        let Some((account, _)) = self.account_for_folder(email.folder_id) else {
+            self.toast(&gettext(
+                "Only an invitation in one of your accounts can be answered.",
+            ));
+            return false;
+        };
+        let Some(organizer) = &invitation.organizer else {
+            return false;
+        };
+        if organizer.email.eq_ignore_ascii_case(&account.email) {
+            self.toast(&gettext("You organised this meeting."));
+            return false;
+        }
+        let me = Person {
+            name: account.display_name.clone(),
+            email: account.email.clone(),
+        };
+        let Some(ics) = invite::reply_ics(&invitation.ics.content, &me, response, Utc::now())
+        else {
+            self.toast(&gettext("Couldn't read this invitation."));
+            return false;
+        };
+        let name = if me.name.is_empty() {
+            me.email.clone()
+        } else {
+            me.name.clone()
+        };
+        let summary = if invitation.summary.is_empty() {
+            email.subject.clone()
+        } else {
+            invitation.summary.clone()
+        };
+        let (subject, text) = match response {
+            Response::Accepted => (
+                gettext("Accepted: {summary}"),
+                gettext("{name} has accepted."),
+            ),
+            Response::Tentative => (
+                gettext("Tentative: {summary}"),
+                gettext("{name} has tentatively accepted."),
+            ),
+            _ => (
+                gettext("Declined: {summary}"),
+                gettext("{name} has declined."),
+            ),
+        };
+        let subject = i18n::format(&subject, &[("summary", &summary)]);
+        let text = i18n::format(&text, &[("name", &name)]);
+        let raw = match compose::invitation_reply_message(
+            &account.email,
+            &organizer.email,
+            &subject,
+            &text,
+            &ics,
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                log::error!(
+                    "could not build a reply to the invitation {summary:?} (account {}): {error}",
+                    account.email
+                );
+                self.toast(&gettext("Couldn't read this invitation."));
+                return false;
+            }
+        };
+        let queued = {
+            let db = self.db();
+            let db = db.borrow();
+            db.get_or_create_folder(
+                account.id,
+                folders::OUTBOX_FOLDER,
+                folders::icon_for_folder(folders::OUTBOX_FOLDER),
+            )
+            .and_then(|outbox| {
+                let row = db.save_email(
+                    outbox.id,
+                    &MessageHeader {
+                        sender: account.email.clone(),
+                        recipient: organizer.label().to_string(),
+                        recipient_address: organizer.email.clone(),
+                        subject: subject.clone(),
+                        preview: text.clone(),
+                        date: dates::now_iso(),
+                        is_unread: false,
+                        ..MessageHeader::default()
+                    },
+                )?;
+                db.save_raw_message(row.id, &raw)
+            })
+        };
+        if let Err(error) = queued {
+            log::error!("could not queue an invitation reply in the Outbox: {error}");
+            return false;
+        }
+        self.drain_outbox(&account);
+        true
     }
 
     fn on_unsubscribe(&self, target: &Unsubscribe, on_done: Box<dyn Fn()>) {

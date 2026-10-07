@@ -200,6 +200,7 @@ impl MainWindow {
             on_save_attachment: shared.on_save_attachment.clone(),
             on_open_attachment: shared.on_open_attachment.clone(),
             on_unsubscribe: shared.on_unsubscribe.clone(),
+            on_respond: shared.on_respond.clone(),
         };
         let view = MessageView::new(
             email,
