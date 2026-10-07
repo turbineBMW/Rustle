@@ -7,12 +7,16 @@
 use super::MainWindow;
 use crate::i18n::{self, gettext};
 use crate::workers;
+use adw::subclass::prelude::*;
 use rustle_core::db::Database;
 use rustle_core::models::{Account, MessageHeader};
 use rustle_core::net::errors::Failure;
 use rustle_core::queue::{self, Change, Outcome, PendingOp, Replay};
 use rustle_core::secrets;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Failed flushes in a row, while online, before the queue counts as stuck.
+const STUCK_AFTER: u32 = 3;
 
 use gtk::glib;
 
@@ -28,6 +32,8 @@ impl MainWindow {
             return;
         }
         self.flush_queue(account);
+        // Offline, or after a failed try, it joins the visible count.
+        self.update_queue_status();
     }
 
     /// Send an account's queued changes, one pass at a time: a flush asked
@@ -134,7 +140,15 @@ impl MainWindow {
                 "{waiting} change(s) for {} stay queued until the server can be reached: {failure:?}",
                 account.email
             );
+            *self
+                .state_mut()
+                .queue_failures
+                .entry(account.id)
+                .or_default() += 1;
+        } else {
+            self.state_mut().queue_failures.remove(&account.id);
         }
+        self.update_queue_status();
 
         let is_changed = !replay.outcomes.is_empty() || replay.interrupted.is_some();
         if is_changed {
@@ -154,6 +168,63 @@ impl MainWindow {
         let again = self.state_mut().flush_again.remove(&account.id);
         if again && replay.failure.is_none() {
             self.flush_queue(account);
+        }
+    }
+
+    /// Show what's waiting: a count on each account whose changes can't go
+    /// out yet (offline, or the last try failed), the total in the offline
+    /// banner, and a Retry banner once tries keep failing while online. A
+    /// change that goes straight through shows nothing.
+    pub(super) fn update_queue_status(&self) {
+        let counts = match self.db().borrow().pending_change_counts() {
+            Ok(counts) => counts,
+            Err(error) => {
+                log::error!("could not count the queued changes: {error}");
+                return;
+            }
+        };
+        let (shown, is_online, is_stuck) = {
+            let state = self.state();
+            let shown: HashMap<i64, usize> = counts
+                .iter()
+                .filter(|(id, _)| {
+                    !state.is_online || state.queue_failures.get(id).is_some_and(|n| *n > 0)
+                })
+                .map(|(id, count)| (*id, *count))
+                .collect();
+            let is_stuck = state.is_online
+                && counts.iter().any(|(id, count)| {
+                    *count > 0
+                        && state
+                            .queue_failures
+                            .get(id)
+                            .is_some_and(|n| *n >= STUCK_AFTER)
+                });
+            (shown, state.is_online, is_stuck)
+        };
+        let rows: Vec<(i64, crate::widgets::folder_row::FolderRow)> = self
+            .state()
+            .account_rows
+            .iter()
+            .map(|(id, row)| (*id, row.clone()))
+            .collect();
+        for (id, row) in rows {
+            row.set_pending(shown.get(&id).copied().unwrap_or(0));
+        }
+        let total: usize = shown.values().sum();
+        self.state_mut().pending_shown = shown;
+        if !is_online {
+            self.show_offline_banner();
+        } else if is_stuck {
+            self.state_mut().is_queue_banner_shown = true;
+            self.show_retry_banner(&i18n::plural(
+                "{n} change hasn't reached the server yet.",
+                "{n} changes haven't reached the server yet.",
+                total as u64,
+                &[],
+            ));
+        } else if std::mem::take(&mut self.state_mut().is_queue_banner_shown) {
+            self.imp().connection_banner.set_revealed(false);
         }
     }
 

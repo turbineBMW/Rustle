@@ -3,7 +3,7 @@
 //! an account with a picture shows it in place of the icon.
 
 use crate::account_pictures;
-use crate::i18n::gettext;
+use crate::i18n::{self, gettext};
 use crate::objects::SidebarItem;
 use adw::prelude::*;
 use gtk::glib;
@@ -155,6 +155,26 @@ impl FolderRow {
         imp.picture.set_custom_image(texture);
         imp.picture.set_visible(texture.is_some());
         imp.icon.set_visible(texture.is_none());
+    }
+
+    /// An account row's count of changes not yet on the server; 0 hides it.
+    pub fn set_pending(&self, count: usize) {
+        let badge = &self.imp().badge;
+        badge.set_visible(count > 0);
+        if count == 0 {
+            badge.set_tooltip_text(None);
+            return;
+        }
+        badge.set_label(&i18n::format(
+            &gettext("{n} waiting"),
+            &[("n", &count.to_string())],
+        ));
+        badge.set_tooltip_text(Some(&i18n::plural(
+            "{n} change is waiting to reach the server",
+            "{n} changes are waiting to reach the server",
+            count as u64,
+            &[],
+        )));
     }
 
     fn set_badge(&self, unread_count: i64) {

@@ -392,6 +392,8 @@ impl MainWindow {
         self.reload_folders();
         self.refresh_emails(keep_id);
         self.imp().connection_banner.set_revealed(false);
+        // A stuck queue keeps its banner through a sync that went fine.
+        self.update_queue_status();
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
         if result.offset == 0 {
             // The newest page is in; the rest of the account follows in the
@@ -592,14 +594,33 @@ impl MainWindow {
     }
 
     pub(super) fn show_offline_banner(&self) {
-        self.show_connection_banner(
-            &gettext("You're offline. Rustle will reconnect when your connection returns."),
-            "",
-        );
+        let waiting: usize = self
+            .db()
+            .borrow()
+            .pending_change_counts()
+            .map(|counts| counts.values().sum())
+            .unwrap_or(0);
+        let title = if waiting == 0 {
+            gettext("You're offline. Rustle will reconnect when your connection returns.")
+        } else {
+            i18n::plural(
+                "You're offline. {n} change will be sent when you reconnect.",
+                "You're offline. {n} changes will be sent when you reconnect.",
+                waiting as u64,
+                &[],
+            )
+        };
+        self.show_connection_banner(&title, "");
+    }
+
+    /// The connection banner with a Retry button.
+    pub(super) fn show_retry_banner(&self, title: &str) {
+        self.show_connection_banner(title, &gettext("Retry"));
     }
 
     pub(super) fn on_banner_retry(&self) {
         self.imp().connection_banner.set_revealed(false);
+        self.state_mut().is_queue_banner_shown = false;
         if !self.state().accounts.is_empty() {
             self.sync_all(false);
         }
@@ -615,10 +636,12 @@ impl MainWindow {
         rustle_core::net::pool::forget_all();
         self.sync_inbox_watchers();
         if !is_available {
-            self.show_offline_banner();
+            // Shows the offline banner, with what's waiting, and the counts.
+            self.update_queue_status();
             return;
         }
         self.imp().connection_banner.set_revealed(false);
+        self.update_queue_status();
         if !self.state().accounts.is_empty() {
             self.sync_all(false);
         }
