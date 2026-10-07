@@ -304,10 +304,13 @@ impl MessageView {
                 self.decrypt_then_render(raw);
             }
             pgp::Protection::Signed => {
-                self.render(raw.clone(), &raw, None);
+                // Only the signed part is shown: the signature speaks for
+                // nothing else, such as a part appended after it.
+                let shown = pgp::signed_message(&raw).unwrap_or_else(|| raw.clone());
+                self.render(shown, &raw, |_| None);
                 self.verify(raw);
             }
-            pgp::Protection::None => self.render(raw.clone(), &raw, None),
+            pgp::Protection::None => self.render(raw.clone(), &raw, |_| None),
         }
     }
 
@@ -337,8 +340,14 @@ impl MessageView {
                 }
                 match result {
                     Ok(decrypted) => {
-                        let note = pgp_note(true, decrypted.signature.as_ref());
-                        this.render(decrypted.raw, &raw, Some(note));
+                        let pgp::Decrypted {
+                            raw: shown,
+                            signature,
+                            is_encrypted,
+                        } = decrypted;
+                        this.render(shown, &raw, |parsed| {
+                            pgp_note(is_encrypted, signature.as_ref(), &parsed.from_header)
+                        });
                     }
                     Err(message) => {
                         log::warn!("could not decrypt an OpenPGP message: {message}");
@@ -351,7 +360,7 @@ impl MessageView {
                             ),
                             true,
                         );
-                        this.render(raw.clone(), &raw, Some(note));
+                        this.render(raw.clone(), &raw, |_| Some(note));
                     }
                 }
             },
@@ -367,34 +376,49 @@ impl MessageView {
                 if this.inner.borrow().is_released {
                     return;
                 }
+                let from = this
+                    .inner
+                    .borrow()
+                    .parsed
+                    .as_ref()
+                    .map(|parsed| parsed.from_header.clone())
+                    .unwrap_or_default();
                 let note = match result {
-                    Ok(status) => pgp_note(false, Some(&status)),
+                    Ok(status) => pgp_note(false, Some(&status), &from),
                     Err(message) => {
                         log::warn!("could not check an OpenPGP signature: {message}");
-                        (
+                        Some((
                             i18n::format(
                                 &gettext("This message is signed, but the signature couldn't be checked: {msg}"),
                                 &[("msg", &message)],
                             ),
                             true,
-                        )
+                        ))
                     }
                 };
-                this.body.prepend(&pgp_banner(&note));
+                if let Some(note) = note {
+                    this.body.prepend(&pgp_banner(&note));
+                }
             },
         );
     }
 
     /// Show `shown` (the message, or what was decrypted out of it) while
     /// `raw` -- what's stored, saved and shown as source -- stays as it came.
-    fn render(&self, shown: Vec<u8>, raw: &[u8], note: Option<(String, bool)>) {
+    /// `note` reads the parsed message for the OpenPGP banner, if any.
+    fn render(
+        &self,
+        shown: Vec<u8>,
+        raw: &[u8],
+        note: impl FnOnce(&ParsedMessage) -> Option<(String, bool)>,
+    ) {
         let parsed = mime::parse_message(&shown);
         {
             let mut inner = self.inner.borrow_mut();
             inner.raw = Some(raw.to_vec());
             inner.parsed = Some(parsed.clone());
         }
-        if let Some(note) = &note {
+        if let Some(note) = &note(&parsed) {
             self.body.append(&pgp_banner(note));
         }
         self.show_recipients(&parsed);
@@ -611,19 +635,7 @@ impl MessageView {
         if let Some(settings) = WebViewExt::settings(&view) {
             settings.set_enable_javascript(false);
         }
-        // Nothing may navigate this view but its own load.
-        view.connect_decide_policy(|_, decision, _| {
-            let is_link = decision
-                .downcast_ref::<webkit::NavigationPolicyDecision>()
-                .and_then(|navigation| navigation.navigation_action())
-                .is_some_and(|action| {
-                    action.navigation_type() == webkit::NavigationType::LinkClicked
-                });
-            if is_link {
-                decision.ignore();
-            }
-            is_link
-        });
+        view.connect_decide_policy(|_, decision, _| decide_print_policy(decision));
         // The view has no parent to keep it, so this does until it's printed.
         let keep: Rc<RefCell<Option<webkit::WebView>>> = Rc::new(RefCell::new(Some(view.clone())));
         let parent = parent.clone();
@@ -849,9 +861,26 @@ impl MessageView {
 }
 
 /// What OpenPGP found, and whether it's a warning: (text, is_warning).
-fn pgp_note(was_encrypted: bool, signature: Option<&pgp::SignatureStatus>) -> (String, bool) {
+/// None when there's nothing to say. `from_header` is the message's From,
+/// which a good signature has to be by.
+fn pgp_note(
+    was_encrypted: bool,
+    signature: Option<&pgp::SignatureStatus>,
+    from_header: &str,
+) -> Option<(String, bool)> {
     let (signed, is_warning) = match signature {
         None => (String::new(), false),
+        Some(pgp::SignatureStatus::Good { signer, .. })
+            if !pgp::signer_matches_sender(signer, from_header) =>
+        {
+            (
+                i18n::format(
+                    &gettext("Signed by {signer}, who isn't the sender."),
+                    &[("signer", signer)],
+                ),
+                true,
+            )
+        }
         Some(pgp::SignatureStatus::Good {
             signer,
             is_trusted: true,
@@ -884,9 +913,10 @@ fn pgp_note(was_encrypted: bool, signature: Option<&pgp::SignatureStatus>) -> (S
     let text = match (was_encrypted, signed.is_empty()) {
         (true, true) => gettext("Encrypted with OpenPGP."),
         (true, false) => format!("{} {signed}", gettext("Encrypted with OpenPGP.")),
-        (false, _) => signed,
+        (false, true) => return None,
+        (false, false) => signed,
     };
-    (text, is_warning)
+    Some((text, is_warning))
 }
 
 fn pgp_banner((text, is_warning): &(String, bool)) -> adw::Banner {
@@ -907,27 +937,40 @@ fn set_label_scale(label: &gtk::Label, zoom: f64) {
     label.set_attributes(Some(&attributes));
 }
 
-/// The webview only ever renders the message body: the one navigation it may
-/// perform is the load_html document itself. A click goes to the browser, and
-/// anything else the body asks for is refused outright.
-fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
-    let Some(navigation) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else {
-        return false;
-    };
-    let Some(action) = navigation.navigation_action() else {
-        return false;
-    };
+/// A navigation's type and URI; None for a decision that isn't one.
+fn navigation_of(decision: &webkit::PolicyDecision) -> Option<(webkit::NavigationType, String)> {
+    let navigation = decision.downcast_ref::<webkit::NavigationPolicyDecision>()?;
+    let action = navigation.navigation_action()?;
     let uri = action
         .request()
         .and_then(|request| request.uri())
         .map(|uri| uri.to_string())
         .unwrap_or_default();
-    let scheme = uri.split(':').next().unwrap_or("").to_lowercase();
+    Some((action.navigation_type(), uri))
+}
 
-    if action.navigation_type() != webkit::NavigationType::LinkClicked {
-        // load_html has no base URI, so its own document arrives as
-        // about:blank -- or with no URI at all. Neither can leak anything.
-        if scheme == "about" || scheme.is_empty() {
+fn scheme_of(uri: &str) -> String {
+    uri.split(':').next().unwrap_or("").to_lowercase()
+}
+
+/// load_html has no base URI, so a view's own document arrives as
+/// about:blank -- or with no URI at all. Neither can leak anything.
+fn is_own_document(uri: &str) -> bool {
+    let scheme = scheme_of(uri);
+    scheme == "about" || scheme.is_empty()
+}
+
+/// The webview only ever renders the message body: the one navigation it may
+/// perform is the load_html document itself. A click goes to the browser, and
+/// anything else the body asks for is refused outright.
+fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
+    let Some((kind, uri)) = navigation_of(decision) else {
+        return false;
+    };
+    let scheme = scheme_of(&uri);
+
+    if kind != webkit::NavigationType::LinkClicked {
+        if is_own_document(&uri) {
             return false;
         }
         decision.ignore();
@@ -942,6 +985,21 @@ fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
     }
     let window = root.root().and_downcast::<gtk::Window>();
     invitation::open_link(window.as_ref(), &uri);
+    true
+}
+
+/// The print view is never shown, so nothing in it is followed: not a link,
+/// and not a meta refresh or anything else that would take it off its own
+/// document.
+fn decide_print_policy(decision: &webkit::PolicyDecision) -> bool {
+    let Some((kind, uri)) = navigation_of(decision) else {
+        return false;
+    };
+    if kind != webkit::NavigationType::LinkClicked && is_own_document(&uri) {
+        return false;
+    }
+    decision.ignore();
+    log::warn!("blocked navigation from a printed message to {uri}");
     true
 }
 

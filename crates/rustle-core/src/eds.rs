@@ -13,7 +13,7 @@ use crate::models::{Auth, Security};
 use crate::net::NET_TIMEOUT;
 use gio::prelude::*;
 use glib::{KeyFile, Variant};
-use log::debug;
+use log::{debug, warn};
 use std::collections::HashMap;
 
 pub const BUS_NAME: &str = "org.gnome.evolution.dataserver.Sources5";
@@ -255,21 +255,24 @@ enum Direction {
 }
 
 fn server(uid: &str, file: &KeyFile, source: &Source, email: &str, direction: Direction) -> Server {
-    let security = match text(file, "Security", "Method").as_str() {
-        "ssl-on-alternate-port" => Security::Tls,
-        "starttls-on-standard-port" => Security::StartTls,
-        _ => Security::None,
-    };
     let port = u16::try_from(integer(file, "Authentication", "Port"))
         .ok()
-        .filter(|port| *port > 0)
-        .unwrap_or(match (direction, security) {
-            (Direction::Imap, Security::Tls) => IMAP_IMPLICIT_TLS_PORT,
-            (Direction::Imap, _) => IMAP_PORT,
-            (Direction::Smtp, Security::Tls) => SMTP_IMPLICIT_TLS_PORT,
-            (Direction::Smtp, Security::StartTls) => SMTP_STARTTLS_PORT,
-            (Direction::Smtp, Security::None) => SMTP_PORT,
-        });
+        .filter(|port| *port > 0);
+    let method = text(file, "Security", "Method");
+    let security = security_from_method(&method, port, direction);
+    if !matches!(
+        method.as_str(),
+        "ssl-on-alternate-port" | "starttls-on-standard-port" | "none"
+    ) {
+        warn!("EDS source {uid} has security method {method:?}; using {security:?}");
+    }
+    let port = port.unwrap_or(match (direction, security) {
+        (Direction::Imap, Security::Tls) => IMAP_IMPLICIT_TLS_PORT,
+        (Direction::Imap, _) => IMAP_PORT,
+        (Direction::Smtp, Security::Tls) => SMTP_IMPLICIT_TLS_PORT,
+        (Direction::Smtp, Security::StartTls) => SMTP_STARTTLS_PORT,
+        (Direction::Smtp, Security::None) => SMTP_PORT,
+    });
     let mut user = text(file, "Authentication", "User");
     if user.is_empty() {
         user = email.to_string();
@@ -281,6 +284,22 @@ fn server(uid: &str, file: &KeyFile, source: &Source, email: &str, direction: Di
         security,
         user,
         auth: auth(&text(file, "Authentication", "Method"), source.has_oauth2),
+    }
+}
+
+/// The `[Security] Method` EDS wrote. Only an explicit "none" is plaintext:
+/// a missing or unknown method gets TLS, or STARTTLS on a port that speaks
+/// plaintext first, so a password never goes out in the clear by default.
+fn security_from_method(method: &str, port: Option<u16>, direction: Direction) -> Security {
+    match method {
+        "ssl-on-alternate-port" => Security::Tls,
+        "starttls-on-standard-port" => Security::StartTls,
+        "none" => Security::None,
+        _ => match (direction, port) {
+            (Direction::Imap, Some(IMAP_PORT)) => Security::StartTls,
+            (Direction::Smtp, Some(SMTP_STARTTLS_PORT | SMTP_PORT)) => Security::StartTls,
+            _ => Security::Tls,
+        },
     }
 }
 
@@ -723,6 +742,59 @@ mod tests {
             .replace("ssl-on-alternate-port", "starttls-on-standard-port");
         let account = &mail_accounts_from(&sources)[0];
         assert_eq!((account.imap.port, account.smtp.port), (993, 587));
+    }
+
+    #[test]
+    fn only_an_explicit_none_is_plaintext() {
+        let read = |imap: &str, smtp: &str| {
+            let mut sources = gmail();
+            // The group goes, and a "Port=" given in its place overrides.
+            let swap = |data: &str, with: &str, default: &str| {
+                let data = data.replace("[Security]\nMethod=ssl-on-alternate-port\n", "");
+                match with.strip_prefix("Port=") {
+                    Some(_) => data.replace(default, with),
+                    None => format!("{data}{with}"),
+                }
+            };
+            sources[1].data = swap(&sources[1].data, imap, "Port=993\n");
+            sources[3].data = swap(&sources[3].data, smtp, "Port=465\n");
+            let account = mail_accounts_from(&sources).remove(0);
+            (
+                (account.imap.security, account.imap.port),
+                (account.smtp.security, account.smtp.port),
+            )
+        };
+        // No [Security] group at all.
+        assert_eq!(read("", ""), ((Security::Tls, 993), (Security::Tls, 465)));
+        assert_eq!(
+            read("[Security]\nMethod=bogus\n", "[Security]\nMethod=\n"),
+            ((Security::Tls, 993), (Security::Tls, 465))
+        );
+        // A plaintext-first port gets STARTTLS instead.
+        assert_eq!(
+            read("Port=143\n", "Port=587\n"),
+            ((Security::StartTls, 143), (Security::StartTls, 587))
+        );
+        assert_eq!(
+            security_from_method("", Some(143), Direction::Imap),
+            Security::StartTls
+        );
+        assert_eq!(
+            security_from_method("", Some(587), Direction::Smtp),
+            Security::StartTls
+        );
+        assert_eq!(
+            security_from_method("", Some(25), Direction::Smtp),
+            Security::StartTls
+        );
+        assert_eq!(
+            security_from_method("", Some(1143), Direction::Imap),
+            Security::Tls
+        );
+        assert_eq!(
+            read("[Security]\nMethod=none\n", "[Security]\nMethod=none\n"),
+            ((Security::None, 993), (Security::None, 465))
+        );
     }
 
     #[test]
