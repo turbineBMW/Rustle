@@ -5,6 +5,7 @@ use crate::accent;
 use crate::account_colors;
 use crate::avatar_loader::AvatarLoader;
 use crate::i18n::{self, gettext};
+use crate::widgets::invitation;
 use adw::prelude::*;
 use gtk::gdk;
 use gtk::glib;
@@ -289,6 +290,7 @@ impl MessageView {
             inner.parsed = Some(parsed.clone());
         }
         self.show_recipients(&parsed);
+        self.show_invitation(&parsed);
         self.populate_attachments(&parsed.attachments);
         self.show_unsubscribe(parsed.unsubscribe.as_ref());
         match &parsed.html_body {
@@ -340,6 +342,18 @@ impl MessageView {
         }
         self.recipients
             .set_visible(self.recipients.first_child().is_some());
+    }
+
+    fn show_invitation(&self, parsed: &ParsedMessage) {
+        let Some(invitation) = &parsed.invitation else {
+            return;
+        };
+        let on_save = self.inner.borrow().handlers.on_save_attachment.clone();
+        let card = invitation::card(invitation, &parsed.subject, on_save);
+        card.set_margin_start(EDGE);
+        card.set_margin_end(EDGE);
+        card.set_margin_bottom(GUTTER);
+        self.body.append(&card);
     }
 
     fn show_unsubscribe(&self, target: Option<&Unsubscribe>) {
@@ -604,7 +618,7 @@ fn decide_policy(root: &gtk::Box, decision: &webkit::PolicyDecision) -> bool {
         return true;
     }
     let window = root.root().and_downcast::<gtk::Window>();
-    gtk::UriLauncher::new(&uri).launch(window.as_ref(), gtk::gio::Cancellable::NONE, |_| {});
+    invitation::open_link(window.as_ref(), &uri);
     true
 }
 

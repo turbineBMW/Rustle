@@ -203,3 +203,15 @@ button.color-swatch {
 .assist-card {
   padding: 12px;
 }
+
+.invitation-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px 12px 12px 14px;
+}
+
+.invitation-icon,
+.invitation-status:not(.error) {
+  color: var(--accent-color);
+}

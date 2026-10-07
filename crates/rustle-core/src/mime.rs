@@ -1,8 +1,9 @@
 //! Reading a stored message: bodies, attachments, the headers the reader
 //! shows, and the sandbox the HTML body is rendered in.
 
+use crate::invite::Invitation;
 use crate::models::Attachment;
-use crate::{dates, html};
+use crate::{dates, html, invite};
 use mail_parser::{MessageParser, MimeHeaders, PartType};
 
 /// Where a mailing list says it will accept an unsubscribe request.
@@ -32,6 +33,8 @@ pub struct ParsedMessage {
     /// The Message-ID header, angle brackets included; "" when there is none.
     pub message_id: String,
     pub unsubscribe: Option<Unsubscribe>,
+    /// The meeting a calendar invite, update, cancellation or reply is about.
+    pub invitation: Option<Invitation>,
 }
 
 /// The most characters a email-list preview keeps. Two lines of a
@@ -130,6 +133,17 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         let is_attachment = part
             .content_disposition()
             .is_some_and(|disposition| disposition.ctype().eq_ignore_ascii_case("attachment"));
+        // The invite's calendar part. Exchange sends it unnamed beside the
+        // body; it is the invitation card, not an attachment. A named .ics
+        // stays listed as well.
+        if result.invitation.is_none() && is_calendar(part) {
+            if let Some(invitation) = invite::parse(part.contents()) {
+                result.invitation = Some(invitation);
+                if part.attachment_name().is_none() {
+                    continue;
+                }
+            }
+        }
         match &part.body {
             PartType::Multipart(_) => continue, // its children are visited on their own
             PartType::Text(text) if !is_attachment && result.text_body.is_none() => {
@@ -233,6 +247,15 @@ fn addresses(address: Option<&mail_parser::Address>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn is_calendar(part: &mail_parser::MessagePart) -> bool {
+    part.content_type().is_some_and(|ct| {
+        ct.ctype().eq_ignore_ascii_case("text")
+            && ct
+                .subtype()
+                .is_some_and(|subtype| subtype.eq_ignore_ascii_case("calendar"))
+    })
 }
 
 fn as_attachment(part: &mail_parser::MessagePart) -> Attachment {
@@ -364,6 +387,17 @@ mod tests {
             ),
             "**Bumping this to the top** and more te"
         );
+    }
+
+    #[test]
+    fn calendar_part_becomes_the_invitation() {
+        // Exchange's shape: HTML and the unnamed calendar part, no text/plain.
+        let raw = b"Subject: Weekly\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>Join</p>\r\n--b\r\nContent-Type: text/calendar; charset=\"utf-8\"; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nSUMMARY:Weekly\r\nDTSTART:20261008T180000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n--b--\r\n";
+        let parsed = parse_message(raw);
+        assert_eq!(parsed.invitation.unwrap().summary, "Weekly");
+        assert!(parsed.attachments.is_empty());
+        assert!(parsed.text_body.is_none());
+        assert_eq!(parsed.html_body.as_deref(), Some("<p>Join</p>"));
     }
 
     const RAW: &[u8] = b"From: Ada Lovelace <ada@example.com>\r\nTo: Bob <bob@example.org>, carol@example.net\r\nCc: dan@example.net\r\nDate: Wed, 16 Jul 2026 10:00:00 +0000\r\nSubject: Hello\r\nList-Unsubscribe: <mailto:leave@list.example>, <https://list.example/u?\r\n token=abc>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n--a\r\nContent-Type: text/plain\r\n\r\nplain body\r\n--a\r\nContent-Type: text/html\r\n\r\n<p>html body</p>\r\n--a--\r\n--b\r\nContent-Type: application/pdf; name=\"doc.pdf\"\r\nContent-Disposition: attachment; filename=\"doc.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--b--\r\n";

@@ -17,6 +17,7 @@ pub mod eds;
 pub mod folders;
 pub mod goa_setup;
 pub mod html;
+pub mod invite;
 pub mod mime;
 pub mod models;
 pub mod net;
