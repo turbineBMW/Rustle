@@ -83,6 +83,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
       Adw.SwitchRow omarchy_row {
         title: _("Follow Omarchy Theme");
       }
+    }
+
+    // Not under Appearance: that group only shows where Omarchy is installed.
+    Adw.PreferencesGroup {
+      title: _("Message List");
 
       Adw.SwitchRow group_row {
         title: _("Group Conversations");
