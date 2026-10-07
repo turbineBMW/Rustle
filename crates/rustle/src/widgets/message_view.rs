@@ -299,6 +299,7 @@ impl MessageView {
             inner.parsed = Some(parsed.clone());
         }
         self.show_recipients(&parsed);
+        self.show_authentication(&parsed);
         self.show_invitation(&parsed);
         self.populate_attachments(&parsed.attachments);
         self.show_unsubscribe(parsed.unsubscribe.as_ref());
@@ -372,10 +373,31 @@ impl MessageView {
         self.body.append(&card);
     }
 
+    /// The provider couldn't verify the sender: the From line may be a lie.
+    /// (A pass gets no badge: see `rustle_core::verify`.)
+    fn show_authentication(&self, parsed: &ParsedMessage) {
+        if parsed.authentication != rustle_core::verify::Verdict::Fail {
+            return;
+        }
+        let banner = adw::Banner::builder()
+            .title(gettext(
+                "Your mail provider couldn't verify who sent this. Be careful with its links, attachments and requests.",
+            ))
+            .revealed(true)
+            .css_classes(["unverified-banner"])
+            .build();
+        self.body.append(&banner);
+    }
+
     fn show_unsubscribe(&self, target: Option<&Unsubscribe>) {
         let Some(target) = target else { return };
+        let title = if target.from_body {
+            gettext("This looks like a newsletter.")
+        } else {
+            gettext("You're subscribed to this mailing list.")
+        };
         let banner = adw::Banner::builder()
-            .title(gettext("You're subscribed to this mailing list."))
+            .title(title)
             .button_label(gettext("Unsubscribe"))
             .revealed(true)
             .build();

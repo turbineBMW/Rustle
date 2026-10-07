@@ -51,6 +51,8 @@ mod imp {
         #[template_child]
         pub undo_send_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub single_keys_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub autostart_row: TemplateChild<adw::SwitchRow>,
@@ -135,6 +137,9 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::UNDO_SEND_SECONDS, &*imp.undo_send_row, "value")
+            .build();
+        settings
+            .bind(keys::SINGLE_KEY_SHORTCUTS, &*imp.single_keys_row, "active")
             .build();
         settings
             .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")

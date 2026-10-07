@@ -83,6 +83,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
       Adw.SwitchRow omarchy_row {
         title: _("Follow Omarchy Theme");
       }
+
+      Adw.SwitchRow single_keys_row {
+        title: _("Single-Key Shortcuts");
+        subtitle: _("j/k to move, e to archive, # to delete, r to reply, s to star, / to search");
+      }
     }
   }
 }

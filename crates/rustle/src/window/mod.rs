@@ -16,6 +16,7 @@ mod outbox;
 mod phone;
 mod queue;
 mod reader;
+mod single_keys;
 mod smart_search;
 mod sync;
 mod watch;
@@ -417,6 +418,7 @@ impl MainWindow {
         window.setup_smart_search();
         window.setup_inline_composer();
         window.setup_reader_tools();
+        window.setup_single_keys();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();

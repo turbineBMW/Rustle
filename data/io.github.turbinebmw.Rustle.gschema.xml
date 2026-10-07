@@ -16,6 +16,11 @@
 			<summary>Load remote images</summary>
 			<description>Load remote images in messages by default instead of asking.</description>
 		</key>
+		<key name="single-key-shortcuts" type="b">
+			<default>false</default>
+			<summary>Single-key shortcuts</summary>
+			<description>Gmail-style keys without Ctrl: j/k to move, e to archive, # to delete, r/a/f to reply, reply all or forward, s to star, c to compose, / to search.</description>
+		</key>
 		<key name="undo-send-seconds" type="i">
 			<range min="0" max="30"/>
 			<default>5</default>

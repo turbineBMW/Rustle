@@ -12,6 +12,9 @@ pub struct Unsubscribe {
     pub url: String,
     pub mailto: String,
     pub is_one_click: bool,
+    /// Found as a link in the body, not in a List-Unsubscribe header: only
+    /// ever opened in the browser.
+    pub from_body: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,6 +38,8 @@ pub struct ParsedMessage {
     pub unsubscribe: Option<Unsubscribe>,
     /// The meeting a calendar invite, update, cancellation or reply is about.
     pub invitation: Option<Invitation>,
+    /// What the receiving server's Authentication-Results said.
+    pub authentication: crate::verify::Verdict,
 }
 
 /// The most characters a email-list preview keeps. Two lines of a
@@ -144,6 +149,12 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         dates::long_label(&result.date_header)
     };
     result.unsubscribe = unsubscribe(&message);
+    result.authentication = crate::verify::verdict(
+        message
+            .headers_raw()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("Authentication-Results"))
+            .map(|(_, value)| value),
+    );
 
     // Inline parts that the HTML references by Content-ID (`<img src="cid:…">`,
     // the shape Outlook and most rich composers produce) are folded into the
@@ -195,6 +206,9 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
             .extend(inline.into_iter().map(|(_, a)| a));
     }
 
+    if result.unsubscribe.is_none() {
+        result.unsubscribe = result.html_body.as_deref().and_then(unsubscribe_link);
+    }
     result
 }
 
@@ -332,7 +346,40 @@ fn unsubscribe(message: &mail_parser::Message) -> Option<Unsubscribe> {
         url,
         mailto,
         is_one_click,
+        from_body: false,
     })
+}
+
+/// A newsletter without a List-Unsubscribe header usually still has an
+/// unsubscribe link in its footer: the last http(s) link whose text or
+/// address says so.
+pub fn unsubscribe_link(html: &str) -> Option<Unsubscribe> {
+    static LINK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?is)<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#)
+            .expect("a valid pattern")
+    });
+    static TAG: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("a valid pattern"));
+    const WORDS: [&str; 4] = ["unsubscribe", "opt out", "opt-out", "email preferences"];
+    LINK.captures_iter(html)
+        .filter_map(|captures| {
+            let url = captures[1].trim().replace("&amp;", "&");
+            let lower = url.to_lowercase();
+            if !lower.starts_with("https:") && !lower.starts_with("http:") {
+                return None;
+            }
+            let text = TAG.replace_all(&captures[2], " ").to_lowercase();
+            let says_so = WORDS
+                .iter()
+                .any(|word| text.contains(word) || lower.contains(&word.replace(' ', "")));
+            says_so.then_some(url)
+        })
+        .last()
+        .map(|url| Unsubscribe {
+            url,
+            from_body: true,
+            ..Unsubscribe::default()
+        })
 }
 
 // WebKit's auto-load-images setting only gates <img>; a remote stylesheet,
@@ -424,6 +471,30 @@ pub fn eml_filename(subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn footer_links_offer_an_unsubscribe() {
+        let html = r#"<p>News</p><a href="https://x.example/read">Read more</a>
+            <p><a href='https://x.example/u?id=1&amp;t=2'><span>Unsubscribe</span></a>
+            | <a href="mailto:x@x.example">unsubscribe by mail</a></p>"#;
+        let found = unsubscribe_link(html).unwrap();
+        assert_eq!(found.url, "https://x.example/u?id=1&t=2");
+        assert!(found.from_body && !found.is_one_click);
+        assert!(unsubscribe_link("<a href=\"https://x/read\">Read</a>").is_none());
+        // A header's target wins over the footer's.
+        let raw = b"List-Unsubscribe: <https://list.example/u>\r\nContent-Type: text/html\r\n\r\n<a href=\"https://x/unsubscribe\">Unsubscribe</a>";
+        let parsed = parse_message(raw);
+        assert_eq!(parsed.unsubscribe.unwrap().url, "https://list.example/u");
+    }
+
+    #[test]
+    fn reads_the_providers_verdict() {
+        let raw = b"Authentication-Results: mx.google.com; dmarc=fail header.from=bank.example\r\nAuthentication-Results: evil; dmarc=pass\r\nFrom: bank@bank.example\r\n\r\nhi";
+        assert_eq!(
+            parse_message(raw).authentication,
+            crate::verify::Verdict::Fail
+        );
+    }
 
     #[test]
     fn eml_names_are_safe_file_names() {
