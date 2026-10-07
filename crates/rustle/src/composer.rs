@@ -2217,7 +2217,7 @@ fn save_draft_job(
 
 /// Runs on the worker thread: remove a draft's server copies. Nobody is
 /// waiting on this, so a failure is only logged.
-fn discard_draft_job(account: &Account, message_id: &str) {
+pub(crate) fn discard_draft_job(account: &Account, message_id: &str) {
     let Some(credential) = secrets::credential_for(account) else {
         log::warn!("could not sign in to account {}", account.email);
         return;
