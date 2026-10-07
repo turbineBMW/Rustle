@@ -47,7 +47,7 @@ const MAIL_ACTIONS: [&str; 6] = [
     "trash",
     "move",
 ];
-const REPLY_FORWARD_ACTIONS: [&str; 3] = ["reply", "reply-all", "forward"];
+const REPLY_FORWARD_ACTIONS: [&str; 4] = ["reply", "reply-all", "forward", "edit-draft"];
 
 /// How long an archive/trash/move stays undoable before the real IMAP MOVE
 /// runs. The Undo toast is shown for this window, so the two have to agree.
@@ -207,6 +207,8 @@ mod imp {
         pub reply_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub forward_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub edit_draft_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub mark_read_button: TemplateChild<gtk::Button>,
         #[template_child]

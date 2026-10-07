@@ -4,11 +4,13 @@
 //! in a window, as it did before.
 
 use super::{MainWindow, PAGE_COMPOSER, PAGE_READER};
-use crate::composer::{self, Composer, Draft};
+use crate::composer::{self, Composer, Draft, ResumedDraft};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
+use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::Account;
+use rustle_core::{compose, html, mime};
 use std::collections::HashMap;
 
 /// Window actions whose accelerators an editor needs for itself (Ctrl+I is
@@ -41,6 +43,70 @@ pub struct InlineComposer {
 impl MainWindow {
     pub(super) fn setup_inline_composer(&self) {
         self.connect_focus_widget_notify(|window| window.on_focus_moved());
+        // Enter or a double-click on a draft opens it to finish.
+        self.imp().email_list.connect_activate(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| window.edit_draft()
+        ));
+    }
+
+    /// Whether a folder holds the account's drafts.
+    pub(super) fn is_in_drafts(&self, folder_id: i64) -> bool {
+        let folder = self.db().borrow().folder(folder_id).ok().flatten();
+        folder.is_some_and(|folder| folders::role_for_folder(&folder.name) == FolderRole::Drafts)
+    }
+
+    /// Open the selected draft in the composer, to finish. Saving it again
+    /// replaces it; sending or deleting it removes it.
+    pub(super) fn edit_draft(&self) {
+        let Some(email) = self.selected_email().map(|email| email.get()) else {
+            return;
+        };
+        if self.selected_emails().len() != 1 || !self.is_in_drafts(email.folder_id) {
+            return;
+        }
+        let Some((account, _)) = self.account_for_folder(email.folder_id) else {
+            return;
+        };
+        // The reader's copy, or the cached one when it hasn't loaded yet
+        // (a double-click lands before the first click's render).
+        let rendered = self
+            .state()
+            .message_view
+            .as_ref()
+            .filter(|_| self.state().rendered_id == Some(email.id))
+            .and_then(|view| view.raw());
+        let raw = rendered.or_else(|| self.db().borrow().raw_message(email.id).ok().flatten());
+        let Some(raw) = raw else {
+            return;
+        };
+        let parsed = mime::parse_message(&raw);
+        let body_html = match &parsed.html_body {
+            Some(body) => compose::editable_body(body),
+            None => html::to_html(parsed.text_body.as_deref().unwrap_or("").trim_end()),
+        };
+        let message_id = if email.message_id.is_empty() {
+            parsed.message_id.clone()
+        } else {
+            email.message_id.clone()
+        };
+        self.open_composer(
+            &account,
+            Draft {
+                to: parsed.to.join(", "),
+                cc: parsed.cc.join(", "),
+                bcc: parsed.bcc.join(", "),
+                subject: parsed.subject,
+                body_html,
+                attachments: parsed.attachments,
+                resumed: Some(ResumedDraft {
+                    email_id: email.id,
+                    account_id: account.id,
+                    message_id,
+                }),
+            },
+        );
     }
 
     pub(super) fn open_composer(&self, account: &Account, draft: Draft) {
@@ -60,6 +126,11 @@ impl MainWindow {
             #[weak(rename_to = window)]
             self,
             move |_| window.on_composer_finished()
+        ));
+        composer.connect_notice(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |text| window.toast(text)
         ));
         if cfg!(feature = "phone") {
             composer::present_in_window(self.application().as_ref(), &composer);

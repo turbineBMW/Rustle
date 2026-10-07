@@ -8,7 +8,7 @@ use crate::models::NO_SUBJECT;
 use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
-use crate::net::imap::{FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
+use crate::net::imap::{quote_mailbox, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
 use crate::net::smtp::SmtpSession;
 use log::warn;
 use std::collections::{HashMap, HashSet};
@@ -399,6 +399,92 @@ fn append_to_sent(account: &Account, credential: &Credential, raw: &[u8]) -> Res
     Ok(())
 }
 
+/// Where a saved draft landed on the server: its mailbox, and its UID when
+/// the server could find it again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedDraft {
+    pub mailbox: String,
+    pub uid: Option<String>,
+}
+
+/// File a draft in the account's Drafts mailbox, then remove the copies an
+/// earlier save left there (the same Message-ID). The new copy goes up
+/// first, so a failure part-way never loses the draft. Ok(None) when the
+/// server has no Drafts mailbox.
+pub fn save_draft(
+    account: &Account,
+    credential: &Credential,
+    raw: &[u8],
+    message_id: &str,
+) -> Result<Option<SavedDraft>> {
+    let mut session = open_imap(account, credential)?;
+    let Some(mailbox) = drafts_mailbox(&mut session)? else {
+        warn!(
+            "no Drafts mailbox on {} (account {})",
+            account.imap_host, account.email
+        );
+        session.logout();
+        return Ok(None);
+    };
+    session.select(&mailbox, true)?;
+    let criteria = message_id_criteria(message_id);
+    let earlier = match &criteria {
+        Some(criteria) => session.search_uids(criteria)?,
+        None => Vec::new(),
+    };
+    session.append_draft(&mailbox, raw)?;
+    let uid = match &criteria {
+        Some(criteria) => session
+            .search_uids(criteria)?
+            .into_iter()
+            .filter(|uid| !earlier.contains(uid))
+            .max_by_key(|uid| uid.parse::<u32>().unwrap_or(0)),
+        None => None,
+    };
+    if !earlier.is_empty() {
+        session.delete_uids(&earlier.join(","))?;
+    }
+    session.logout();
+    Ok(Some(SavedDraft { mailbox, uid }))
+}
+
+/// Remove every copy of a draft from the Drafts mailbox: it was sent, or
+/// thrown away.
+pub fn discard_draft(account: &Account, credential: &Credential, message_id: &str) -> Result<()> {
+    let Some(criteria) = message_id_criteria(message_id) else {
+        return Ok(());
+    };
+    let mut session = open_imap(account, credential)?;
+    if let Some(mailbox) = drafts_mailbox(&mut session)? {
+        session.select(&mailbox, true)?;
+        let uids = session.search_uids(&criteria)?;
+        if !uids.is_empty() {
+            session.delete_uids(&uids.join(","))?;
+        }
+    }
+    session.logout();
+    Ok(())
+}
+
+fn drafts_mailbox(session: &mut ImapSession) -> Result<Option<String>> {
+    let mailboxes = session.list_folders()?;
+    let names = mailboxes
+        .iter()
+        .filter(|mailbox| mailbox.is_selectable)
+        .map(|mailbox| mailbox.name.as_str());
+    Ok(folders::mailbox_with_role(names, FolderRole::Drafts).map(str::to_string))
+}
+
+/// The SEARCH for one Message-ID. None for an empty one: HEADER matches
+/// substrings, and "" would match every draft in the mailbox.
+fn message_id_criteria(message_id: &str) -> Option<String> {
+    let message_id = message_id.trim();
+    if message_id.trim_matches(|c| c == '<' || c == '>').is_empty() {
+        return None;
+    }
+    Some(format!("HEADER Message-ID {}", quote_mailbox(message_id)))
+}
+
 /// Send an RFC 8058 one-click unsubscribe. Nothing authenticates this beyond
 /// the token already in the URL, so a redirect off https would put that
 /// token on the wire in the clear -- redirects are refused entirely.
@@ -473,6 +559,16 @@ mod tests {
         assert_eq!(header.date, "2026-07-16T10:00:00Z");
         assert!(header.is_unread);
         assert_eq!(header.addresses.len(), 4);
+    }
+
+    #[test]
+    fn draft_search_never_matches_everything() {
+        assert_eq!(message_id_criteria(""), None);
+        assert_eq!(message_id_criteria(" <> "), None);
+        assert_eq!(
+            message_id_criteria("<a\"b@x.y>").as_deref(),
+            Some("HEADER Message-ID \"<a\\\"b@x.y>\"")
+        );
     }
 
     #[test]

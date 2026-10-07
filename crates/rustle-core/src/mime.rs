@@ -29,6 +29,8 @@ pub struct ParsedMessage {
     pub date_header: String,
     /// The Date header formatted for the Details section.
     pub date: String,
+    /// The Message-ID header, angle brackets included; "" when there is none.
+    pub message_id: String,
     pub unsubscribe: Option<Unsubscribe>,
 }
 
@@ -107,6 +109,10 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         cc: addresses(message.cc()),
         bcc: addresses(message.bcc()),
         date_header: raw_header(&message, "Date"),
+        message_id: message
+            .message_id()
+            .map(|id| format!("<{id}>"))
+            .unwrap_or_default(),
         ..ParsedMessage::default()
     };
     result.date = if result.date_header.is_empty() {

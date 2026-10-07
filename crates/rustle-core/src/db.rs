@@ -953,8 +953,8 @@ impl Database {
     pub fn save_email(&self, folder_id: i64, header: &MessageHeader) -> Result<Email> {
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread,
-                sender_address, recipient, recipient_address)
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                sender_address, recipient, recipient_address, message_id)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULLIF(?10, ''))",
             params![
                 folder_id,
                 header.sender,
@@ -965,6 +965,7 @@ impl Database {
                 header.sender_address,
                 header.recipient,
                 header.recipient_address,
+                header.message_id,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -1023,6 +1024,20 @@ impl Database {
         Ok(is_new)
     }
 
+    /// A locally saved row the server now holds as `uid`: the row takes the
+    /// UID, so the next sync updates it rather than adding a second copy.
+    /// If a sync got there first, the local row is the duplicate and goes.
+    pub fn adopt_server_uid(&self, email_id: i64, uid: &str) -> Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE OR IGNORE emails SET server_id = ?2 WHERE id = ?1",
+            params![email_id, uid],
+        )?;
+        if updated == 0 {
+            self.delete_email(email_id)?;
+        }
+        Ok(())
+    }
+
     pub fn delete_email(&self, email_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM emails WHERE id = ?1", [email_id])?;
@@ -1077,6 +1092,19 @@ impl Database {
             folders::FolderRole::Sent,
         )
         .unwrap_or(folders::SENT_FOLDER)
+        .to_string();
+        self.get_or_create_folder(account_id, &name, folders::icon_for_folder(&name))
+    }
+
+    /// The local folder that mirrors this account's drafts mailbox, created
+    /// as "Drafts" when the folder list hasn't synced yet.
+    pub fn drafts_folder(&self, account_id: i64) -> Result<Folder> {
+        let folders = self.folders_for_account(account_id)?;
+        let name = folders::mailbox_with_role(
+            folders.iter().map(|f| f.name.as_str()),
+            folders::FolderRole::Drafts,
+        )
+        .unwrap_or(folders::DRAFTS_FOLDER)
         .to_string();
         self.get_or_create_folder(account_id, &name, folders::icon_for_folder(&name))
     }
@@ -1596,5 +1624,42 @@ mod tests {
         .unwrap();
         assert_eq!(db.contact_addresses().unwrap(), vec!["Ada <ada@x.y>"]);
         assert_eq!(db.sent_folder(account.id).unwrap().name, "Sent");
+    }
+
+    #[test]
+    fn a_saved_draft_adopts_its_server_copy() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        assert_eq!(db.drafts_folder(account.id).unwrap().name, "Drafts");
+        let gmail = db
+            .get_or_create_folder(account.id, "[Gmail]/Drafts", "d")
+            .unwrap();
+        let drafts = db.drafts_folder(account.id).unwrap();
+        assert_eq!(drafts.name, "Drafts", "the first folder with the role");
+        db.delete_folder_tree(drafts.id).unwrap();
+        assert_eq!(db.drafts_folder(account.id).unwrap().id, gmail.id);
+
+        let local = MessageHeader {
+            subject: "Later".into(),
+            message_id: "<d@x>".into(),
+            ..MessageHeader::default()
+        };
+        let row = db.save_email(gmail.id, &local).unwrap();
+        assert_eq!(row.message_id, "<d@x>");
+        db.adopt_server_uid(row.id, "9").unwrap();
+        // The next sync finds the row it already has.
+        let synced = MessageHeader {
+            uid: "9".into(),
+            ..local.clone()
+        };
+        assert!(!db.save_incoming_email(gmail.id, &synced).unwrap());
+        assert_eq!(db.emails_in_folder(gmail.id).unwrap().len(), 1);
+
+        // A sync that got there first: the local row is the duplicate.
+        let again = db.save_email(gmail.id, &local).unwrap();
+        db.adopt_server_uid(again.id, "9").unwrap();
+        let rows = db.emails_in_folder(gmail.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].server_id.as_deref(), Some("9"));
     }
 }

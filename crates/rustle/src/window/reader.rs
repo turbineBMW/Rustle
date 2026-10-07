@@ -77,6 +77,7 @@ impl MainWindow {
         let selected = self.selected_emails();
         self.update_move_menu();
         if selected.len() != 1 {
+            imp.edit_draft_button.set_visible(false);
             {
                 let mut state = self.state_mut();
                 state.rendered_id = None;
@@ -96,6 +97,8 @@ impl MainWindow {
         let email = &selected[0];
         self.update_action_buttons(&selected);
         self.set_reply_forward_enabled(false);
+        imp.edit_draft_button
+            .set_visible(self.is_in_drafts(email.with(|e| e.folder_id)));
 
         // Already showing this message (e.g. after a flag change) -- don't rebuild.
         if self.state().rendered_id == Some(email.id()) {
