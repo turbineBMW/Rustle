@@ -1578,6 +1578,20 @@ impl Database {
         rows.collect()
     }
 
+    /// How many messages each account has changes queued for (a change to
+    /// several messages counts each).
+    pub fn pending_change_counts(&self) -> Result<std::collections::HashMap<i64, usize>> {
+        let mut statement = self.conn.prepare(
+            "SELECT account_id,
+                SUM(length(uids) - length(replace(uids, ',', '')) + 1)
+             FROM pending_ops WHERE uids != '' GROUP BY account_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?.max(0) as usize))
+        })?;
+        rows.collect()
+    }
+
     pub fn finish_op(&self, op_id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM pending_ops WHERE id = ?1", [op_id])?;
@@ -2338,6 +2352,11 @@ mod tests {
         );
         assert_eq!(db.pending_ops_for_folder(4).unwrap().len(), 2);
 
+        assert_eq!(
+            db.pending_change_counts().unwrap(),
+            std::collections::HashMap::from([(account.id, 5)]),
+            "2 flagged and 3 moved"
+        );
         db.trim_move_op(move_id, 2).unwrap();
         let trimmed = db.pending_ops_for_folder(4).unwrap().pop().unwrap();
         assert_eq!(

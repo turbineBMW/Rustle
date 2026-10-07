@@ -124,6 +124,12 @@ pub struct State {
     /// another while it ran.
     pub flushing_account_ids: HashSet<i64>,
     pub flush_again: HashSet<i64>,
+    /// Flushes in a row that couldn't reach the server, per account.
+    pub queue_failures: HashMap<i64, u32>,
+    /// What each account row shows as waiting (0 or absent: nothing).
+    pub pending_shown: HashMap<i64, usize>,
+    /// The connection banner is ours, saying the queue is stuck.
+    pub is_queue_banner_shown: bool,
     /// Load-on-scroll paging state, keyed by folder id.
     pub loaded_counts: HashMap<i64, u32>,
     pub folders_with_more_mail: HashMap<i64, bool>,
@@ -710,6 +716,8 @@ impl MainWindow {
         if self.state().is_online {
             self.sync_all(true);
         }
+        // Changes left queued from last time show while they wait.
+        self.update_queue_status();
         self.apply_debug_hooks();
     }
 

@@ -153,6 +153,8 @@ impl MainWindow {
                 item.set_selectable(false);
                 let is_syncing = self.state().syncing_account_ids.contains(&account.id);
                 row.bind_account(&account, &tree_row, is_syncing);
+                let pending = self.state().pending_shown.get(&account.id).copied();
+                row.set_pending(pending.unwrap_or(0));
                 self.state_mut().account_rows.insert(account.id, row);
             }
             SidebarKind::Folder(folder) => {
