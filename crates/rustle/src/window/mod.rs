@@ -16,6 +16,7 @@ mod outbox;
 mod phone;
 mod queue;
 mod reader;
+mod rules;
 mod single_keys;
 mod smart_search;
 mod sync;

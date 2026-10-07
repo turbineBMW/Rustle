@@ -8,6 +8,7 @@ use crate::models::{
     is_hex_color, Account, Auth, Email, Folder, MessageHeader, NewAccount, Security,
 };
 use crate::queue::{Change, PendingOp};
+use crate::rules::Rule;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::path::Path;
@@ -114,6 +115,16 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX idx_emails_thread_outlook ON emails (thread_outlook)
         WHERE thread_outlook != '';
      CREATE INDEX idx_emails_unthreaded ON emails (folder_id) WHERE thread_known = 0;",
+    "CREATE TABLE rules (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL,
+        field TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        mark_read INTEGER NOT NULL DEFAULT 0,
+        star INTEGER NOT NULL DEFAULT 0,
+        move_to INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1
+     )",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -658,6 +669,7 @@ impl Database {
             "DELETE FROM outbox WHERE email_id NOT IN (SELECT id FROM emails)",
             [],
         )?;
+        transaction.execute("DELETE FROM rules WHERE account_id = ?1", [account_id])?;
         Ok(())
     }
 
@@ -1358,6 +1370,72 @@ impl Database {
             [],
             |row| row.get(0),
         )
+    }
+
+    // --- rules -------------------------------------------------------------
+
+    fn rule_from_row(row: &Row) -> Result<Rule> {
+        Ok(Rule {
+            id: row.get("id")?,
+            account_id: row.get("account_id")?,
+            field: crate::rules::Field::parse(&row.get::<_, String>("field")?),
+            pattern: row.get("pattern")?,
+            mark_read: row.get("mark_read")?,
+            star: row.get("star")?,
+            move_to: row.get("move_to")?,
+            enabled: row.get("enabled")?,
+        })
+    }
+
+    /// Every rule, or one account's, in the order they were made.
+    pub fn rules(&self, account_id: Option<i64>) -> Result<Vec<Rule>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT * FROM rules WHERE ?1 IS NULL OR account_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map([account_id], Self::rule_from_row)?;
+        rows.collect()
+    }
+
+    /// Save a rule, new (id 0) or changed. Returns its id.
+    pub fn save_rule(&self, rule: &Rule) -> Result<i64> {
+        if rule.id == 0 {
+            self.conn.execute(
+                "INSERT INTO rules (account_id, field, pattern, mark_read, star, move_to, enabled)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    rule.account_id,
+                    rule.field.id(),
+                    rule.pattern,
+                    rule.mark_read,
+                    rule.star,
+                    rule.move_to,
+                    rule.enabled
+                ],
+            )?;
+            return Ok(self.conn.last_insert_rowid());
+        }
+        self.conn.execute(
+            "UPDATE rules SET account_id = ?2, field = ?3, pattern = ?4, mark_read = ?5,
+                star = ?6, move_to = ?7, enabled = ?8
+             WHERE id = ?1",
+            params![
+                rule.id,
+                rule.account_id,
+                rule.field.id(),
+                rule.pattern,
+                rule.mark_read,
+                rule.star,
+                rule.move_to,
+                rule.enabled
+            ],
+        )?;
+        Ok(rule.id)
+    }
+
+    pub fn delete_rule(&self, rule_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM rules WHERE id = ?1", [rule_id])?;
+        Ok(())
     }
 
     // --- templates -------------------------------------------------------
@@ -2441,5 +2519,30 @@ mod tests {
         let four = db.emails_in_folders(&[inbox.id]).unwrap();
         let four = four.iter().find(|e| e.subject == "4").unwrap();
         assert_eq!(four.thread_root, "<1@x>");
+    }
+
+    #[test]
+    fn rules_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let mut rule = Rule {
+            id: 0,
+            account_id: account.id,
+            field: crate::rules::Field::From,
+            pattern: "github.com".into(),
+            mark_read: true,
+            star: false,
+            move_to: Some(4),
+            enabled: true,
+        };
+        rule.id = db.save_rule(&rule).unwrap();
+        assert_eq!(db.rules(Some(account.id)).unwrap(), [rule.clone()]);
+        rule.move_to = None;
+        rule.enabled = false;
+        db.save_rule(&rule).unwrap();
+        assert_eq!(db.rules(None).unwrap(), [rule.clone()]);
+        assert!(db.rules(Some(account.id + 1)).unwrap().is_empty());
+        db.delete_rule(rule.id).unwrap();
+        assert!(db.rules(None).unwrap().is_empty());
     }
 }

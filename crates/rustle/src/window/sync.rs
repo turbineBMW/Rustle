@@ -13,7 +13,7 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::compose;
 use rustle_core::dates;
-use rustle_core::folders;
+use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::{Account, MessageHeader};
 use rustle_core::net::errors::{classify, linkify, Failure};
 use rustle_core::secrets;
@@ -259,6 +259,7 @@ impl MainWindow {
         let keep_id = self.selected_email().map(|c| c.id());
 
         let mut new_messages: Vec<MessageHeader> = Vec::new();
+        let mut arrived: Vec<MessageHeader> = Vec::new();
         let target_id;
         {
             let db = self.db();
@@ -318,11 +319,20 @@ impl MainWindow {
             };
             target_id = target.id;
             let notify_folder = folders::notifies_on_arrival(&target.name);
+            // Rules act on mail arriving in an inbox -- not on a first
+            // sync's backlog, which only arrives in the database.
+            let takes_rules = folders::role_for_folder(&target.name) == FolderRole::Inbox
+                && !db.uids_in_folder(target.id).unwrap_or_default().is_empty();
             self.guard_fetched(&db, target.id, &mut result.messages);
             for message in &result.messages {
                 match db.save_incoming_email(target.id, message) {
-                    Ok(true) if message.is_unread && notify_folder => {
-                        new_messages.push(message.clone())
+                    Ok(true) => {
+                        if takes_rules {
+                            arrived.push(message.clone());
+                        }
+                        if message.is_unread && notify_folder {
+                            new_messages.push(message.clone());
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => log::error!(
@@ -375,6 +385,9 @@ impl MainWindow {
             state.folder_sync_times.insert(target_id, Instant::now());
         }
         let arrived_elsewhere = self.apply_unread_counts(account, &result.unread_counts);
+        // What a rule moved away or marked read isn't news.
+        let handled = self.apply_rules(account, target_id, &arrived);
+        new_messages.retain(|message| !handled.contains(&message.uid));
 
         self.reload_folders();
         self.refresh_emails(keep_id);
