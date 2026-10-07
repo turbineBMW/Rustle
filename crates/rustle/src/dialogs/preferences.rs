@@ -53,6 +53,8 @@ mod imp {
         #[template_child]
         pub single_keys_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub group_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub autostart_row: TemplateChild<adw::SwitchRow>,
@@ -140,6 +142,9 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::SINGLE_KEY_SHORTCUTS, &*imp.single_keys_row, "active")
+            .build();
+        settings
+            .bind(keys::GROUP_CONVERSATIONS, &*imp.group_row, "active")
             .build();
         settings
             .bind(keys::DOWNLOAD_ALL_MAIL, &*imp.all_mail_row, "active")

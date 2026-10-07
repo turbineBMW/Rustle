@@ -16,7 +16,8 @@ pub type Result<T> = std::result::Result<T, rusqlite::Error>;
 
 /// Every column `email_from_row` reads.
 const EMAIL_COLUMNS: &str = "id, folder_id, server_id, sender, sender_address, recipient, \
-    recipient_address, subject, preview, date, unread, starred, message_id, pinned";
+    recipient_address, subject, preview, date, unread, starred, message_id, pinned, \
+    thread_root, thread_outlook";
 
 /// Schema changes since the first release, applied in order. How many have run
 /// is stored in PRAGMA user_version. Only ever append -- editing or reordering
@@ -103,6 +104,16 @@ const MIGRATIONS: &[&str] = &[
         subject TEXT NOT NULL DEFAULT '',
         body_html TEXT NOT NULL DEFAULT ''
      );",
+    // Conversation keys (threads.rs). thread_known is 0 until a message's
+    // conversation headers have been read: mail synced before this has
+    // them filled in by a background sweep.
+    "ALTER TABLE emails ADD COLUMN thread_root TEXT NOT NULL DEFAULT '';
+     ALTER TABLE emails ADD COLUMN thread_outlook TEXT NOT NULL DEFAULT '';
+     ALTER TABLE emails ADD COLUMN thread_known INTEGER NOT NULL DEFAULT 0;
+     CREATE INDEX idx_emails_thread_root ON emails (thread_root) WHERE thread_root != '';
+     CREATE INDEX idx_emails_thread_outlook ON emails (thread_outlook)
+        WHERE thread_outlook != '';
+     CREATE INDEX idx_emails_unthreaded ON emails (folder_id) WHERE thread_known = 0;",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -257,6 +268,10 @@ impl Database {
             .iter()
             .position(|sql| sql.contains("ADD COLUMN body_text"))
             .is_some_and(|index| index >= version);
+        let adds_threads = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN thread_root"))
+            .is_some_and(|index| index >= version);
         for (index, sql) in MIGRATIONS.iter().enumerate().skip(version) {
             // Keep multi-column removals and their version marker atomic.
             let transaction = self.conn.unchecked_transaction()?;
@@ -267,7 +282,32 @@ impl Database {
         if adds_body_text {
             self.fill_body_text()?;
         }
+        if adds_threads {
+            self.fill_thread_keys()?;
+        }
         Ok(())
+    }
+
+    /// The conversation keys of the messages already downloaded, once, when
+    /// the columns arrive. The rest are left to the sweep.
+    fn fill_thread_keys(&self) -> Result<()> {
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut statement = self
+                .conn
+                .prepare("SELECT id, raw_message FROM emails WHERE raw_message IS NOT NULL")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_>>()?
+        };
+        let transaction = self.conn.unchecked_transaction()?;
+        for (id, raw) in rows {
+            let keys = crate::threads::keys_from_raw(&raw);
+            transaction.execute(
+                "UPDATE emails SET thread_root = ?1, thread_outlook = ?2, thread_known = 1
+                 WHERE id = ?3",
+                params![keys.root, keys.outlook, id],
+            )?;
+        }
+        transaction.commit()
     }
 
     /// Index the bodies already downloaded, once, when `body_text` arrives.
@@ -777,6 +817,9 @@ impl Database {
             message_id: row
                 .get::<_, Option<String>>("message_id")?
                 .unwrap_or_default(),
+            thread_root: row.get("thread_root")?,
+            thread_outlook: row.get("thread_outlook")?,
+            thread_size: 1,
         })
     }
 
@@ -1058,11 +1101,13 @@ impl Database {
         let parsed = crate::mime::parse_message(raw);
         let preview = crate::mime::preview(&parsed);
         let body_text = crate::mime::search_text(&parsed);
+        let keys = crate::threads::keys_from_raw(raw);
         self.conn.execute(
             "UPDATE emails SET raw_message = ?1, body_text = ?4,
-                preview = CASE WHEN preview = '' THEN ?3 ELSE preview END
+                preview = CASE WHEN preview = '' THEN ?3 ELSE preview END,
+                thread_root = ?5, thread_outlook = ?6, thread_known = 1
              WHERE id = ?2",
-            params![raw, email_id, preview, body_text],
+            params![raw, email_id, preview, body_text, keys.root, keys.outlook],
         )?;
         Ok(())
     }
@@ -1117,15 +1162,20 @@ impl Database {
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread, starred,
                 message_id, sender_address, recipient, recipient_address,
-                pinned, recipients, body_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                pinned, recipients, body_text, thread_root, thread_outlook, thread_known)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1)
              ON CONFLICT (folder_id, server_id) DO UPDATE SET
                 unread = excluded.unread, starred = excluded.starred, pinned = excluded.pinned,
                 recipient = excluded.recipient, recipient_address = excluded.recipient_address,
                 recipients = excluded.recipients,
                 preview = CASE WHEN excluded.preview = '' THEN preview ELSE excluded.preview END,
                 body_text = CASE WHEN length(excluded.body_text) > length(body_text)
-                    THEN excluded.body_text ELSE body_text END",
+                    THEN excluded.body_text ELSE body_text END,
+                thread_root = CASE WHEN excluded.thread_root = '' THEN thread_root
+                    ELSE excluded.thread_root END,
+                thread_outlook = CASE WHEN excluded.thread_outlook = '' THEN thread_outlook
+                    ELSE excluded.thread_outlook END,
+                thread_known = 1",
             params![
                 folder_id,
                 header.uid,
@@ -1142,6 +1192,8 @@ impl Database {
                 header.is_pinned as i64,
                 header.recipients,
                 header.body_text,
+                header.thread_root,
+                header.thread_outlook,
             ],
         )?;
         Ok(is_new)
@@ -1167,6 +1219,102 @@ impl Database {
         self.conn
             .execute("DELETE FROM outbox WHERE email_id = ?1", [email_id])?;
         Ok(())
+    }
+
+    // --- conversations -----------------------------------------------------
+
+    /// The other messages of `email`'s conversation, oldest first, across
+    /// every folder -- one copy of each (Gmail files one message under
+    /// several labels).
+    pub fn related_emails(&self, email: &Email) -> Result<Vec<Email>> {
+        if email.thread_root.is_empty() && email.thread_outlook.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {EMAIL_COLUMNS} FROM emails
+             WHERE id != ?1
+               AND ((thread_root != '' AND thread_root = ?2)
+                 OR (thread_outlook != '' AND thread_outlook = ?3))
+             ORDER BY date, id"
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(
+            params![email.id, email.thread_root, email.thread_outlook],
+            Self::email_from_row,
+        )?;
+        let mut seen: HashSet<String> = HashSet::new();
+        if !email.message_id.is_empty() {
+            seen.insert(email.message_id.to_lowercase());
+        }
+        let mut related = Vec::new();
+        for row in rows {
+            let row = row?;
+            if row.message_id.is_empty() || seen.insert(row.message_id.to_lowercase()) {
+                related.push(row);
+            }
+        }
+        Ok(related)
+    }
+
+    /// Up to `limit` UIDs of one of the account's folders whose
+    /// conversation headers haven't been read yet, newest first.
+    pub fn unthreaded_batch(
+        &self,
+        account_id: i64,
+        limit: u32,
+    ) -> Result<Option<(Folder, Vec<u32>)>> {
+        let folder_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT e.folder_id FROM emails e JOIN folders f ON f.id = e.folder_id
+                 WHERE f.account_id = ?1 AND e.thread_known = 0 AND e.server_id IS NOT NULL
+                 LIMIT 1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(folder) = folder_id.map(|id| self.folder(id)).transpose()?.flatten() else {
+            return Ok(None);
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT server_id FROM emails
+             WHERE folder_id = ?1 AND thread_known = 0 AND server_id IS NOT NULL",
+        )?;
+        let mut uids: Vec<u32> = statement
+            .query_map([folder.id], |row| row.get::<_, String>(0))?
+            .filter_map(|uid| uid.ok()?.parse().ok())
+            .collect();
+        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(limit as usize);
+        Ok(Some((folder, uids)))
+    }
+
+    /// Record what a folder's conversation headers said. Every UID asked
+    /// about is marked read, found or not, so a vanished one isn't asked
+    /// for again.
+    pub fn set_thread_keys(
+        &mut self,
+        folder_id: i64,
+        asked: &[u32],
+        found: &[(String, crate::threads::ThreadKeys)],
+    ) -> Result<()> {
+        let transaction = self.conn.transaction()?;
+        {
+            let mut update = transaction.prepare(
+                "UPDATE emails SET thread_root = ?3, thread_outlook = ?4, thread_known = 1
+                 WHERE folder_id = ?1 AND server_id = ?2",
+            )?;
+            for (uid, keys) in found {
+                update.execute(params![folder_id, uid, keys.root, keys.outlook])?;
+            }
+            let mut mark = transaction.prepare(
+                "UPDATE emails SET thread_known = 1 WHERE folder_id = ?1 AND server_id = ?2",
+            )?;
+            for uid in asked {
+                mark.execute(params![folder_id, uid.to_string()])?;
+            }
+        }
+        transaction.commit()
     }
 
     // --- the Outbox's schedule ---------------------------------------------
@@ -1753,20 +1901,35 @@ mod tests {
                 .unwrap();
         }
         old.conn.execute_batch("UPDATE emails SET conversation_id = 1, in_reply_to = '<1@x>', reference_ids = '<1@x>'").unwrap();
-        let before = old.emails_in_folders(&[inbox.id]).unwrap();
+        // Read with plain SQL: today's readers want columns that schema lacks.
+        let rows = |conn: &Connection| -> Vec<(i64, String, String, String)> {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, subject, sender, date FROM emails WHERE folder_id = ?1
+                     ORDER BY date DESC",
+                )
+                .unwrap();
+            statement
+                .query_map([inbox.id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let before = rows(&old.conn);
         let raw = b"Subject: Topic\r\n\r\nOriginal body";
         old.conn
             .execute(
                 "UPDATE emails SET raw_message = ?1 WHERE id = ?2",
-                params![raw.as_slice(), before[1].id],
+                params![raw.as_slice(), before[1].0],
             )
             .unwrap();
-        let before = old.emails_in_folders(&[inbox.id]).unwrap();
 
         let db = Database::init(old.conn).unwrap();
-        assert_eq!(db.emails_in_folders(&[inbox.id]).unwrap(), before);
+        assert_eq!(rows(&db.conn), before);
         assert_eq!(
-            db.raw_message(before[1].id).unwrap().as_deref(),
+            db.raw_message(before[1].0).unwrap().as_deref(),
             Some(raw.as_slice())
         );
         assert_eq!(db.search_emails(&[inbox.id], "Topic").unwrap().len(), 2);
@@ -1779,7 +1942,7 @@ mod tests {
         assert_eq!(removed_columns, 0);
         // Starting the app again does not replay the column removal.
         let reopened = Database::init(db.conn).unwrap();
-        assert_eq!(reopened.emails_in_folders(&[inbox.id]).unwrap(), before);
+        assert_eq!(rows(&reopened.conn), before);
     }
 
     #[test]
@@ -2217,5 +2380,66 @@ mod tests {
         assert_eq!(templates[0].body_html, "<p>b</p>");
         db.delete_template(templates[0].id).unwrap();
         assert!(db.templates().unwrap().is_empty());
+    }
+
+    #[test]
+    fn related_mail_comes_from_every_folder_once() {
+        let mut db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db.get_or_create_folder(account.id, "INBOX", "i").unwrap();
+        let sent = db.get_or_create_folder(account.id, "Sent", "s").unwrap();
+        let all = db
+            .get_or_create_folder(account.id, "[Gmail]/All Mail", "a")
+            .unwrap();
+        let save = |folder: i64, uid: &str, date: &str, root: &str, outlook: &str| {
+            let mut header = header(uid, uid, date, "Ada");
+            header.message_id = format!("<{uid}@x>");
+            header.thread_root = root.into();
+            header.thread_outlook = outlook.into();
+            db.save_incoming_email(folder, &header).unwrap();
+        };
+        save(inbox.id, "1", "2026-01-01T00:00:00Z", "<1@x>", "");
+        save(sent.id, "2", "2026-01-02T00:00:00Z", "<1@x>", "o1");
+        save(all.id, "2", "2026-01-02T00:00:00Z", "<1@x>", "o1"); // same message, another label
+        save(inbox.id, "3", "2026-01-03T00:00:00Z", "<9@x>", "o1"); // Outlook, no References
+        save(inbox.id, "4", "2026-01-04T00:00:00Z", "<4@x>", "");
+        let first = db.emails_in_folders(&[inbox.id]).unwrap();
+        let first = first.iter().find(|e| e.subject == "1").unwrap();
+        let related: Vec<String> = db
+            .related_emails(first)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.subject)
+            .collect();
+        assert_eq!(related, ["2"], "the root links 1 and 2");
+        let outlook = db.emails_in_folders(&[inbox.id]).unwrap();
+        let outlook = outlook.iter().find(|e| e.subject == "3").unwrap();
+        let related: Vec<String> = db
+            .related_emails(outlook)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.subject)
+            .collect();
+        assert_eq!(related, ["2"], "the Thread-Index links 3 and 2");
+
+        // Rows from before the keys were kept wait for the sweep.
+        db.conn
+            .execute(
+                "UPDATE emails SET thread_known = 0 WHERE folder_id = ?1",
+                [inbox.id],
+            )
+            .unwrap();
+        let (folder, uids) = db.unthreaded_batch(account.id, 2).unwrap().unwrap();
+        assert_eq!((folder.id, uids.clone()), (inbox.id, vec![4, 3]));
+        let found = vec![(
+            "4".to_string(),
+            crate::threads::keys("<4@x>", "<1@x>", "", ""),
+        )];
+        db.set_thread_keys(inbox.id, &uids, &found).unwrap();
+        let (_, rest) = db.unthreaded_batch(account.id, 10).unwrap().unwrap();
+        assert_eq!(rest, vec![1]);
+        let four = db.emails_in_folders(&[inbox.id]).unwrap();
+        let four = four.iter().find(|e| e.subject == "4").unwrap();
+        assert_eq!(four.thread_root, "<1@x>");
     }
 }

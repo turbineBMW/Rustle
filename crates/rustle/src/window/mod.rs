@@ -19,6 +19,7 @@ mod reader;
 mod single_keys;
 mod smart_search;
 mod sync;
+mod threads;
 mod watch;
 
 use crate::avatar_loader::AvatarLoader;
@@ -182,6 +183,8 @@ pub struct State {
     pub sending_ids: HashSet<i64>,
     /// The bar above a message waiting in the Outbox.
     pub outbox_bar: Option<gtk::Box>,
+    /// Accounts whose conversation-key sweep is running.
+    pub thread_sweeps: HashSet<i64>,
     /// The composer open in the reader pane, if any.
     pub inline_composer: Option<InlineComposer>,
     /// Actions whose accelerators the inline composer's editor needs, held
@@ -401,6 +404,14 @@ impl MainWindow {
                 #[weak]
                 window,
                 move |_, _| window.reschedule_sync()
+            ),
+        );
+        settings.connect_changed(
+            Some(keys::GROUP_CONVERSATIONS),
+            glib::clone!(
+                #[weak]
+                window,
+                move |_, _| window.refresh_emails(window.selected_email().map(|email| email.id()))
             ),
         );
         settings.connect_changed(

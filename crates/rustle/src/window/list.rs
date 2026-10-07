@@ -3,6 +3,7 @@
 use super::{MainWindow, PAGE_EMPTY, PAGE_LIST, PAGE_LOADING, SEARCH_DEBOUNCE_MS};
 use crate::i18n;
 use crate::objects::EmailObject;
+use crate::settings as keys;
 use crate::widgets::email_row::EmailRow;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -11,7 +12,7 @@ use gtk::{gdk, gio};
 use rustle_core::dates;
 use rustle_core::folders;
 use rustle_core::models::Email;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 impl MainWindow {
@@ -62,6 +63,11 @@ impl MainWindow {
                 log::error!("could not load emails: {error}");
                 Vec::new()
             })
+        };
+        let matches = if self.settings().boolean(keys::GROUP_CONVERSATIONS) {
+            group_conversations(matches)
+        } else {
+            matches
         };
         if !imp.unread_button.is_active() {
             return matches;
@@ -402,4 +408,40 @@ fn day_header_label(widget: &gtk::Widget) -> Option<gtk::Label> {
         .cloned()
         .or_else(|| widget.first_child().and_downcast::<gtk::Label>())
         .filter(is_header)
+}
+
+/// One row per conversation: the first of each (the list is sorted pinned
+/// first, then newest), counting the rest. Unread when any of it is.
+fn group_conversations(matches: Vec<Email>) -> Vec<Email> {
+    let items: Vec<(i64, &str, &str)> = matches
+        .iter()
+        .map(|email| {
+            (
+                email.id,
+                email.thread_root.as_str(),
+                email.thread_outlook.as_str(),
+            )
+        })
+        .collect();
+    let groups = rustle_core::threads::group(&items);
+    let mut sizes: HashMap<i64, (u32, bool)> = HashMap::new();
+    for email in &matches {
+        let entry = sizes.entry(groups[&email.id]).or_default();
+        entry.0 += 1;
+        entry.1 |= email.is_unread;
+    }
+    let mut seen = HashSet::new();
+    matches
+        .into_iter()
+        .filter_map(|mut email| {
+            let group = groups[&email.id];
+            if !seen.insert(group) {
+                return None;
+            }
+            let (size, any_unread) = sizes[&group];
+            email.thread_size = size;
+            email.is_unread |= any_unread;
+            Some(email)
+        })
+        .collect()
 }

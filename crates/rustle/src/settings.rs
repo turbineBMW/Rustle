@@ -12,6 +12,7 @@ pub const LOAD_SENDER_AVATARS: &str = "load-sender-avatars";
 pub const READER_ZOOM: &str = "reader-zoom";
 pub const UNDO_SEND_SECONDS: &str = "undo-send-seconds";
 pub const SINGLE_KEY_SHORTCUTS: &str = "single-key-shortcuts";
+pub const GROUP_CONVERSATIONS: &str = "group-conversations";
 pub const SPELL_CHECK: &str = "spell-check";
 pub const ASSISTANT: &str = "assistant";
 pub const ASSISTANT_MODEL: &str = "assistant-model";

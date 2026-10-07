@@ -357,6 +357,12 @@ pub struct Email {
     /// Outlook's pin-to-top; pinned messages sort above the day sections.
     pub is_pinned: bool,
     pub message_id: String,
+    /// Conversation keys (see `threads`); either may be empty.
+    pub thread_root: String,
+    pub thread_outlook: String,
+    /// How many messages the list row stands for: more than 1 only when
+    /// conversations are grouped.
+    pub thread_size: u32,
 }
 
 impl Email {
@@ -409,6 +415,9 @@ pub struct MessageHeader {
     pub recipients: String,
     /// Body text for the search index (not shown).
     pub body_text: String,
+    /// Conversation keys (see `threads`).
+    pub thread_root: String,
+    pub thread_outlook: String,
     /// Every (name, address) pair on the message, for the contacts list.
     pub addresses: Vec<(String, String)>,
 }
@@ -467,6 +476,9 @@ mod tests {
             is_starred: false,
             is_pinned: false,
             message_id: String::new(),
+            thread_root: String::new(),
+            thread_outlook: String::new(),
+            thread_size: 1,
         }
     }
 

@@ -25,6 +25,8 @@ pub type LoadCallback = Box<dyn FnOnce(Option<Vec<u8>>, Option<String>)>;
 pub type LoadHandler = Rc<dyn Fn(&Email, LoadCallback)>;
 /// Offers an unsubscribe target; the second argument hides the banner once done.
 pub type UnsubscribeHandler = Rc<dyn Fn(&Unsubscribe, Box<dyn Fn()>)>;
+/// The rest of a message's conversation, each with where it's filed.
+pub type RelatedHandler = Rc<dyn Fn(&Email) -> Vec<(Email, String)>>;
 /// Answers an invitation; true once the reply is on its way.
 pub type RespondHandler = Rc<dyn Fn(&Email, &Invitation, Response) -> bool>;
 /// Called once the selected message has rendered.
@@ -32,12 +34,16 @@ pub type RenderedCallback = Box<dyn Fn()>;
 
 /// What the window does for a view: fetch bodies, save/open attachments, and
 /// unsubscribe (the second argument hides the banner once the list confirmed).
+#[derive(Clone)]
 pub struct Handlers {
     pub on_load: LoadHandler,
     pub on_save_attachment: Rc<dyn Fn(&Attachment)>,
     pub on_open_attachment: Rc<dyn Fn(&Attachment)>,
     pub on_unsubscribe: UnsubscribeHandler,
     pub on_respond: RespondHandler,
+    /// The rest of a message's conversation, each with where it's filed.
+    pub on_related: RelatedHandler,
+    pub on_open_related: Rc<dyn Fn(&Email)>,
 }
 
 /// A mail body may name any scheme, and a registered handler will happily
@@ -299,6 +305,7 @@ impl MessageView {
             inner.parsed = Some(parsed.clone());
         }
         self.show_recipients(&parsed);
+        self.show_related();
         self.show_authentication(&parsed);
         self.show_invitation(&parsed);
         self.populate_attachments(&parsed.attachments);
@@ -371,6 +378,53 @@ impl MessageView {
         card.set_margin_end(EDGE);
         card.set_margin_bottom(GUTTER);
         self.body.append(&card);
+    }
+
+    /// The rest of the conversation, folded away under a count: the list
+    /// shows each message on its own, and this is where they meet.
+    fn show_related(&self) {
+        let (email, handlers) = {
+            let inner = self.inner.borrow();
+            (inner.email.clone(), inner.handlers.clone())
+        };
+        let related = (handlers.on_related)(&email);
+        if related.is_empty() {
+            return;
+        }
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .build();
+        for (message, place) in related {
+            let when = i18n::time_label(&message.date);
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&message.subject))
+                .subtitle(glib::markup_escape_text(&format!(
+                    "{} · {when} · {place}",
+                    message.sender
+                )))
+                .activatable(true)
+                .build();
+            row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+            let open = handlers.on_open_related.clone();
+            row.connect_activated(move |_| open(&message));
+            list.append(&row);
+        }
+        let count = list.observe_children().n_items() as u64;
+        let expander = gtk::Expander::builder()
+            .label(i18n::plural(
+                "{n} related message",
+                "{n} related messages",
+                count,
+                &[],
+            ))
+            .child(&list)
+            .margin_start(EDGE)
+            .margin_end(EDGE)
+            .margin_bottom(GUTTER)
+            .css_classes(["related-messages"])
+            .build();
+        self.body.append(&expander);
     }
 
     /// The provider couldn't verify the sender: the From line may be a lie.

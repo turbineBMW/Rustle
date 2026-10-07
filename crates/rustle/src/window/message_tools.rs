@@ -189,6 +189,9 @@ impl MainWindow {
             is_starred: false,
             is_pinned: false,
             message_id: parsed.message_id.clone(),
+            thread_root: String::new(),
+            thread_outlook: String::new(),
+            thread_size: 1,
         };
         let Some(shared) = self.state().message_handlers.clone() else {
             return;
@@ -197,25 +200,57 @@ impl MainWindow {
             on_load: Rc::new(move |_: &Email, callback: LoadCallback| {
                 callback(Some(raw.clone()), None)
             }),
-            on_save_attachment: shared.on_save_attachment.clone(),
-            on_open_attachment: shared.on_open_attachment.clone(),
-            on_unsubscribe: shared.on_unsubscribe.clone(),
-            on_respond: shared.on_respond.clone(),
+            ..(*shared).clone()
+        };
+        self.present_viewer(email, Rc::new(handlers));
+    }
+
+    /// A message from the reader's Related list: selected in place when the
+    /// list is showing it, else opened in a viewer window so the folder on
+    /// screen stays put.
+    pub(super) fn open_related(&self, email: &Email) {
+        let shown = self
+            .list_emails_with_ids(&std::collections::HashSet::from([email.id]))
+            .pop();
+        if let Some(shown) = shown {
+            let model = self.email_model();
+            let position = (0..model.n_items()).find(|&index| {
+                model
+                    .item(index)
+                    .and_downcast::<crate::objects::EmailObject>()
+                    .is_some_and(|item| item == shown)
+            });
+            if let Some(position) = position {
+                let selection = self.selection();
+                selection.select_item(position, true);
+                self.imp()
+                    .email_list
+                    .scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
+                return;
+            }
+        }
+        let Some(handlers) = self.state().message_handlers.clone() else {
+            return;
+        };
+        self.present_viewer(email.clone(), handlers);
+    }
+
+    /// One message in a window of its own, read through `handlers`.
+    fn present_viewer(&self, email: Email, handlers: Rc<Handlers>) {
+        let title = if email.subject.is_empty() {
+            gettext("Message")
+        } else {
+            email.subject.clone()
         };
         let view = MessageView::new(
             email,
-            Rc::new(handlers),
+            handlers,
             Box::new(|| {}),
             self.settings().boolean(keys::LOAD_REMOTE_IMAGES),
             &self.avatars(),
             None,
         );
         view.set_zoom(self.reader_zoom());
-        let title = if parsed.subject.is_empty() {
-            gettext("Message")
-        } else {
-            parsed.subject.clone()
-        };
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
         toolbar.set_content(Some(

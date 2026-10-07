@@ -206,6 +206,7 @@ impl MainWindow {
         for account in accounts {
             self.drain_outbox(&account);
             self.flush_queue(&account);
+            self.sweep_thread_keys(&account);
             let folder_name = open_folder
                 .as_ref()
                 .filter(|f| f.account_id == account.id)

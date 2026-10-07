@@ -52,6 +52,9 @@ fn reader_layout_keeps_header_compact_and_body_visible() {
                 is_starred: false,
                 is_pinned: false,
                 message_id: "layout@example.com".into(),
+                thread_root: String::new(),
+                thread_outlook: String::new(),
+                thread_size: 1,
             };
             let recipients = (0..5)
                 .map(|i| format!("Example Recipient {i} <recipient{i}@example.com>"))
@@ -78,6 +81,8 @@ fn reader_layout_keeps_header_compact_and_body_visible() {
                 on_save_attachment: Rc::new(|_| {}),
                 on_unsubscribe: Rc::new(|_, _| {}),
                 on_respond: Rc::new(|_, _, _| false),
+                on_related: Rc::new(|_| Vec::new()),
+                on_open_related: Rc::new(|_| {}),
             });
             let view = MessageView::new(email, handlers, Box::new(|| {}), true, &avatars, None);
             let messages = gtk::Box::new(gtk::Orientation::Vertical, 0);

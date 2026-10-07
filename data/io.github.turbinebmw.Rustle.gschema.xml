@@ -16,6 +16,11 @@
 			<summary>Load remote images</summary>
 			<description>Load remote images in messages by default instead of asking.</description>
 		</key>
+		<key name="group-conversations" type="b">
+			<default>false</default>
+			<summary>Group conversations</summary>
+			<description>Show one row per conversation in the message list, the newest message with a count. Off, every message has its own row and the reader lists its related messages.</description>
+		</key>
 		<key name="single-key-shortcuts" type="b">
 			<default>false</default>
 			<summary>Single-key shortcuts</summary>
