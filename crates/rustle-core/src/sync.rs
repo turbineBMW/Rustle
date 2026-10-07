@@ -9,6 +9,7 @@ use crate::models::{Account, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
 use crate::net::imap::{quote_mailbox, FetchedHeader, ImapSession, MailboxInfo, GMAIL_CAPABILITY};
+use crate::net::pool;
 use crate::net::smtp::SmtpSession;
 use log::warn;
 use std::collections::{HashMap, HashSet};
@@ -97,7 +98,7 @@ pub fn backfill(
         }
         let batch = &missing[..missing.len().min(limit.max(1) as usize)];
         let raw = session.fetch_headers_by_uid(&uid_set(batch))?;
-        session.logout();
+        release(account, credential, session);
         return Ok(BackfillResult {
             folder: Some(folder.name.clone()),
             messages: raw.into_iter().map(to_message_header).collect(),
@@ -106,7 +107,7 @@ pub fn backfill(
             completed,
         });
     }
-    session.logout();
+    release(account, credential, session);
     Ok(BackfillResult {
         completed,
         ..BackfillResult::default()
@@ -164,12 +165,23 @@ pub struct MoveResult {
     pub error: Option<String>,
 }
 
+/// A signed-in session: a parked one when the pool has it, else a new one.
+/// Hand it back with `release` once the job is done.
 pub(crate) fn open_imap(account: &Account, credential: &Credential) -> Result<ImapSession> {
+    if let Some(session) = pool::checkout(account, credential) {
+        return Ok(session);
+    }
     let mut session =
         ImapSession::new(&account.imap_host, account.imap_port, account.imap_security);
     session.connect()?;
     session.sign_in(credential)?;
     Ok(session)
+}
+
+/// A job finished cleanly with its session: park it for the next one. A
+/// session that failed part-way is dropped instead (logging out as it goes).
+pub(crate) fn release(account: &Account, credential: &Credential, session: ImapSession) {
+    pool::checkin(account, credential, session);
 }
 
 /// Connect, log in, and return the folder list + recent headers of one
@@ -199,7 +211,7 @@ pub fn fetch_mailbox(
     } else {
         HashMap::new()
     };
-    session.logout();
+    release(account, credential, session);
 
     Ok(SyncResult {
         folders: mailboxes,
@@ -263,7 +275,7 @@ pub fn search_text(
             ),
         }
     }
-    session.logout();
+    release(account, credential, session);
     Ok(found)
 }
 
@@ -307,7 +319,7 @@ pub fn fetch_full_message(
     let mut session = open_imap(account, credential)?;
     session.select(folder_name, false)?;
     let raw = session.fetch_message(uid)?;
-    session.logout();
+    release(account, credential, session);
     Ok(raw)
 }
 
@@ -327,7 +339,7 @@ pub fn set_flag(
     let mut session = open_imap(account, credential)?;
     session.select(folder_name, true)?;
     session.store_flags(&uids.join(","), flag, should_add)?;
-    session.logout();
+    release(account, credential, session);
     Ok(())
 }
 
@@ -352,7 +364,7 @@ pub fn move_messages(
             }
         }
     }
-    session.logout();
+    release(account, credential, session);
     Ok(result)
 }
 
@@ -395,7 +407,7 @@ fn append_to_sent(account: &Account, credential: &Credential, raw: &[u8]) -> Res
             account.imap_host, account.email
         ),
     }
-    session.logout();
+    release(account, credential, session);
     Ok(())
 }
 
@@ -423,7 +435,7 @@ pub fn save_draft(
             "no Drafts mailbox on {} (account {})",
             account.imap_host, account.email
         );
-        session.logout();
+        release(account, credential, session);
         return Ok(None);
     };
     session.select(&mailbox, true)?;
@@ -444,7 +456,7 @@ pub fn save_draft(
     if !earlier.is_empty() {
         session.delete_uids(&earlier.join(","))?;
     }
-    session.logout();
+    release(account, credential, session);
     Ok(Some(SavedDraft { mailbox, uid }))
 }
 
@@ -462,7 +474,7 @@ pub fn discard_draft(account: &Account, credential: &Credential, message_id: &st
             session.delete_uids(&uids.join(","))?;
         }
     }
-    session.logout();
+    release(account, credential, session);
     Ok(())
 }
 

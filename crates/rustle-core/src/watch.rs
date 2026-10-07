@@ -1,7 +1,7 @@
 //! Push, over IMAP IDLE (RFC 2177): one long-lived session per account sits
-//! on the inbox and reports every time the server says it changed. The poll
-//! timer stays as the fallback for servers without IDLE and for every other
-//! folder.
+//! on the inbox, and one more on the folder the user has open, and each
+//! reports every time the server says its mailbox changed. The poll timer
+//! stays as the fallback for servers without IDLE and for every other folder.
 
 use crate::folders;
 use crate::models::Account;
@@ -76,12 +76,16 @@ impl InboxWatch {
     }
 }
 
-/// Hold one session on the account's inbox and call `on_change` whenever
-/// the server reports a change, until cancelled or the connection fails.
+/// Hold one session on `mailbox` (the inbox when None) and call `on_change`
+/// whenever the server reports a change, until cancelled or the connection
+/// fails. With `catch_up`, report once as soon as the mailbox is open: after
+/// a dropped connection, whatever arrived in the gap was never announced.
 /// Runs on a blocking thread; the caller reconnects on `Err`.
-pub fn watch_inbox(
+pub fn watch_mailbox(
     account: &Account,
     credential: &Credential,
+    mailbox: Option<&str>,
+    catch_up: bool,
     watch: &InboxWatch,
     on_change: &mut dyn FnMut(),
 ) -> Result<WatchEnd> {
@@ -90,23 +94,34 @@ pub fn watch_inbox(
         return Ok(WatchEnd::Unsupported);
     }
     watch.attach(Some(&session));
-    let result = idle_loop(&mut session, watch, on_change);
+    let result = idle_loop(&mut session, mailbox, catch_up, watch, on_change);
     watch.attach(None);
     result
 }
 
 fn idle_loop(
     session: &mut ImapSession,
+    mailbox: Option<&str>,
+    catch_up: bool,
     watch: &InboxWatch,
     on_change: &mut dyn FnMut(),
 ) -> Result<WatchEnd> {
-    let mailboxes = session.list_folders()?;
-    let inbox = folders::inbox_name(mailboxes.iter().map(|m| m.name.as_str()));
-    session.select(&inbox, false)?;
+    let mailbox = match mailbox {
+        Some(name) => name.to_string(),
+        None => {
+            let mailboxes = session.list_folders()?;
+            folders::inbox_name(mailboxes.iter().map(|m| m.name.as_str()))
+        }
+    };
+    session.select(&mailbox, false)?;
+    debug!("watching {mailbox} over IDLE");
+    if catch_up {
+        on_change();
+    }
     while !watch.is_cancelled() {
         match session.idle(IDLE_CYCLE) {
             Ok(true) => on_change(),
-            Ok(false) => debug!("re-issuing IDLE on {inbox}"),
+            Ok(false) => debug!("re-issuing IDLE on {mailbox}"),
             // The read that failed was cut short on purpose.
             Err(_) if watch.is_cancelled() => break,
             Err(error) => return Err(error),

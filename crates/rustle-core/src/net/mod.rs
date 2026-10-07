@@ -1,9 +1,10 @@
 //! Thin wrappers over the `imap` and `lettre` crates: one session type per
-//! protocol, opened and torn down per operation, never pooled.
+//! protocol. IMAP sessions are parked in `pool` between operations.
 
 pub mod auth;
 pub mod errors;
 pub mod imap;
+pub mod pool;
 pub mod smtp;
 
 use std::net::IpAddr;

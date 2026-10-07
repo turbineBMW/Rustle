@@ -566,6 +566,8 @@ impl MainWindow {
             return;
         }
         self.state_mut().is_online = is_available;
+        // Parked connections went over the old network.
+        rustle_core::net::pool::forget_all();
         self.sync_inbox_watchers();
         if !is_available {
             self.show_offline_banner();
@@ -616,6 +618,12 @@ impl MainWindow {
         self.imp().refresh_button.set_sensitive(!any_syncing);
         if !is_syncing && self.state_mut().inbox_resync_pending.remove(&account_id) {
             self.sync_inbox(account_id);
+        }
+        if !is_syncing {
+            let folder_id = self.state_mut().folder_resync_pending.take();
+            if let Some(folder_id) = folder_id {
+                self.sync_open_folder(folder_id);
+            }
         }
     }
 
