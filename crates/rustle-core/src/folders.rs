@@ -148,6 +148,40 @@ pub fn display_name_for_folder(name: &str, delimiter: Option<&str>) -> String {
     name
 }
 
+/// Encode a mailbox name in modified UTF-7 (RFC 3501 5.1.3), the reverse
+/// of `decode_mailbox_name`: printable ASCII stays, "&" becomes "&-", and
+/// any other run of characters goes as UTF-16 in base64 with "," for "/".
+pub fn encode_mailbox_name(name: &str) -> String {
+    use base64::Engine;
+    fn flush(out: &mut String, pending: &mut Vec<u16>) {
+        if pending.is_empty() {
+            return;
+        }
+        let bytes: Vec<u8> = pending.iter().flat_map(|unit| unit.to_be_bytes()).collect();
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
+        out.push('&');
+        out.push_str(&encoded.replace('/', ","));
+        out.push('-');
+        pending.clear();
+    }
+    let mut out = String::new();
+    let mut pending: Vec<u16> = Vec::new();
+    for c in name.chars() {
+        if c == '&' {
+            flush(&mut out, &mut pending);
+            out.push_str("&-");
+        } else if (' '..='~').contains(&c) {
+            flush(&mut out, &mut pending);
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            pending.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    flush(&mut out, &mut pending);
+    out
+}
+
 /// Decode a mailbox name from modified UTF-7 (RFC 3501 5.1.3), so
 /// "Entw&APw-rfe" reads as "Entwürfe".
 pub fn decode_mailbox_name(name: &str) -> String {
@@ -179,6 +213,17 @@ pub fn decode_mailbox_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mailbox_names_encode_as_modified_utf7() {
+        use super::{decode_mailbox_name, encode_mailbox_name};
+        assert_eq!(encode_mailbox_name("Entwürfe"), "Entw&APw-rfe");
+        assert_eq!(encode_mailbox_name("R&D"), "R&-D");
+        assert_eq!(encode_mailbox_name("Work/Q3"), "Work/Q3");
+        for name in ["日本語", "Café & Bar", "a/ü/ö", "😀 later", "plain"] {
+            assert_eq!(decode_mailbox_name(&encode_mailbox_name(name)), name);
+        }
+    }
+
     #[test]
     fn notification_folder_filter() {
         for name in [

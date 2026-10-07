@@ -75,11 +75,16 @@ impl MainWindow {
     /// Move the selection to a folder picked from the menu, by folder id.
     /// Only emails of that folder's account can go there.
     pub(super) fn on_move(&self, folder_id: i64) {
+        self.move_emails_to(self.selected_emails(), folder_id);
+    }
+
+    /// Move `emails` to a folder (the selection, or what was dragged onto a
+    /// folder). Only emails of that folder's account can go there.
+    pub(super) fn move_emails_to(&self, emails: Vec<EmailObject>, folder_id: i64) {
         let Some((account, dest)) = self.account_for_folder(folder_id) else {
             return;
         };
-        let emails: Vec<EmailObject> = self
-            .selected_emails()
+        let emails: Vec<EmailObject> = emails
             .into_iter()
             .filter(|c| {
                 self.account_for_folder(c.with(|c| c.folder_id))
@@ -102,7 +107,11 @@ impl MainWindow {
     }
 
     fn start_move_by_role(&self, role: FolderRole) {
-        let emails = self.selected_emails();
+        self.move_emails_by_role(self.selected_emails(), role);
+    }
+
+    /// Archive or trash `emails`, each to its own account's folder.
+    pub(super) fn move_emails_by_role(&self, emails: Vec<EmailObject>, role: FolderRole) {
         if emails.is_empty() {
             return;
         }

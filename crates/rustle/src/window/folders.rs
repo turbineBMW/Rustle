@@ -79,14 +79,34 @@ impl MainWindow {
         let factory = gtk::SignalListItemFactory::new();
         // setup: build one empty widget, reused for many folders as the list
         // scrolls. The expander draws the indent and the expand/collapse arrow.
-        factory.connect_setup(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let expander = gtk::TreeExpander::new();
-            expander.set_child(Some(&FolderRow::default()));
-            item.set_child(Some(&expander));
-        });
+        factory.connect_setup(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, item| {
+                let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+                    return;
+                };
+                let expander = gtk::TreeExpander::new();
+                expander.set_child(Some(&FolderRow::default()));
+                // Right-click for the folder menu; messages drop onto a folder.
+                let gesture = gtk::GestureClick::builder()
+                    .button(gtk::gdk::BUTTON_SECONDARY)
+                    .build();
+                let weak_item = item.downgrade();
+                gesture.connect_pressed(glib::clone!(
+                    #[weak]
+                    window,
+                    move |gesture, _, x, y| {
+                        if let Some(item) = weak_item.upgrade() {
+                            window.on_folder_right_click(gesture, x, y, &item);
+                        }
+                    }
+                ));
+                expander.add_controller(gesture);
+                window.add_folder_drop_target(&expander, item);
+                item.set_child(Some(&expander));
+            }
+        ));
         factory.connect_bind(glib::clone!(
             #[weak(rename_to = window)]
             self,
