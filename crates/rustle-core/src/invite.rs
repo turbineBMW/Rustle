@@ -101,7 +101,7 @@ pub fn parse(ics: &[u8]) -> Option<Invitation> {
     let start = moment("DTSTART")?;
     let end = moment("DTEND").or_else(|| {
         let duration = parse_duration(event.value("DURATION")?)?;
-        Some(add(start, duration))
+        add(start, duration)
     });
     let method = match calendar
         .value("METHOD")
@@ -115,7 +115,7 @@ pub fn parse(ics: &[u8]) -> Option<Invitation> {
     };
     let recurrence_id = moment("RECURRENCE-ID");
     let previous_start = recurrence_id.filter(|&previous| previous != start);
-    let previous_end = previous_start.zip(end).map(|(previous, end)| {
+    let previous_end = previous_start.zip(end).and_then(|(previous, end)| {
         // The old slot's end isn't sent; assume it ran as long as the new one.
         add(previous, difference(start, end))
     });
@@ -385,10 +385,11 @@ fn hm(at: NaiveDateTime) -> String {
     at.format("%H:%M").to_string()
 }
 
-fn add(moment: Moment, duration: Duration) -> Moment {
+/// None when the sum falls outside what chrono can represent.
+fn add(moment: Moment, duration: Duration) -> Option<Moment> {
     match moment {
-        Moment::At(at) => Moment::At(at + duration),
-        Moment::Day(day) => Moment::Day(day + duration),
+        Moment::At(at) => at.checked_add_signed(duration).map(Moment::At),
+        Moment::Day(day) => day.checked_add_signed(duration).map(Moment::Day),
     }
 }
 
@@ -438,7 +439,7 @@ fn unescape(value: &str) -> String {
     out.trim().to_string()
 }
 
-/// "PT30M", "P1D", "-PT1H30M", "P2W".
+/// "PT30M", "P1D", "-PT1H30M", "P2W". None for anything out of range.
 fn parse_duration(value: &str) -> Option<Duration> {
     let value = value.trim();
     let (sign, value) = match value.strip_prefix('-') {
@@ -455,18 +456,19 @@ fn parse_duration(value: &str) -> Option<Duration> {
             unit => {
                 let n: i64 = number.parse().ok()?;
                 number.clear();
-                total += match unit {
-                    'W' => Duration::weeks(n),
-                    'D' => Duration::days(n),
-                    'H' => Duration::hours(n),
-                    'M' => Duration::minutes(n),
-                    'S' => Duration::seconds(n),
+                let part = match unit {
+                    'W' => Duration::try_weeks(n),
+                    'D' => Duration::try_days(n),
+                    'H' => Duration::try_hours(n),
+                    'M' => Duration::try_minutes(n),
+                    'S' => Duration::try_seconds(n),
                     _ => return None,
-                };
+                }?;
+                total = total.checked_add(&part)?;
             }
         }
     }
-    Some(total * sign)
+    total.checked_mul(sign)
 }
 
 // --- Content lines and components -----------------------------------------
@@ -489,10 +491,10 @@ impl Prop {
     /// ORGANIZER/ATTENDEE: "CN=Name:mailto:address".
     fn person(&self) -> Person {
         let value = self.value.trim();
-        let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
-            &value[7..]
-        } else {
-            value
+        // `get`, not indexing: byte 7 may fall inside a character.
+        let email = match (value.get(..7), value.get(7..)) {
+            (Some(scheme), Some(rest)) if scheme.eq_ignore_ascii_case("mailto:") => rest,
+            _ => value,
         };
         Person {
             name: self.param("CN").unwrap_or("").trim().to_string(),
@@ -736,13 +738,21 @@ fn parse_yearly_rule(rrule: &str) -> Option<YearlyRule> {
         return None;
     }
     let month = parts.get("BYMONTH")?.parse().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
     let byday = parts.get("BYDAY")?;
     let split = byday.len().checked_sub(2)?;
-    let (nth, day) = byday.split_at(split);
-    let nth = match nth {
+    // `get`, not `split_at`: the split may fall inside a character.
+    let (nth, day) = (byday.get(..split)?, byday.get(split..)?);
+    let nth: i32 = match nth {
         "" => 1,
         nth => nth.trim_start_matches('+').parse().ok()?,
     };
+    // A month holds at most five of any weekday.
+    if nth == 0 || !(-5..=5).contains(&nth) {
+        return None;
+    }
     let weekday = match day.to_ascii_uppercase().as_str() {
         "MO" => Weekday::Mon,
         "TU" => Weekday::Tue,
@@ -767,7 +777,7 @@ fn parse_yearly_rule(rrule: &str) -> Option<YearlyRule> {
 /// The nth (or, counting back, -nth) given weekday of a month.
 fn nth_weekday(year: i32, month: u32, weekday: Weekday, nth: i32) -> Option<NaiveDate> {
     if nth > 0 {
-        return NaiveDate::from_weekday_of_month_opt(year, month, weekday, nth as u8);
+        return NaiveDate::from_weekday_of_month_opt(year, month, weekday, u8::try_from(nth).ok()?);
     }
     let next_month = if month == 12 {
         NaiveDate::from_ymd_opt(year + 1, 1, 1)?
@@ -776,7 +786,10 @@ fn nth_weekday(year: i32, month: u32, weekday: Weekday, nth: i32) -> Option<Naiv
     };
     let last = next_month.pred_opt()?;
     let back = (7 + last.weekday().num_days_from_monday() - weekday.num_days_from_monday()) % 7;
-    let date = last - Duration::days(back as i64) - Duration::weeks((-nth - 1) as i64);
+    let weeks_back = i64::from(nth).checked_neg()?.checked_sub(1)?;
+    let date = last
+        .checked_sub_signed(Duration::try_days(i64::from(back))?)?
+        .checked_sub_signed(Duration::try_weeks(weeks_back)?)?;
     (date.month() == month).then_some(date)
 }
 
@@ -1032,6 +1045,66 @@ END:VCALENDAR
             nth_weekday(2026, 11, Weekday::Sun, 1),
             Some(date("2026-11-01"))
         );
+    }
+
+    /// A calendar part arrives with untrusted mail and is parsed during sync:
+    /// whatever it holds, parsing returns.
+    #[test]
+    fn hostile_calendars_do_not_panic() {
+        let event = |lines: &str| {
+            format!("BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20261008T140000Z\n{lines}\nEND:VEVENT\nEND:VCALENDAR\n")
+        };
+        let invite = parse(event("ORGANIZER:ééééé").as_bytes()).unwrap();
+        assert_eq!(invite.organizer.unwrap().email, "ééééé");
+        let invite = parse(event("ORGANIZER:mailto:é@example.com").as_bytes()).unwrap();
+        assert_eq!(invite.organizer.unwrap().email, "é@example.com");
+
+        for duration in [
+            "P999999999999W",
+            "P9223372036854775807D",
+            "PT9223372036854775807S",
+            "P99999999D99999999D",
+            "-P999999999999W",
+        ] {
+            let invite = parse(event(&format!("DURATION:{duration}")).as_bytes()).unwrap();
+            assert_eq!(invite.end, None, "{duration}");
+        }
+        assert_eq!(parse_duration("P99999999D"), Duration::try_days(99999999));
+        // In range for a duration, out of range for a date.
+        let last = NaiveDate::MAX;
+        assert_eq!(add(Moment::Day(last), Duration::days(1)), None);
+        assert_eq!(
+            add(Moment::At(DateTime::<Utc>::MAX_UTC), Duration::days(1)),
+            None
+        );
+
+        let zone = |byday: &str, month: &str| {
+            EXCHANGE
+                .replace(
+                    "BYDAY=2SU;BYMONTH=3",
+                    &format!("BYDAY={byday};BYMONTH={month}"),
+                )
+                .into_bytes()
+        };
+        for (byday, month) in [
+            ("éa", "3"),
+            ("é", "3"),
+            ("1é", "3"),
+            ("-99999999SU", "3"),
+            ("-2147483648SU", "3"),
+            ("2147483647SU", "3"),
+            ("256SU", "3"),
+            ("0SU", "3"),
+            ("2SU", "4294967295"),
+            ("2SU", "0"),
+        ] {
+            assert!(parse(&zone(byday, month)).is_some(), "{byday} {month}");
+        }
+        assert!(parse_yearly_rule("FREQ=YEARLY;BYMONTH=3;BYDAY=-99999999SU").is_none());
+        assert!(parse_yearly_rule("FREQ=YEARLY;BYMONTH=13;BYDAY=1SU").is_none());
+        assert!(parse_yearly_rule("FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU").is_some());
+        assert_eq!(nth_weekday(2026, 3, Weekday::Sun, i32::MIN), None);
+        assert_eq!(nth_weekday(2026, 3, Weekday::Sun, -99999999), None);
     }
 
     #[test]
