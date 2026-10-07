@@ -473,13 +473,25 @@ impl ImapSession {
 
     /// Move one message and return its destination UID when reported.
     /// COPYUID is the response code used by most servers; MOVEUID by some
-    /// implementing RFC 6851. Both arrive on the tagged OK line, which the
-    /// crate's own `uid_mv` discards, so the command is run raw.
+    /// implementing RFC 6851. Both arrive in the reply, which the crate's
+    /// own `uid_mv` and `uid_copy` discard, so the commands are run raw.
+    /// A server without MOVE gets the long way round: COPY, mark the
+    /// original \Deleted, expunge it (see `expunge_uids` for when that
+    /// waits). Should a step after the copy fail, the original stays put
+    /// and the error goes back: at worst a second copy, never no copy.
     pub fn r#move(&mut self, uid: &str, destination: &str) -> Result<Option<String>> {
-        let command = format!("UID MOVE {uid} {}", quote_mailbox(destination));
+        let mailbox = quote_mailbox(destination);
+        if self.has_capability("MOVE") {
+            let command = format!("UID MOVE {uid} {mailbox}");
+            let (data, _done_at) = self.command(|session| session.run(&command))?;
+            return Ok(destination_uid(&String::from_utf8_lossy(&data)));
+        }
+        let command = format!("UID COPY {uid} {mailbox}");
         let (data, _done_at) = self.command(|session| session.run(&command))?;
-        let text = String::from_utf8_lossy(&data);
-        Ok(destination_uid(&text))
+        let destination_uid = destination_uid(&String::from_utf8_lossy(&data));
+        self.command(|session| session.uid_store(uid, "+FLAGS (\\Deleted)"))?;
+        self.expunge_uids(&[uid.to_string()])?;
+        Ok(destination_uid)
     }
 
     /// Fetch UID + flags + a few headers for a window of `limit` messages,
