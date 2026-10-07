@@ -423,17 +423,64 @@ pub fn parse_mailto(uri: &str) -> MailtoDraft {
     }
 }
 
-/// Known addresses matching the one being typed after the last comma.
+/// Known addresses matching the one being typed after the last comma, in
+/// the order given (most wanted first) -- except that one where a word
+/// starts with what's typed beats one that only contains it: "al" means Alex
+/// before it means Sally.
 pub fn suggest_addresses<'a>(text: &str, addresses: &'a [String], limit: usize) -> Vec<&'a String> {
     let typed = text.rsplit(',').next().unwrap_or("").trim().to_lowercase();
     if typed.is_empty() {
         return Vec::new();
     }
-    addresses
-        .iter()
-        .filter(|a| a.to_lowercase().contains(&typed))
-        .take(limit)
-        .collect()
+    let mut starts = Vec::new();
+    let mut contains = Vec::new();
+    for address in addresses {
+        let lower = address.to_lowercase();
+        if !lower.contains(&typed) {
+            continue;
+        }
+        let word_starts = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word.starts_with(&typed))
+            || lower.starts_with(&typed);
+        if word_starts {
+            starts.push(address);
+        } else {
+            contains.push(address);
+        }
+        if starts.len() >= limit {
+            break;
+        }
+    }
+    starts.into_iter().chain(contains).take(limit).collect()
+}
+
+/// The suggestion list a composer offers: people written to before, then
+/// the desktop address books, then everyone else seen in mail. Each address
+/// once, in its first place.
+pub fn merge_suggestions(ranked: &[(String, u32)], book: &[(String, String)]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+    let mut add = |label: String, merged: &mut Vec<String>| {
+        let key = address::first_address(&label).to_lowercase();
+        if seen.insert(if key.is_empty() {
+            label.to_lowercase()
+        } else {
+            key
+        }) {
+            merged.push(label);
+        }
+    };
+    for (label, _) in ranked.iter().filter(|(_, sent)| *sent > 0) {
+        add(label.clone(), &mut merged);
+    }
+    for (name, address) in book {
+        add(crate::db::contact_label(name, address), &mut merged);
+    }
+    for (label, _) in ranked.iter().filter(|(_, sent)| *sent == 0) {
+        add(label.clone(), &mut merged);
+    }
+    merged
 }
 
 /// Swap the address being typed for a picked one, ready for the next.
@@ -696,6 +743,43 @@ mod tests {
         let known = vec!["Ada <ada@x.y>".to_string(), "bob@x.y".to_string()];
         assert_eq!(suggest_addresses("bob@x.y, AD", &known, 5), vec![&known[0]]);
         assert!(suggest_addresses("bob@x.y, ", &known, 5).is_empty());
+    }
+
+    #[test]
+    fn word_starts_beat_middles() {
+        let known: Vec<String> = [
+            "Sally Ng <sally@x.y>",
+            "Alex Kim <alex@x.y>",
+            "Val <v@al.y>",
+        ]
+        .map(String::from)
+        .to_vec();
+        let picked = suggest_addresses("al", &known, 5);
+        assert_eq!(picked, [&known[1], &known[2], &known[0]]);
+        assert_eq!(suggest_addresses("al", &known, 1), [&known[1]]);
+    }
+
+    #[test]
+    fn suggestions_put_correspondents_then_books_then_the_rest() {
+        let ranked = vec![
+            ("Ada <ada@x.y>".to_string(), 3),
+            ("Bob <bob@x.y>".to_string(), 0),
+            ("cy@x.y".to_string(), 0),
+        ];
+        let book = vec![
+            ("Cy Young".to_string(), "CY@x.y".to_string()),
+            ("Ada L".to_string(), "ada@x.y".to_string()),
+            ("Dee".to_string(), "dee@x.y".to_string()),
+        ];
+        assert_eq!(
+            merge_suggestions(&ranked, &book),
+            [
+                "Ada <ada@x.y>",
+                "Cy Young <CY@x.y>",
+                "Dee <dee@x.y>",
+                "Bob <bob@x.y>"
+            ]
+        );
         assert_eq!(
             replace_last_address("bob@x.y, ad", "ada@x.y"),
             "bob@x.y, ada@x.y, "

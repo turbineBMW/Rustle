@@ -89,6 +89,7 @@ const MIGRATIONS: &[&str] = &[
         VALUES (new.id, new.sender, new.subject, new.preview, new.body_text);
      END;
      INSERT INTO emails_fts(emails_fts) VALUES ('rebuild');",
+    "ALTER TABLE contacts ADD COLUMN sent_count INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
@@ -104,6 +105,15 @@ pub struct Reconciled {
     pub added: Vec<i64>,
     /// Anything about the visible accounts changed.
     pub is_changed: bool,
+}
+
+/// "Name <address>", or the bare address without a name.
+pub fn contact_label(name: &str, address: &str) -> String {
+    if name.is_empty() {
+        address.to_string()
+    } else {
+        format!("{name} <{address}>")
+    }
 }
 
 /// Search terms as a safe FTS5 query: each term a prefix match, a term with
@@ -1285,6 +1295,37 @@ impl Database {
         transaction.commit()
     }
 
+    /// Remember the people a message was sent to, and that it was: who
+    /// you write to comes first among suggestions.
+    pub fn record_sent_contacts(&mut self, addresses: &[(String, String)]) -> Result<()> {
+        self.save_contacts(addresses)?;
+        let mut bump = self
+            .conn
+            .prepare("UPDATE contacts SET sent_count = sent_count + 1 WHERE address = ?1")?;
+        for (_, address) in addresses {
+            if !address.is_empty() {
+                bump.execute([address.to_lowercase()])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every known address as "Name <address>", the ones written to most
+    /// first: `sent` is how many messages went to each.
+    pub fn ranked_contacts(&self) -> Result<Vec<(String, u32)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT name, address, sent_count FROM contacts
+             ORDER BY sent_count DESC, name, address",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let address: String = row.get(1)?;
+            let sent: u32 = row.get(2)?;
+            Ok((contact_label(&name, &address), sent))
+        })?;
+        rows.collect()
+    }
+
     pub fn contact_addresses(&self) -> Result<Vec<String>> {
         let mut statement = self
             .conn
@@ -1996,5 +2037,26 @@ mod tests {
         budget.body_text = "the".into();
         db.save_incoming_email(inbox.id, &budget).unwrap();
         assert_eq!(subjects("quarterly"), ["Numbers"]);
+    }
+
+    #[test]
+    fn people_written_to_rank_first() {
+        let mut db = Database::open_in_memory().unwrap();
+        db.save_contacts(&[
+            ("Ada".into(), "ada@x.y".into()),
+            ("Bob".into(), "bob@x.y".into()),
+        ])
+        .unwrap();
+        db.record_sent_contacts(&[("".into(), "BOB@x.y".into())])
+            .unwrap();
+        db.record_sent_contacts(&[("".into(), "bob@x.y".into())])
+            .unwrap();
+        assert_eq!(
+            db.ranked_contacts().unwrap(),
+            [
+                ("Bob <bob@x.y>".to_string(), 2),
+                ("Ada <ada@x.y>".to_string(), 0)
+            ]
+        );
     }
 }
