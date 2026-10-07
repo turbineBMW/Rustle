@@ -1,6 +1,6 @@
 //! The card a meeting invitation gets above its message body: what changed,
-//! when, who organised it, and a Join button. Read-only -- answering an
-//! invitation stays with the calendar that owns it.
+//! when, who organised it, a Join button, and for an invitation, Accept,
+//! Tentative and Decline -- which mail the organizer an iTIP reply.
 
 use crate::i18n::{self, gettext};
 use adw::prelude::*;
@@ -11,7 +11,12 @@ use std::rc::Rc;
 
 const GUTTER: i32 = 12;
 
-pub fn card(invitation: &Invitation, subject: &str, on_save: Rc<dyn Fn(&Attachment)>) -> gtk::Box {
+pub fn card(
+    invitation: &Invitation,
+    subject: &str,
+    on_save: Rc<dyn Fn(&Attachment)>,
+    on_respond: Rc<dyn Fn(Response) -> bool>,
+) -> gtk::Box {
     let card = gtk::Box::builder()
         .spacing(GUTTER)
         .css_classes(["invitation-card"])
@@ -78,6 +83,12 @@ pub fn card(invitation: &Invitation, subject: &str, on_save: Rc<dyn Fn(&Attachme
     if !details.is_empty() {
         lines.append(&label(&details.join(" · "), &["caption", "dim-label"]));
     }
+    let can_answer = invitation.method == Method::Request
+        && !invitation.is_cancelled
+        && invitation.organizer.is_some();
+    if can_answer {
+        lines.append(&answer_row(on_respond));
+    }
     card.append(&lines);
 
     let buttons = gtk::Box::builder()
@@ -114,6 +125,47 @@ pub fn card(invitation: &Invitation, subject: &str, on_save: Rc<dyn Fn(&Attachme
     buttons.append(&save);
     card.append(&buttons);
     card
+}
+
+/// Accept, Tentative, Decline. Once one goes out the row says which, so a
+/// second click can't send a second, different answer by accident.
+fn answer_row(on_respond: Rc<dyn Fn(Response) -> bool>) -> gtk::Box {
+    let row = gtk::Box::builder()
+        .spacing(6)
+        .margin_top(6)
+        .css_classes(["invitation-answers"])
+        .build();
+    let choices = [
+        (Response::Accepted, gettext("Accept"), "suggested-action"),
+        (Response::Tentative, gettext("Tentative"), ""),
+        (Response::Declined, gettext("Decline"), "destructive-action"),
+    ];
+    for (response, title, class) in choices {
+        let button = gtk::Button::builder().label(title).build();
+        button.add_css_class("pill");
+        if !class.is_empty() {
+            button.add_css_class(class);
+        }
+        let on_respond = on_respond.clone();
+        let row_ref = row.downgrade();
+        button.connect_clicked(move |_| {
+            if !on_respond(response) {
+                return;
+            }
+            let Some(row) = row_ref.upgrade() else { return };
+            while let Some(child) = row.first_child() {
+                row.remove(&child);
+            }
+            let said = match response {
+                Response::Accepted => gettext("You accepted"),
+                Response::Tentative => gettext("You tentatively accepted"),
+                _ => gettext("You declined"),
+            };
+            row.append(&label(&said, &["caption-heading", "dim-label"]));
+        });
+        row.append(&button);
+    }
+    row
 }
 
 /// Hand a link from a message to the desktop: a Teams meeting to the Teams

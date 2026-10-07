@@ -242,6 +242,32 @@ pub fn editable_body(html: &str) -> String {
     }
 }
 
+/// An answer to a meeting invitation (iMIP, RFC 6047): a line of text for
+/// people, and the iTIP REPLY from `invite::reply_ics` for the organizer's
+/// calendar, as `text/calendar; method=REPLY` alternatives.
+pub fn invitation_reply_message(
+    from: &str,
+    organizer: &str,
+    subject: &str,
+    text: &str,
+    ics: &str,
+) -> Result<Vec<u8>, ComposeError> {
+    let calendar = ContentType::parse("text/calendar; charset=utf-8; method=REPLY")
+        .expect("a valid content type");
+    let message = Message::builder()
+        .from(lettre_mailbox(from)?)
+        .to(lettre_mailbox(organizer)?)
+        .subject(subject)
+        .date_now()
+        .message_id(Some(new_message_id(from)))
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(SinglePart::plain(text.to_string()))
+                .singlepart(SinglePart::builder().header(calendar).body(ics.to_string())),
+        )?;
+    Ok(message.formatted())
+}
+
 fn build_message(message: &Outgoing, is_draft: bool) -> Result<Vec<u8>, ComposeError> {
     let from = lettre_mailbox(message.from)?;
     let mut builder = Message::builder()
@@ -469,6 +495,31 @@ pub fn first_recipient(to_header: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invitation_replies_carry_the_calendar_part() {
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\nUID:1\r\n\
+                   DTSTART:20261008T180000Z\r\nATTENDEE;PARTSTAT=DECLINED:mailto:me@x.y\r\n\
+                   END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let raw = invitation_reply_message(
+            "Me <me@x.y>",
+            "Boss <boss@x.y>",
+            "Declined: Plan",
+            "Me declined.",
+            ics,
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("method=REPLY"), "{text}");
+        assert!(text.contains("To: Boss <boss@x.y>"), "{text}");
+        let parsed = crate::mime::parse_message(&raw);
+        assert_eq!(
+            parsed.text_body.as_deref().map(str::trim),
+            Some("Me declined.")
+        );
+        let invitation = parsed.invitation.expect("the calendar part is read back");
+        assert_eq!(invitation.method, crate::invite::Method::Reply);
+    }
 
     #[test]
     fn links_are_made_absolute() {

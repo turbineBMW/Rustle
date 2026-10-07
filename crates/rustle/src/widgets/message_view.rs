@@ -11,6 +11,7 @@ use gtk::gdk;
 use gtk::glib;
 use gtk::pango;
 use rustle_core::darkmode;
+use rustle_core::invite::{Invitation, Response};
 use rustle_core::mime::{self, ParsedMessage, Unsubscribe};
 use rustle_core::models::{Account, Attachment, Email};
 use std::cell::RefCell;
@@ -24,6 +25,8 @@ pub type LoadCallback = Box<dyn FnOnce(Option<Vec<u8>>, Option<String>)>;
 pub type LoadHandler = Rc<dyn Fn(&Email, LoadCallback)>;
 /// Offers an unsubscribe target; the second argument hides the banner once done.
 pub type UnsubscribeHandler = Rc<dyn Fn(&Unsubscribe, Box<dyn Fn()>)>;
+/// Answers an invitation; true once the reply is on its way.
+pub type RespondHandler = Rc<dyn Fn(&Email, &Invitation, Response) -> bool>;
 /// Called once the selected message has rendered.
 pub type RenderedCallback = Box<dyn Fn()>;
 
@@ -34,6 +37,7 @@ pub struct Handlers {
     pub on_save_attachment: Rc<dyn Fn(&Attachment)>,
     pub on_open_attachment: Rc<dyn Fn(&Attachment)>,
     pub on_unsubscribe: UnsubscribeHandler,
+    pub on_respond: RespondHandler,
 }
 
 /// A mail body may name any scheme, and a registered handler will happily
@@ -353,8 +357,15 @@ impl MessageView {
         let Some(invitation) = &parsed.invitation else {
             return;
         };
-        let on_save = self.inner.borrow().handlers.on_save_attachment.clone();
-        let card = invitation::card(invitation, &parsed.subject, on_save);
+        let (email, handlers) = {
+            let inner = self.inner.borrow();
+            (inner.email.clone(), inner.handlers.clone())
+        };
+        let on_save = handlers.on_save_attachment.clone();
+        let answered = invitation.clone();
+        let on_respond: Rc<dyn Fn(Response) -> bool> =
+            Rc::new(move |response| (handlers.on_respond)(&email, &answered, response));
+        let card = invitation::card(invitation, &parsed.subject, on_save, on_respond);
         card.set_margin_start(EDGE);
         card.set_margin_end(EDGE);
         card.set_margin_bottom(GUTTER);

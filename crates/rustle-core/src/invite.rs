@@ -1,7 +1,7 @@
 //! Meeting invitations: the `text/calendar` part Exchange, Google and most
 //! calendars attach to an invite, update, cancellation or reply (iMIP,
-//! RFC 6047). Read-only -- enough of iCalendar (RFC 5545) to say what the
-//! message is about, when, and where to join.
+//! RFC 6047). Enough of iCalendar (RFC 5545) to say what the message is
+//! about, when, and where to join -- and to answer it with a REPLY.
 
 use crate::models::Attachment;
 use chrono::{
@@ -163,6 +163,150 @@ pub fn parse(ics: &[u8]) -> Option<Invitation> {
             content: ics.to_vec(),
         },
     })
+}
+
+impl Response {
+    /// The PARTSTAT a reply carries; None for `Other`, which is no answer.
+    fn partstat(self) -> Option<&'static str> {
+        match self {
+            Response::Accepted => Some("ACCEPTED"),
+            Response::Tentative => Some("TENTATIVE"),
+            Response::Declined => Some("DECLINED"),
+            Response::Other => None,
+        }
+    }
+}
+
+/// The iTIP REPLY (RFC 5546) that answers the invitation in `ics` as
+/// `attendee`. It names the event the organizer's calendar has to find --
+/// UID, SEQUENCE, RECURRENCE-ID -- with its times and their time zones, the
+/// organizer, and the one attendee answering. The attendee keeps the
+/// parameters the invite gave them (CN, ROLE), less the request for a reply.
+/// None when the invite has no event or no UID, or `response` is `Other`.
+pub fn reply_ics(
+    ics: &[u8],
+    attendee: &Person,
+    response: Response,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let partstat = response.partstat()?;
+    let text = String::from_utf8_lossy(ics);
+    let calendar = components(&text)
+        .into_iter()
+        .find(|c| c.name == "VCALENDAR")?;
+    let event = calendar.children.iter().find(|c| c.name == "VEVENT")?;
+    event.prop("UID")?;
+
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "PRODID:-//Rustle//Rustle//EN".to_string(),
+        "VERSION:2.0".to_string(),
+        "METHOD:REPLY".to_string(),
+    ];
+    let timed = ["DTSTART", "DTEND", "RECURRENCE-ID"];
+    let zones: Vec<&str> = timed
+        .iter()
+        .filter_map(|name| event.prop(name)?.param("TZID"))
+        .collect();
+    for zone in calendar.children.iter().filter(|c| c.name == "VTIMEZONE") {
+        if zone.value("TZID").is_some_and(|tzid| zones.contains(&tzid)) {
+            write_component(zone, &mut lines);
+        }
+    }
+    lines.push("BEGIN:VEVENT".to_string());
+    for name in [
+        "UID",
+        "SEQUENCE",
+        "RECURRENCE-ID",
+        "DTSTART",
+        "DTEND",
+        "DURATION",
+        "SUMMARY",
+        "ORGANIZER",
+    ] {
+        if let Some(prop) = event.prop(name) {
+            lines.push(write_prop(prop));
+        }
+    }
+    let invited = event
+        .props
+        .iter()
+        .filter(|p| p.name == "ATTENDEE")
+        .find(|p| p.person().email.eq_ignore_ascii_case(&attendee.email));
+    let mut params: Vec<(String, String)> = invited
+        .map(|p| p.params.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(key, _)| {
+            !key.eq_ignore_ascii_case("PARTSTAT") && !key.eq_ignore_ascii_case("RSVP")
+        })
+        .collect();
+    let has_name = params.iter().any(|(key, _)| key.eq_ignore_ascii_case("CN"));
+    if !has_name && !attendee.name.is_empty() {
+        params.push(("CN".to_string(), attendee.name.clone()));
+    }
+    params.push(("PARTSTAT".to_string(), partstat.to_string()));
+    let value = invited
+        .map(|p| p.value.clone())
+        .unwrap_or_else(|| format!("mailto:{}", attendee.email));
+    lines.push(write_prop(&Prop {
+        name: "ATTENDEE".to_string(),
+        params,
+        value,
+    }));
+    lines.push(format!("DTSTAMP:{}", now.format("%Y%m%dT%H%M%SZ")));
+    lines.push("END:VEVENT".to_string());
+    lines.push("END:VCALENDAR".to_string());
+
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(&fold(&line));
+    }
+    Some(out)
+}
+
+fn write_component(component: &Component, lines: &mut Vec<String>) {
+    lines.push(format!("BEGIN:{}", component.name));
+    lines.extend(component.props.iter().map(write_prop));
+    for child in &component.children {
+        write_component(child, lines);
+    }
+    lines.push(format!("END:{}", component.name));
+}
+
+/// One content line, unfolded. The value goes back as it came: it was never
+/// unescaped. A parameter value with a separator in it is quoted again.
+fn write_prop(prop: &Prop) -> String {
+    let mut line = prop.name.clone();
+    for (key, value) in &prop.params {
+        let needs_quotes = value.contains([':', ';', ',']);
+        if needs_quotes {
+            line.push_str(&format!(";{key}=\"{value}\""));
+        } else {
+            line.push_str(&format!(";{key}={value}"));
+        }
+    }
+    line.push(':');
+    line.push_str(&prop.value);
+    line
+}
+
+/// A content line folded at 75 octets (RFC 5545 3.1), CRLF-terminated.
+/// Breaks fall between characters, never inside one.
+fn fold(line: &str) -> String {
+    let mut out = String::new();
+    let mut width = 0;
+    for c in line.chars() {
+        let size = c.len_utf8();
+        if width + size > 75 {
+            out.push_str("\r\n ");
+            width = 1;
+        }
+        out.push(c);
+        width += size;
+    }
+    out.push_str("\r\n");
+    out
 }
 
 /// The Teams desktop app's link for a Teams web link: teams-for-linux and
@@ -327,7 +471,7 @@ fn parse_duration(value: &str) -> Option<Duration> {
 
 // --- Content lines and components -----------------------------------------
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Prop {
     name: String,
     params: Vec<(String, String)>,
@@ -705,6 +849,70 @@ END:VALARM
 END:VEVENT
 END:VCALENDAR
 "#;
+
+    #[test]
+    fn replies_name_the_event_and_the_answer() {
+        let me = Person {
+            name: "Brandon".into(),
+            email: "Brandon@Example.com".into(),
+        };
+        let now = DateTime::parse_from_rfc3339("2026-10-07T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let reply = reply_ics(
+            EXCHANGE.replace('\n', "\r\n").as_bytes(),
+            &me,
+            Response::Accepted,
+            now,
+        )
+        .unwrap();
+        assert!(reply.lines().all(|line| line.len() <= 76), "{reply}");
+        assert!(reply.contains("METHOD:REPLY\r\n"));
+        assert!(reply.contains("UID:040000008200E00074C5B7101A82E008\r\n"));
+        assert!(reply.contains("SEQUENCE:25\r\n"));
+        assert!(reply.contains("DTSTAMP:20261007T120000Z\r\n"));
+        assert!(reply.contains("BEGIN:VTIMEZONE\r\nTZID:Eastern Standard Time"));
+        assert!(!reply.contains("RSVP"), "{reply}");
+        assert!(!reply.contains("VALARM"));
+        let parsed = parse(reply.as_bytes()).unwrap();
+        assert_eq!(parsed.method, Method::Reply);
+        assert_eq!(parsed.start, utc("2026-10-08T18:00:00Z"));
+        assert_eq!(parsed.previous_start, Some(utc("2026-10-07T17:00:00Z")));
+        assert_eq!(
+            parsed.reply,
+            Some((
+                Person {
+                    name: "Brandon Williams".into(),
+                    email: "brandon@example.com".into(),
+                },
+                Response::Accepted
+            ))
+        );
+        assert!(reply_ics(EXCHANGE.as_bytes(), &me, Response::Other, now).is_none());
+    }
+
+    #[test]
+    fn an_uninvited_address_answers_in_its_own_name() {
+        let alias = Person {
+            name: "B. W.".into(),
+            email: "bw@example.org".into(),
+        };
+        let now = Utc::now();
+        let reply = reply_ics(EXCHANGE.as_bytes(), &alias, Response::Declined, now).unwrap();
+        let (person, response) = parse(reply.as_bytes()).unwrap().reply.unwrap();
+        assert_eq!(person, alias);
+        assert_eq!(response, Response::Declined);
+    }
+
+    #[test]
+    fn folding_keeps_characters_whole() {
+        let folded = fold(&format!("SUMMARY:{}", "é".repeat(60)));
+        for line in folded.split("\r\n").filter(|l| !l.is_empty()) {
+            assert!(line.len() <= 75);
+        }
+        let unfolded = folded.replace("\r\n ", "");
+        assert_eq!(unfolded, format!("SUMMARY:{}\r\n", "é".repeat(60)));
+    }
 
     fn utc(text: &str) -> Moment {
         Moment::At(DateTime::parse_from_rfc3339(text).unwrap().to_utc())
