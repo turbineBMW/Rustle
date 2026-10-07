@@ -376,6 +376,31 @@ pub fn move_messages(
     Ok(result)
 }
 
+/// A change to the account's mailbox tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MailboxChange {
+    Create(String),
+    Rename { from: String, to: String },
+    Delete(String),
+}
+
+/// Create, rename or delete a mailbox. Names are as the server spells them
+/// (modified UTF-7); the caller re-syncs the folder list afterwards.
+pub fn change_mailbox(
+    account: &Account,
+    credential: &Credential,
+    change: &MailboxChange,
+) -> Result<()> {
+    let mut session = open_imap(account, credential)?;
+    match change {
+        MailboxChange::Create(name) => session.create_mailbox(name)?,
+        MailboxChange::Rename { from, to } => session.rename_mailbox(from, to)?,
+        MailboxChange::Delete(name) => session.delete_mailbox(name)?,
+    }
+    release(account, credential, session);
+    Ok(())
+}
+
 /// Connect, log in, and hand a fully-built message to the server, then file
 /// a copy in Sent. The copy is never fatal: the mail has already gone out.
 pub fn send_message(

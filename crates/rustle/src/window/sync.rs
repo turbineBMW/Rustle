@@ -496,6 +496,17 @@ impl MainWindow {
                 "app.open-mail",
                 Some(&(folder_id, messages[0].uid.clone()).to_variant()),
             );
+            for (label, action) in [
+                (gettext("Mark Read"), "read"),
+                (gettext("Archive"), "archive"),
+                (gettext("Delete"), "trash"),
+            ] {
+                notification.add_button_with_target_value(
+                    &label,
+                    "app.mail-action",
+                    Some(&(folder_id, messages[0].uid.clone(), action).to_variant()),
+                );
+            }
             notification
         } else {
             let mut senders: Vec<&str> = Vec::new();

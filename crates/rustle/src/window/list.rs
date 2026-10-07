@@ -235,6 +235,22 @@ impl MainWindow {
                     move |gesture, _, x, y| window.on_row_right_click(gesture, x, y, &list_item)
                 ));
                 row.add_controller(gesture);
+                // Drag to a folder in the sidebar to move there.
+                let drag = gtk::DragSource::builder()
+                    .actions(gdk::DragAction::MOVE)
+                    .build();
+                let weak_item = item.downgrade();
+                drag.connect_prepare(glib::clone!(
+                    #[weak]
+                    window,
+                    #[upgrade_or]
+                    None,
+                    move |_, _, _| {
+                        let payload = window.drag_payload(&weak_item.upgrade()?)?;
+                        Some(gdk::ContentProvider::for_value(&payload.to_value()))
+                    }
+                ));
+                row.add_controller(drag);
                 item.set_child(Some(&row));
             }
         ));

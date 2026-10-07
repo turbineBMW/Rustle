@@ -263,7 +263,22 @@ impl RustleApplication {
                 }
             })
             .build();
+        // A button on a new-mail notification: (folder id, UID, what to do).
+        let mail_action = gio::ActionEntry::builder("mail-action")
+            .parameter_type(Some(&glib::VariantType::new("(xss)").expect("valid type")))
+            .activate(|app: &Self, _, parameter| {
+                let Some((folder_id, uid, action)) =
+                    parameter.and_then(|p| p.get::<(i64, String, String)>())
+                else {
+                    return;
+                };
+                if let Some(window) = app.main_window() {
+                    window.act_on_notified(folder_id, &uid, &action);
+                }
+            })
+            .build();
         self.add_action_entries([
+            mail_action,
             about,
             preferences,
             new_window,

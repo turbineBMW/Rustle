@@ -6,6 +6,7 @@ mod accounts;
 mod actions;
 mod backfill;
 mod composer;
+mod folder_admin;
 mod folders;
 mod list;
 mod message_tools;

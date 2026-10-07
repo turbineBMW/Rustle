@@ -330,6 +330,22 @@ impl ImapSession {
     /// Remove messages from the selected (writable) mailbox for good. With
     /// UIDPLUS only these go; a plain EXPUNGE also clears anything else
     /// already marked deleted there, which is what it was marked for.
+    /// CREATE, RENAME and DELETE a mailbox, by its name on the wire.
+    pub fn create_mailbox(&mut self, name: &str) -> Result<()> {
+        self.require()?.create(name)?;
+        Ok(())
+    }
+
+    pub fn rename_mailbox(&mut self, from: &str, to: &str) -> Result<()> {
+        self.require()?.rename(from, to)?;
+        Ok(())
+    }
+
+    pub fn delete_mailbox(&mut self, name: &str) -> Result<()> {
+        self.require()?.delete(name)?;
+        Ok(())
+    }
+
     pub fn delete_uids(&mut self, uids: &str) -> Result<()> {
         let has_uidplus = self.has_capability("UIDPLUS");
         let session = self.require()?;

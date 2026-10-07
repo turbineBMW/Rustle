@@ -8,9 +8,10 @@ use adw::subclass::prelude::*;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
+use rustle_core::folders::FolderRole;
 use rustle_core::net::imap::{FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
 use rustle_core::queue::{Change, PendingOp};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A window method bound to an action name.
 type ActionHandler = fn(&MainWindow);
@@ -164,6 +165,40 @@ impl MainWindow {
         let emails = self.selected_emails();
         if !emails.is_empty() {
             self.toggle_flag(&emails, FlagField::Pinned);
+        }
+    }
+
+    /// A button pressed on a new-mail notification: mark that message read,
+    /// archive it or delete it, the same way the window's buttons do.
+    pub fn act_on_notified(&self, folder_id: i64, uid: &str, action: &str) {
+        let email = {
+            let db = self.db();
+            let db = db.borrow();
+            db.email_ids_for_uids(folder_id, &[uid.to_string()])
+                .ok()
+                .and_then(|ids| ids.first().copied())
+                .and_then(|id| db.email(id).ok().flatten())
+        };
+        let Some(email) = email else {
+            log::warn!("a notification named message {uid} of folder {folder_id}, which is gone");
+            return;
+        };
+        // The list's own object when it's showing, so its row updates in place.
+        let object = self
+            .list_emails_with_ids(&HashSet::from([email.id]))
+            .pop()
+            .unwrap_or_else(|| EmailObject::new(email));
+        match action {
+            "read" => self.mark_email_read(&object),
+            "archive" => self.move_emails_by_role(vec![object], FolderRole::Archive),
+            "trash" => self.move_emails_by_role(vec![object], FolderRole::Trash),
+            other => log::warn!("unknown notification action {other}"),
+        }
+        let account = self
+            .account_for_folder(folder_id)
+            .map(|(account, _)| account);
+        if let (Some(app), Some(account)) = (self.application(), account) {
+            app.withdraw_notification(&format!("new-mail-{}", account.id));
         }
     }
 
