@@ -434,8 +434,8 @@ impl ImapSession {
             .iter()
             .filter_map(|fetch| {
                 let uid = fetch.uid?.to_string();
-                let parsed = mail_parser::MessageParser::default()
-                    .parse_headers(fetch.header().unwrap_or(&[]));
+                // See `fetch_header_set`: no header section, not an answer.
+                let parsed = mail_parser::MessageParser::default().parse_headers(fetch.header()?);
                 let raw = |name: &str| -> String {
                     parsed
                         .as_ref()
@@ -472,7 +472,12 @@ impl ImapSession {
             .iter()
             .filter_map(|fetch| {
                 let uid = fetch.uid?;
-                let header_bytes = fetch.header().unwrap_or(&[]);
+                // The crate hands back every FETCH the server sent, including
+                // unsolicited ones ("* 7 FETCH (UID 345 FLAGS (\Seen))" when
+                // another client changes a flag mid-command). Those carry no
+                // header section; taking them for an answer would save a
+                // blank message over the real one.
+                let header_bytes = fetch.header()?;
                 let flags = fetch.flags();
                 let mut header = parse_header(
                     uid.to_string(),
