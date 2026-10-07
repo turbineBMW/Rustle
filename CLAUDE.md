@@ -18,7 +18,9 @@ just install       # sh install.sh -> ~/.local (PREFIX=/usr for system-wide)
 ```
 
 Host deps: gtk4 ≥ 4.18, libadwaita ≥ 1.8, webkitgtk-6.0, blueprint-compiler, glib2
-(glib-compile-schemas), openssl (native-tls). sqlite is bundled by rusqlite.
+(glib-compile-schemas), openssl (native-tls). sqlite is bundled by rusqlite. Spell
+checking (WebKit -> Enchant) needs a dictionary at runtime, e.g. hunspell-en_us; without
+one it silently checks nothing.
 
 `RUSTLE_LOG=debug` (any `env_logger` filter) turns logging up. Dev hooks read at launch:
 `RUSTLE_DEBUG_OPEN=<folder id>:<uid>` opens that message, `RUSTLE_DEBUG_COMPOSE=1` opens the

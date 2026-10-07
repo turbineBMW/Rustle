@@ -21,6 +21,11 @@
 			<summary>Load sender avatars</summary>
 			<description>Fetch sender pictures from Gravatar, falling back to the sender's website icon. This tells those services who emails you.</description>
 		</key>
+		<key name="spell-check" type="b">
+			<default>true</default>
+			<summary>Check spelling</summary>
+			<description>Underline misspelled words in the composer and the signature editor, in the language of the desktop's locale. Needs a Hunspell, Nuspell or Aspell dictionary for that language.</description>
+		</key>
 		<key name="bridge-photo-port" type="i">
 			<range min="1" max="65535"/>
 			<default>1180</default>

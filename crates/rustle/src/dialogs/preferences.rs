@@ -46,6 +46,8 @@ mod imp {
         #[template_child]
         pub avatars_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub spell_check_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub autostart_row: TemplateChild<adw::SwitchRow>,
@@ -117,6 +119,9 @@ impl PreferencesDialog {
             .build();
         settings
             .bind(keys::LOAD_SENDER_AVATARS, &*imp.avatars_row, "active")
+            .build();
+        settings
+            .bind(keys::SPELL_CHECK, &*imp.spell_check_row, "active")
             .build();
         settings
             .bind(keys::RUN_IN_BACKGROUND, &*imp.background_row, "active")

@@ -4,6 +4,7 @@
 use crate::composer::ComposerWindow;
 use crate::config::{APP_ID, RESOURCE_PATH, VERSION};
 use crate::dialogs::preferences::PreferencesDialog;
+use crate::editor;
 use crate::i18n::gettext;
 use crate::media_activity::MediaActivity;
 use crate::omarchy::OmarchyTheme;
@@ -62,6 +63,7 @@ mod imp {
             self.parent_startup();
             let app = self.obj();
             app.open_database();
+            editor::follow_spell_check(&app.settings());
             let _ = self.media_activity.set(MediaActivity::new());
             app.load_css();
         }

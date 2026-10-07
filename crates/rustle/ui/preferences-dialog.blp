@@ -27,6 +27,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         subtitle: _("Fetch sender pictures from Gravatar, which tells them who emails you");
       }
 
+      Adw.SwitchRow spell_check_row {
+        title: _("Check Spelling");
+        subtitle: _("Underline misspelled words while composing");
+      }
+
       Adw.SwitchRow background_row {
         title: _("Run in Background");
         subtitle: _("Keep checking for mail after the window is closed");
