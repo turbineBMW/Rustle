@@ -5,4 +5,5 @@ pub mod add_account;
 pub mod bridge_account;
 pub mod online_accounts;
 pub mod preferences;
+pub mod rules;
 pub mod signature;
