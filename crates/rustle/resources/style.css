@@ -182,3 +182,8 @@ button.color-swatch {
 .message-html-dark {
   background-color: #1a1a1a;
 }
+
+/* A suggestion or rewrite in the composer's assistant panel. */
+.assist-card {
+  padding: 12px;
+}

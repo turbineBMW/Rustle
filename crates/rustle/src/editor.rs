@@ -453,6 +453,97 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
       insertImages(files);
     });
 
+    // --- the assistant ---------------------------------------------------
+    // What the user wrote: the body up to the signature, the quote, or the
+    // "On ... wrote:" line just above a quote. Only this goes to the
+    // assistant, and only this is rewritten. Changes go through execCommand
+    // so Ctrl+Z takes them back like any edit.
+    function isOwnEnd(node) {
+      if (node.nodeType !== 1) return false;
+      if (node.matches('.signature, blockquote')) return true;
+      var next = node.nextElementSibling;
+      return !!next && next.tagName === 'BLOCKQUOTE';
+    }
+
+    function ownNodes() {
+      var nodes = [];
+      for (var node = document.body.firstChild; node && !isOwnEnd(node); node = node.nextSibling) {
+        nodes.push(node);
+      }
+      return nodes;
+    }
+
+    function select(range) {
+      document.body.focus();
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    window.rustleOwnHtml = function () {
+      var box = document.createElement('div');
+      ownNodes().forEach(function (node) { box.appendChild(node.cloneNode(true)); });
+      return box.innerHTML;
+    };
+
+    // Swapped node for node rather than through execCommand('insertHTML'),
+    // which merges the last new line into the signature after it. Returns
+    // what was there, for the composer's Undo.
+    window.rustleReplaceOwn = function (html) {
+      var nodes = ownNodes();
+      var before = window.rustleOwnHtml();
+      var anchor = nodes.length ? nodes[nodes.length - 1].nextSibling : document.body.firstChild;
+      nodes.forEach(function (node) { node.remove(); });
+      var box = document.createElement('div');
+      box.innerHTML = html;
+      // Keep a blank line between the text and a signature or quote.
+      var last = box.lastElementChild;
+      if (anchor && last && last.innerHTML !== '<br>') {
+        box.appendChild(document.createElement('div')).appendChild(document.createElement('br'));
+      }
+      while (box.firstChild) document.body.insertBefore(box.firstChild, anchor);
+      post();
+      return before;
+    };
+
+    // Find `original` in the user's text, across formatting, with any run
+    // of whitespace matching any other, and type `replacement` over it.
+    window.rustleReplaceText = function (original, replacement) {
+      var texts = [];
+      ownNodes().forEach(function (root) {
+        if (root.nodeType === 3) {
+          texts.push(root);
+          return;
+        }
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) texts.push(walker.currentNode);
+      });
+      var whole = texts.map(function (text) { return text.data; }).join('');
+      var pattern = original.trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\s+/g, '\\s+');
+      if (!pattern) return false;
+      var match = new RegExp(pattern).exec(whole);
+      if (!match) return false;
+      function point(offset, isEnd) {
+        for (var i = 0; i < texts.length; i++) {
+          var length = texts[i].data.length;
+          if (offset < length || (isEnd && offset === length)) return [texts[i], offset];
+          offset -= length;
+        }
+        return null;
+      }
+      var start = point(match.index, false);
+      var end = point(match.index + match[0].length, true);
+      if (!start || !end) return false;
+      var range = document.createRange();
+      range.setStart(start[0], start[1]);
+      range.setEnd(end[0], end[1]);
+      select(range);
+      document.execCommand('insertText', false, replacement);
+      return true;
+    };
+
     // <div> separators inherit no margin, so a sent message keeps the spacing
     // it was typed with even in clients that apply their own stylesheet.
     document.execCommand('defaultParagraphSeparator', false, 'div');
@@ -852,6 +943,50 @@ pub fn exec(webview: &webkit::WebView, command: &str, argument: Option<&str>) {
         serde_json::to_string(command).unwrap_or_default()
     );
     webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// The HTML of the part of the draft the user wrote (see `rustleOwnHtml`).
+pub fn own_html(webview: &webkit::WebView, on_done: impl FnOnce(String) + 'static) {
+    webview.evaluate_javascript(
+        "window.rustleOwnHtml()",
+        None,
+        None,
+        gio::Cancellable::NONE,
+        move |result| match result {
+            Ok(value) => on_done(value.to_str().to_string()),
+            Err(error) => log::warn!("could not read the draft from the editor: {error}"),
+        },
+    );
+}
+
+/// Replace the part of the draft the user wrote with `html`; `on_done`
+/// gets what was there, to put back on Undo.
+pub fn replace_own(webview: &webkit::WebView, html: &str, on_done: impl FnOnce(String) + 'static) {
+    let script = format!("window.rustleReplaceOwn({})", json(html));
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, move |result| {
+        match result {
+            Ok(value) => on_done(value.to_str().to_string()),
+            Err(error) => log::warn!("could not replace the draft in the editor: {error}"),
+        }
+    });
+}
+
+/// Replace `original` in the user's text; `on_done` hears whether it was
+/// still there.
+pub fn replace_text(
+    webview: &webkit::WebView,
+    original: &str,
+    replacement: &str,
+    on_done: impl FnOnce(bool) + 'static,
+) {
+    let script = format!(
+        "window.rustleReplaceText({}, {})",
+        json(original),
+        json(replacement)
+    );
+    webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, move |result| {
+        on_done(result.is_ok_and(|value| value.to_boolean()))
+    });
 }
 
 /// Strip the formatting from the selection, or from everything when

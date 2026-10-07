@@ -3,6 +3,7 @@
 
 use crate::editor::{self, ColorKind, LinkInfo, FORMAT_COMMANDS};
 use crate::i18n::{self, gettext};
+use crate::settings as keys;
 use crate::widgets::color_menu::{ColorMenu, HIGHLIGHT_PALETTE, TEXT_PALETTE};
 use crate::workers;
 use adw::prelude::*;
@@ -11,6 +12,7 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk::pango;
+use rustle_core::assistant::{self, Harness, RewriteStyle, Suggestion};
 use rustle_core::compose;
 use rustle_core::dates;
 use rustle_core::db::Database;
@@ -188,6 +190,22 @@ mod imp {
         #[template_child]
         pub pop_out_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub assist_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub review_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub rewrite_style: TemplateChild<gtk::DropDown>,
+        #[template_child]
+        pub rewrite_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub assist_instructions: TemplateChild<gtk::Entry>,
+        #[template_child]
+        pub assist_spinner: TemplateChild<gtk::Spinner>,
+        #[template_child]
+        pub assist_status: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub assist_results: TemplateChild<gtk::Box>,
+        #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub send_button: TemplateChild<gtk::Button>,
@@ -250,6 +268,10 @@ mod imp {
         /// The link last clicked in the editor, the target of the link menu.
         pub clicked_link: RefCell<Option<LinkInfo>>,
         pub link_menu: RefCell<Option<(gtk::PopoverMenu, gio::Menu)>>,
+        pub settings: RefCell<Option<gio::Settings>>,
+        /// Bumped by every request to the assistant, so a late answer to an
+        /// older one is dropped.
+        pub assist_generation: Cell<u64>,
     }
 
     #[glib::object_subclass]
@@ -384,6 +406,8 @@ impl Composer {
             ));
         }
         window.update_send_sensitivity();
+
+        window.setup_assistant();
 
         let known = Rc::new(db.borrow().contact_addresses().unwrap_or_default());
         let suggestions = [&imp.to_row, &imp.cc_row, &imp.bcc_row]
@@ -666,6 +690,310 @@ impl Composer {
             serde_json::to_string(&block).unwrap_or_default()
         );
         webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+    }
+
+    // --- the assistant ----------------------------------------------------
+
+    fn setup_assistant(&self) {
+        let imp = self.imp();
+        let settings = crate::settings::load();
+        settings.connect_changed(
+            Some(keys::ASSISTANT),
+            glib::clone!(
+                #[weak(rename_to = composer)]
+                self,
+                move |_, _| composer.update_assist_button()
+            ),
+        );
+        imp.settings.replace(Some(settings));
+        self.update_assist_button();
+
+        let styles: Vec<String> = RewriteStyle::ALL
+            .iter()
+            .map(|style| style_label(*style))
+            .collect();
+        let styles: Vec<&str> = styles.iter().map(String::as_str).collect();
+        imp.rewrite_style
+            .set_model(Some(&gtk::StringList::new(&styles)));
+        imp.review_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = composer)]
+            self,
+            move |_| composer.ask_assistant(None)
+        ));
+        imp.rewrite_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = composer)]
+            self,
+            move |_| {
+                let index = composer.imp().rewrite_style.selected() as usize;
+                composer.ask_assistant(RewriteStyle::ALL.get(index).copied());
+            }
+        ));
+    }
+
+    fn harness(&self) -> Option<Harness> {
+        let settings = self.imp().settings.borrow();
+        Harness::parse(&settings.as_ref()?.string(keys::ASSISTANT))
+    }
+
+    /// The panel's button is there only while a tool is picked.
+    fn update_assist_button(&self) {
+        let button = &self.imp().assist_button;
+        let harness = self.harness();
+        button.set_visible(harness.is_some());
+        match harness {
+            Some(harness) => button.set_tooltip_text(Some(&i18n::format(
+                &gettext("Review or rewrite with {tool}"),
+                &[("tool", harness.label())],
+            ))),
+            None => button.set_active(false),
+        }
+    }
+
+    /// Review the draft (`style` None) or rewrite it, with what the user
+    /// wrote and nothing else: not the quote, the signature or the subject.
+    fn ask_assistant(&self, style: Option<RewriteStyle>) {
+        let Some(webview) = self.imp().webview.borrow().clone() else {
+            return;
+        };
+        editor::own_html(
+            &webview,
+            glib::clone!(
+                #[weak(rename_to = composer)]
+                self,
+                move |html| composer.send_to_assistant(style, &html)
+            ),
+        );
+    }
+
+    fn send_to_assistant(&self, style: Option<RewriteStyle>, html: &str) {
+        let Some(harness) = self.harness() else {
+            return;
+        };
+        let imp = self.imp();
+        clear_box(&imp.assist_results);
+        let draft = rustle_core::html::html_to_text(html).trim().to_string();
+        if draft.is_empty() {
+            imp.assist_status
+                .set_label(&gettext("Write something first."));
+            return;
+        }
+        let generation = imp.assist_generation.get() + 1;
+        imp.assist_generation.set(generation);
+        self.set_assist_busy(true);
+        imp.assist_status.set_label(&i18n::format(
+            &gettext("Asking {tool}…"),
+            &[("tool", harness.label())],
+        ));
+        let instructions = imp.assist_instructions.text().to_string();
+        let model = imp
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|settings| settings.string(keys::ASSISTANT_MODEL).to_string())
+            .unwrap_or_default();
+        workers::run(
+            move || -> Result<Answer, String> {
+                match style {
+                    None => {
+                        let prompt = assistant::review_prompt(&draft, &instructions);
+                        let answer = assistant::ask(harness, &model, &prompt)?;
+                        assistant::parse_review(&answer, &draft)
+                            .map(Answer::Review)
+                            .ok_or_else(|| unusable(&answer))
+                    }
+                    Some(style) => {
+                        let prompt = assistant::rewrite_prompt(&draft, style, &instructions);
+                        let answer = assistant::ask(harness, &model, &prompt)?;
+                        assistant::parse_rewrite(&answer)
+                            .map(Answer::Rewrite)
+                            .ok_or_else(|| unusable(&answer))
+                    }
+                }
+            },
+            glib::clone!(
+                #[weak(rename_to = composer)]
+                self,
+                move |result: Result<Answer, String>| {
+                    let imp = composer.imp();
+                    if imp.assist_generation.get() != generation {
+                        return;
+                    }
+                    composer.set_assist_busy(false);
+                    match result {
+                        Ok(Answer::Review(suggestions)) => composer.show_review(suggestions),
+                        Ok(Answer::Rewrite(text)) => composer.show_rewrite(&text),
+                        Err(message) => {
+                            log::warn!("draft review with {} failed: {message}", harness.id());
+                            imp.assist_status.set_label(&i18n::format(
+                                &gettext("Couldn't ask {tool}: {msg}"),
+                                &[("tool", harness.label()), ("msg", &message)],
+                            ));
+                        }
+                    }
+                }
+            ),
+        );
+    }
+
+    fn set_assist_busy(&self, is_busy: bool) {
+        let imp = self.imp();
+        imp.assist_spinner.set_visible(is_busy);
+        imp.assist_spinner.set_spinning(is_busy);
+        imp.review_button.set_sensitive(!is_busy);
+        imp.rewrite_button.set_sensitive(!is_busy);
+    }
+
+    /// One card per suggestion: why, what changes, and Apply.
+    fn show_review(&self, suggestions: Vec<Suggestion>) {
+        let imp = self.imp();
+        imp.assist_status.set_label(&if suggestions.is_empty() {
+            gettext("Looks good: nothing to change.")
+        } else {
+            i18n::plural(
+                "{n} suggestion",
+                "{n} suggestions",
+                suggestions.len() as u64,
+                &[],
+            )
+        });
+        for suggestion in suggestions {
+            let reason = suggestion.reason.trim().to_string();
+            let change = gtk::Label::builder()
+                .use_markup(true)
+                .label(format!(
+                    "<s>{}</s>  →  <b>{}</b>",
+                    glib::markup_escape_text(&suggestion.original),
+                    glib::markup_escape_text(&suggestion.replacement)
+                ))
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .xalign(0.0)
+                .selectable(true)
+                .build();
+            let apply = gtk::Button::builder()
+                .label(gettext("Apply"))
+                .halign(gtk::Align::End)
+                .build();
+            apply.connect_clicked(glib::clone!(
+                #[weak(rename_to = composer)]
+                self,
+                move |button| composer.apply_suggestion(button, &suggestion)
+            ));
+            let card = assist_card();
+            if !reason.is_empty() {
+                card.append(
+                    &gtk::Label::builder()
+                        .label(reason)
+                        .wrap(true)
+                        .xalign(0.0)
+                        .css_classes(["caption", "dim-label"])
+                        .build(),
+                );
+            }
+            card.append(&change);
+            card.append(&apply);
+            imp.assist_results.append(&card);
+        }
+    }
+
+    fn apply_suggestion(&self, button: &gtk::Button, suggestion: &Suggestion) {
+        let Some(webview) = self.imp().webview.borrow().clone() else {
+            return;
+        };
+        editor::replace_text(
+            &webview,
+            &suggestion.original,
+            &suggestion.replacement,
+            glib::clone!(
+                #[weak(rename_to = composer)]
+                self,
+                #[weak]
+                button,
+                move |is_found| {
+                    if is_found {
+                        button.set_label(&gettext("Applied"));
+                        button.set_sensitive(false);
+                    } else {
+                        composer
+                            .imp()
+                            .toast_overlay
+                            .add_toast(adw::Toast::new(&gettext(
+                                "That text isn't in the draft any more.",
+                            )));
+                    }
+                }
+            ),
+        );
+    }
+
+    /// The rewrite to read before it replaces anything.
+    fn show_rewrite(&self, text: &str) {
+        let imp = self.imp();
+        imp.assist_status.set_label(&gettext(
+            "Replacing keeps your signature and the quoted message.",
+        ));
+        let card = assist_card();
+        card.append(
+            &gtk::Label::builder()
+                .label(text)
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .xalign(0.0)
+                .selectable(true)
+                .build(),
+        );
+        let replace = gtk::Button::builder()
+            .label(gettext("Replace Draft"))
+            .halign(gtk::Align::End)
+            .css_classes(["suggested-action"])
+            .build();
+        let html = rustle_core::html::to_editor_html(text);
+        replace.connect_clicked(glib::clone!(
+            #[weak(rename_to = composer)]
+            self,
+            move |button| {
+                let Some(webview) = composer.imp().webview.borrow().clone() else {
+                    return;
+                };
+                button.set_label(&gettext("Replaced"));
+                button.set_sensitive(false);
+                editor::replace_own(
+                    &webview,
+                    &html,
+                    glib::clone!(
+                        #[weak]
+                        composer,
+                        #[weak]
+                        webview,
+                        #[weak]
+                        button,
+                        move |previous| composer.offer_undo(&webview, &button, previous)
+                    ),
+                );
+            }
+        ));
+        card.append(&replace);
+        imp.assist_results.append(&card);
+    }
+
+    /// A toast whose Undo puts the text from before the rewrite back.
+    fn offer_undo(&self, webview: &webkit::WebView, button: &gtk::Button, previous: String) {
+        let toast = adw::Toast::builder()
+            .title(gettext("Draft rewritten"))
+            .button_label(gettext("Undo"))
+            .build();
+        toast.connect_button_clicked(glib::clone!(
+            #[weak]
+            webview,
+            #[weak]
+            button,
+            move |_| {
+                editor::replace_own(&webview, &previous, |_| {});
+                button.set_label(&gettext("Replace Draft"));
+                button.set_sensitive(true);
+            }
+        ));
+        self.imp().toast_overlay.add_toast(toast);
     }
 
     // --- editor -----------------------------------------------------------
@@ -1315,6 +1643,40 @@ impl Composer {
         imp.cancel_button.set_sensitive(!is_sending);
         imp.send_spinner.set_visible(is_sending);
         imp.send_spinner.set_spinning(is_sending);
+    }
+}
+
+/// What the assistant came back with.
+enum Answer {
+    Review(Vec<Suggestion>),
+    Rewrite(String),
+}
+
+fn unusable(answer: &str) -> String {
+    log::debug!("unusable assistant answer: {answer}");
+    gettext("the answer wasn't in the expected form")
+}
+
+fn style_label(style: RewriteStyle) -> String {
+    match style {
+        RewriteStyle::Shorter => gettext("Shorter"),
+        RewriteStyle::Friendlier => gettext("Friendlier"),
+        RewriteStyle::Formal => gettext("More Formal"),
+        RewriteStyle::Clearer => gettext("Clearer"),
+    }
+}
+
+fn assist_card() -> gtk::Box {
+    gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .css_classes(["card", "assist-card"])
+        .build()
+}
+
+fn clear_box(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
     }
 }
 
