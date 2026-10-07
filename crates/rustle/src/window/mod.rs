@@ -5,6 +5,7 @@
 mod accounts;
 mod actions;
 mod backfill;
+mod composer;
 mod folders;
 mod list;
 mod moves;
@@ -32,6 +33,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+pub use composer::InlineComposer;
 pub use moves::PendingMove;
 
 /// Window action names, grouped by what enables and disables them together.
@@ -62,6 +64,8 @@ const PAGE_EMPTY: &str = "empty";
 const PAGE_LIST: &str = "list";
 const PAGE_LOADING: &str = "loading";
 const PAGE_MESSAGE: &str = "message";
+const PAGE_READER: &str = "reader";
+const PAGE_COMPOSER: &str = "composer";
 
 /// What the email list is showing.
 #[derive(Clone, Debug)]
@@ -133,6 +137,11 @@ pub struct State {
     pub inbox_resync_pending: HashSet<i64>,
     pub is_online: bool,
     pub message_handlers: Option<Rc<Handlers>>,
+    /// The composer open in the reader pane, if any.
+    pub inline_composer: Option<InlineComposer>,
+    /// Actions whose accelerators the inline composer's editor needs, held
+    /// off while it has the focus, with the enabled state each goes back to.
+    pub held_actions: HashMap<&'static str, bool>,
 }
 
 mod imp {
@@ -212,6 +221,10 @@ mod imp {
         pub list_header: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub reader_pane: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub composer_slot: TemplateChild<adw::Bin>,
         #[template_child]
         pub reader_toolbar: TemplateChild<adw::ToolbarView>,
         #[template_child]
@@ -345,6 +358,7 @@ impl MainWindow {
         window.setup_actions();
         window.connect_widgets();
         window.setup_message_handlers();
+        window.setup_inline_composer();
 
         let network = gio::NetworkMonitor::default();
         imp.state.borrow_mut().is_online = network.is_network_available();

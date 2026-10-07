@@ -24,7 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit::prelude::*;
 
-/// The composer fields a new window starts with.
+/// The composer fields a new composer starts with.
 #[derive(Clone, Debug, Default)]
 pub struct Draft {
     pub to: String,
@@ -181,8 +181,12 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/io/github/turbinebmw/Rustle/ui/composer-window.ui")]
-    pub struct ComposerWindow {
+    #[template(resource = "/io/github/turbinebmw/Rustle/ui/composer.ui")]
+    pub struct Composer {
+        #[template_child]
+        pub header: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub pop_out_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
@@ -249,10 +253,10 @@ mod imp {
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for ComposerWindow {
-        const NAME: &'static str = "RustleComposerWindow";
-        type Type = super::ComposerWindow;
-        type ParentType = adw::Window;
+    impl ObjectSubclass for Composer {
+        const NAME: &'static str = "RustleComposer";
+        type Type = super::Composer;
+        type ParentType = adw::Bin;
 
         fn class_init(klass: &mut Self::Class) {
             klass.bind_template();
@@ -263,11 +267,19 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for ComposerWindow {
+    impl ObjectImpl for Composer {
         fn signals() -> &'static [glib::subclass::Signal] {
             static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
                 std::sync::OnceLock::new();
-            SIGNALS.get_or_init(|| vec![glib::subclass::Signal::builder("finished").build()])
+            // finished: the message was sent, queued or saved as a draft, so
+            // the folders changed. closed: the host should take it away.
+            // pop-out: the inline composer asks for a window of its own.
+            SIGNALS.get_or_init(|| {
+                ["finished", "closed", "pop-out"]
+                    .into_iter()
+                    .map(|name| glib::subclass::Signal::builder(name).build())
+                    .collect()
+            })
         }
 
         fn dispose(&self) {
@@ -281,25 +293,41 @@ mod imp {
             }
         }
     }
-    impl WidgetImpl for ComposerWindow {}
-    impl WindowImpl for ComposerWindow {}
-    impl AdwWindowImpl for ComposerWindow {}
+    impl WidgetImpl for Composer {}
+    impl BinImpl for Composer {}
 }
 
 glib::wrapper! {
-    pub struct ComposerWindow(ObjectSubclass<imp::ComposerWindow>)
-        @extends adw::Window, gtk::Window, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Native, gtk::Root, gtk::ShortcutManager;
+    pub struct Composer(ObjectSubclass<imp::Composer>)
+        @extends adw::Bin, gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
-impl ComposerWindow {
-    pub fn new(
-        app: Option<&gtk::Application>,
-        db: Rc<RefCell<Database>>,
-        account: &Account,
-        draft: Draft,
-    ) -> Self {
-        let window: Self = glib::Object::builder().property("application", app).build();
+/// Give `composer` a window of its own, which closes with it. Used for a
+/// mailto: launch with no main window, on a phone, and to pop an inline
+/// composer out of the reader pane.
+pub fn present_in_window(app: Option<&gtk::Application>, composer: &Composer) -> adw::Window {
+    composer.set_inline(false);
+    let window = adw::Window::builder()
+        .title(gettext("New Message"))
+        .default_width(540)
+        .default_height(740)
+        .content(composer)
+        .build();
+    window.set_application(app);
+    composer.connect_closed(glib::clone!(
+        #[weak]
+        window,
+        move |_| window.close()
+    ));
+    window.present();
+    composer.focus_first_field();
+    window
+}
+
+impl Composer {
+    pub fn new(db: Rc<RefCell<Database>>, account: &Account, draft: Draft) -> Self {
+        let window: Self = glib::Object::new();
         let imp = window.imp();
         imp.db.replace(Some(db.clone()));
         imp.body_html.replace(if draft.body_html.is_empty() {
@@ -335,6 +363,11 @@ impl ComposerWindow {
             window,
             move |_| window.on_link_clicked()
         ));
+        imp.pop_out_button.connect_clicked(glib::clone!(
+            #[weak]
+            window,
+            move |_| window.emit_by_name::<()>("pop-out", &[])
+        ));
         for (name, command) in FORMAT_COMMANDS {
             let button = window.format_button(name);
             button.connect_toggled(glib::clone!(
@@ -363,12 +396,7 @@ impl ComposerWindow {
 
     /// Build a composer from a mailto: URI. Shared by the main window and by
     /// a mailto: launch, which opens the composer with no main window at all.
-    pub fn for_mailto(
-        app: Option<&gtk::Application>,
-        db: Rc<RefCell<Database>>,
-        account: &Account,
-        uri: &str,
-    ) -> Self {
+    pub fn for_mailto(db: Rc<RefCell<Database>>, account: &Account, uri: &str) -> Self {
         let mailto = compose::parse_mailto(uri);
         let signature = account.signature_html();
         let body_html = if !mailto.body_html.is_empty() {
@@ -379,7 +407,6 @@ impl ComposerWindow {
             String::new()
         };
         Self::new(
-            app,
             db,
             account,
             Draft {
@@ -393,11 +420,49 @@ impl ComposerWindow {
     }
 
     pub fn connect_finished(&self, callback: impl Fn(&Self) + 'static) {
-        self.connect_local("finished", false, move |values| {
-            let window = values[0].get::<Self>().expect("the emitter");
-            callback(&window);
+        self.connect_signal("finished", callback);
+    }
+
+    pub fn connect_closed(&self, callback: impl Fn(&Self) + 'static) {
+        self.connect_signal("closed", callback);
+    }
+
+    pub fn connect_pop_out(&self, callback: impl Fn(&Self) + 'static) {
+        self.connect_signal("pop-out", callback);
+    }
+
+    fn connect_signal(&self, name: &str, callback: impl Fn(&Self) + 'static) {
+        self.connect_local(name, false, move |values| {
+            let composer = values[0].get::<Self>().expect("the emitter");
+            callback(&composer);
             None
         });
+    }
+
+    /// Inline, in the reader pane, the header bar carries the window's
+    /// buttons and the pop-out button; in a window of its own, Cancel
+    /// stands in for the close button.
+    pub fn set_inline(&self, is_inline: bool) {
+        let imp = self.imp();
+        imp.pop_out_button.set_visible(is_inline);
+        imp.header.set_show_start_title_buttons(is_inline);
+        imp.header.set_show_end_title_buttons(is_inline);
+    }
+
+    /// The first field there is to fill: To on a new message, the body on
+    /// a reply, whose recipients are already there.
+    pub fn focus_first_field(&self) {
+        let imp = self.imp();
+        if imp.to_row.text().trim().is_empty() {
+            imp.to_row.grab_focus();
+        } else if let Some(webview) = imp.webview.borrow().as_ref() {
+            webview.grab_focus();
+        }
+    }
+
+    /// Whether closing it now would lose anything.
+    pub fn is_blank(&self) -> bool {
+        !self.has_content()
     }
 
     fn db(&self) -> Rc<RefCell<Database>> {
@@ -998,7 +1063,7 @@ impl ComposerWindow {
     fn on_attach_clicked(&self) {
         let dialog = gtk::FileDialog::new();
         dialog.open(
-            Some(self),
+            self.root().and_downcast_ref::<gtk::Window>(),
             gio::Cancellable::NONE,
             glib::clone!(
                 #[weak(rename_to = window)]
@@ -1108,7 +1173,7 @@ impl ComposerWindow {
             }
             self.emit_by_name::<()>("finished", &[]);
         }
-        self.close();
+        self.emit_by_name::<()>("closed", &[]);
     }
 
     // --- send -------------------------------------------------------------
@@ -1228,7 +1293,7 @@ impl ComposerWindow {
         }
         drop(db);
         self.emit_by_name::<()>("finished", &[]);
-        self.close();
+        self.emit_by_name::<()>("closed", &[]);
     }
 
     fn on_send_failed(&self, message: &str) {
@@ -1240,7 +1305,7 @@ impl ComposerWindow {
                 &[("msg", message)],
             )));
         self.emit_by_name::<()>("finished", &[]);
-        self.close();
+        self.emit_by_name::<()>("closed", &[]);
     }
 
     fn set_sending(&self, is_sending: bool) {

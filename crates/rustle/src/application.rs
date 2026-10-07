@@ -1,7 +1,7 @@
 //! The application: one database and settings object shared by every
 //! window, the app-level actions, and the mailto: entry point.
 
-use crate::composer::ComposerWindow;
+use crate::composer::{self, Composer};
 use crate::config::{APP_ID, RESOURCE_PATH, VERSION};
 use crate::dialogs::preferences::PreferencesDialog;
 use crate::editor;
@@ -181,7 +181,8 @@ impl RustleApplication {
             self.activate();
             return;
         };
-        ComposerWindow::for_mailto(Some(self.upcast_ref()), self.db(), account, uri).present();
+        let composer = Composer::for_mailto(self.db(), account, uri);
+        composer::present_in_window(Some(self.upcast_ref()), &composer);
     }
 
     fn load_css(&self) {
