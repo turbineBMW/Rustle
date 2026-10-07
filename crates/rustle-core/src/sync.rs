@@ -283,6 +283,12 @@ pub fn search_text(
 /// display name, the date a timestamp, and `\Seen` inverts into `is_unread`.
 pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
     let (recipient, recipient_address) = crate::compose::first_recipient(&fetched.to_header);
+    let keys = crate::threads::keys(
+        &fetched.message_id,
+        &fetched.references,
+        &fetched.in_reply_to,
+        &fetched.thread_index,
+    );
     let recipients = [&fetched.to_header, &fetched.cc_header]
         .into_iter()
         .filter(|header| !header.is_empty())
@@ -313,6 +319,8 @@ pub fn to_message_header(fetched: FetchedHeader) -> MessageHeader {
         message_id: fetched.message_id,
         recipients,
         body_text: fetched.body_text,
+        thread_root: keys.root,
+        thread_outlook: keys.outlook,
         addresses,
     }
 }
@@ -374,6 +382,32 @@ pub fn move_messages(
     }
     release(account, credential, session);
     Ok(result)
+}
+
+/// Fill in the conversation keys of messages fetched before they were kept:
+/// the UIDs of one mailbox, and what each one's headers say.
+pub fn fetch_thread_keys(
+    account: &Account,
+    credential: &Credential,
+    mailbox: &str,
+    uids: &[u32],
+) -> Result<Vec<(String, crate::threads::ThreadKeys)>> {
+    let mut session = open_imap(account, credential)?;
+    session.select(mailbox, false)?;
+    let found = session.fetch_thread_headers(&uid_set(uids))?;
+    release(account, credential, session);
+    Ok(found
+        .into_iter()
+        .map(|found| {
+            let keys = crate::threads::keys(
+                &found.message_id,
+                &found.references,
+                &found.in_reply_to,
+                &found.thread_index,
+            );
+            (found.uid, keys)
+        })
+        .collect())
 }
 
 /// A change to the account's mailbox tree.

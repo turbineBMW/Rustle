@@ -64,10 +64,27 @@ impl MainWindow {
                 }
             }
         };
-        let on_respond = move |email: &Email, invitation: &Invitation, response: Response| {
-            window
-                .upgrade()
-                .is_some_and(|window| window.respond_to_invitation(email, invitation, response))
+        let on_respond = {
+            let window = window.clone();
+            move |email: &Email, invitation: &Invitation, response: Response| {
+                window
+                    .upgrade()
+                    .is_some_and(|window| window.respond_to_invitation(email, invitation, response))
+            }
+        };
+        let on_related = {
+            let window = window.clone();
+            move |email: &Email| {
+                window
+                    .upgrade()
+                    .map(|window| window.related_to(email))
+                    .unwrap_or_default()
+            }
+        };
+        let on_open_related = move |email: &Email| {
+            if let Some(window) = window.upgrade() {
+                window.open_related(email);
+            }
         };
         self.state_mut().message_handlers = Some(Rc::new(Handlers {
             on_load: Rc::new(on_load),
@@ -75,6 +92,8 @@ impl MainWindow {
             on_open_attachment: Rc::new(on_open),
             on_unsubscribe: Rc::new(on_unsubscribe),
             on_respond: Rc::new(on_respond),
+            on_related: Rc::new(on_related),
+            on_open_related: Rc::new(on_open_related),
         }));
     }
 
@@ -374,6 +393,39 @@ impl MainWindow {
                 }
             ),
         );
+    }
+
+    /// The rest of `email`'s conversation, each with the folder it's in
+    /// (and the account, when there's more than one).
+    fn related_to(&self, email: &Email) -> Vec<(Email, String)> {
+        let related = match self.db().borrow().related_emails(email) {
+            Ok(related) => related,
+            Err(error) => {
+                log::error!(
+                    "could not look up the conversation of message {}: {error}",
+                    email.id
+                );
+                return Vec::new();
+            }
+        };
+        let many_accounts = self.state().accounts.len() > 1;
+        related
+            .into_iter()
+            .map(|message| {
+                let place = self
+                    .account_for_folder(message.folder_id)
+                    .map(|(account, folder)| {
+                        let name = folders::display_name_for_folder(&folder.name, None);
+                        if many_accounts {
+                            format!("{name} ({})", account.email)
+                        } else {
+                            name
+                        }
+                    })
+                    .unwrap_or_default();
+                (message, place)
+            })
+            .collect()
     }
 
     /// Answer an invitation: mail the organizer an iTIP reply from the

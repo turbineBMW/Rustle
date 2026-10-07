@@ -32,7 +32,17 @@ pub const GMAIL_CAPABILITY: &str = "X-GM-EXT-1";
 /// What a header fetch asks for. BODY.PEEK[...] = look WITHOUT marking the
 /// message \Seen. The first 4 KiB of the body ride along for the preview
 /// line; Content-Type and the transfer encoding are what decode them.
-const HEADER_FETCH_QUERY: &str = "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)";
+const HEADER_FETCH_QUERY: &str = "(UID FLAGS BODY.PEEK[HEADER.FIELDS (DATE FROM TO CC SUBJECT MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.4096>)";
+
+/// One message's conversation headers, raw.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThreadHeaders {
+    pub uid: String,
+    pub message_id: String,
+    pub references: String,
+    pub in_reply_to: String,
+    pub thread_index: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailboxInfo {
@@ -63,6 +73,10 @@ pub struct FetchedHeader {
     /// The start of the body as text, for the search index: the same 4 KiB
     /// the preview comes from, not cut down to a line.
     pub body_text: String,
+    /// Conversation headers, raw: References, In-Reply-To, Thread-Index.
+    pub references: String,
+    pub in_reply_to: String,
+    pub thread_index: String,
 }
 
 struct Xoauth2<'a>(&'a Credential);
@@ -409,6 +423,37 @@ impl ImapSession {
     /// Fetch UID + flags + a few headers for an explicit UID set
     /// ("1:5,8,10:20"): the backfill's way of asking for exactly the
     /// messages it lacks, whatever their sequence numbers are by now.
+    /// Just the conversation headers of some messages, for filling in the
+    /// keys of mail fetched before they were kept.
+    pub fn fetch_thread_headers(&mut self, uid_set: &str) -> Result<Vec<ThreadHeaders>> {
+        let fetches = self.require()?.uid_fetch(
+            uid_set,
+            "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID REFERENCES IN-REPLY-TO THREAD-INDEX)])",
+        )?;
+        Ok(fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?.to_string();
+                let parsed = mail_parser::MessageParser::default()
+                    .parse_headers(fetch.header().unwrap_or(&[]));
+                let raw = |name: &str| -> String {
+                    parsed
+                        .as_ref()
+                        .and_then(|message| message.header_raw(name))
+                        .map(|text| text.trim().to_string())
+                        .unwrap_or_default()
+                };
+                Some(ThreadHeaders {
+                    uid,
+                    message_id: raw("Message-ID"),
+                    references: raw("References"),
+                    in_reply_to: raw("In-Reply-To"),
+                    thread_index: raw("Thread-Index"),
+                })
+            })
+            .collect())
+    }
+
     pub fn fetch_headers_by_uid(&mut self, uid_set: &str) -> Result<Vec<FetchedHeader>> {
         if uid_set.is_empty() {
             return Ok(Vec::new());
@@ -566,6 +611,13 @@ pub fn parse_header(
             .and_then(|message| decoded_header(message, name))
             .unwrap_or_default()
     };
+    let raw = |name: &str| -> String {
+        parsed
+            .as_ref()
+            .and_then(|message| message.header_raw(name))
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default()
+    };
     FetchedHeader {
         uid,
         from_header: header("From"),
@@ -579,6 +631,9 @@ pub fn parse_header(
         is_pinned,
         preview: String::new(),
         body_text: String::new(),
+        references: raw("References"),
+        in_reply_to: raw("In-Reply-To"),
+        thread_index: raw("Thread-Index"),
     }
 }
 

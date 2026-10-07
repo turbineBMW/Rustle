@@ -29,5 +29,6 @@ pub mod queue;
 pub mod secrets;
 pub mod sounds;
 pub mod sync;
+pub mod threads;
 pub mod verify;
 pub mod watch;

@@ -84,6 +84,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         title: _("Follow Omarchy Theme");
       }
 
+      Adw.SwitchRow group_row {
+        title: _("Group Conversations");
+        subtitle: _("One row per conversation, showing the newest message and a count");
+      }
+
       Adw.SwitchRow single_keys_row {
         title: _("Single-Key Shortcuts");
         subtitle: _("j/k to move, e to archive, # to delete, r to reply, s to star, / to search");

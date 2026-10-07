@@ -158,7 +158,13 @@ impl EmailRow {
 
         imp.avatar.set_text(Some(name));
         self.load_avatar(address);
-        imp.sender.set_label(name);
+        // A grouped conversation says how many messages it stands for.
+        if email.thread_size > 1 {
+            imp.sender
+                .set_label(&format!("{name} ({})", email.thread_size));
+        } else {
+            imp.sender.set_label(name);
+        }
         imp.star.set_visible(email.is_starred);
         imp.pin.set_visible(email.is_pinned);
         imp.pinned.set(email.is_pinned);
