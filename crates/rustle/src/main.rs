@@ -2,6 +2,7 @@
 
 mod accent;
 mod account_colors;
+mod account_pictures;
 mod application;
 mod avatar_loader;
 mod composer;

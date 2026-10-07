@@ -121,9 +121,9 @@ pub struct State {
     /// The account ids and (id, parent_id) folder pairs the tree was last
     /// built from.
     pub folder_shape: (Vec<i64>, Vec<(i64, Option<i64>)>),
-    /// The (id, email) pairs the collapsed sidebar's account icons were
-    /// built from.
-    pub rail_accounts: Vec<(i64, String)>,
+    /// The (id, email, picture) of each account the collapsed sidebar's
+    /// account icons were built from.
+    pub rail_accounts: Vec<(i64, String, String)>,
     pub account_roots: HashMap<i64, Vec<Folder>>,
     pub folder_children: HashMap<i64, Vec<Folder>>,
     /// Accounts with a sync in flight. A set, not a flag: every account

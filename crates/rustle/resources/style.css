@@ -87,13 +87,29 @@ button.pinned {
   color: var(--accent-color);
 }
 
-/* Which account an email belongs to, shown only in the unified inbox: a dot
-   in the account's colour before the sender. `--account-color` is set per
-   account by the provider in account_colors.rs through the `account-<id>`
-   class. */
+/* Which account an email belongs to, shown only in the unified inbox: a chip
+   on the sender's avatar, bottom right, holding the account's picture or a
+   dot in its colour. `--account-color` is set per account by the provider in
+   account_colors.rs through the `account-<id>` class. A thin ring in the
+   pane's colour parts the chip from the face beneath it; the radius is set
+   here because the avatar's own doesn't reach its shadow, which came out a
+   square. */
 .account-dot {
   background: var(--account-color, var(--accent-color));
   border-radius: 50%;
+}
+
+.account-chip {
+  border-radius: 9999px;
+  box-shadow: 0 0 0 1.5px var(--secondary-sidebar-bg-color);
+}
+
+/* Manage Accounts: an account without a picture shows its initials in its
+   colour, as its mail is marked. */
+avatar.account-avatar {
+  background-color: var(--account-color, var(--accent-bg-color));
+  background-image: none;
+  color: var(--account-fg-color, var(--accent-fg-color));
 }
 
 /* The reader names the account above the date, in the same colour. */

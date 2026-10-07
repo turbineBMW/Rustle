@@ -319,6 +319,16 @@ impl MainWindow {
         );
         crate::account_colors::apply(&accounts);
         self.avatars().set_accounts(&accounts);
+        // The unified inbox marks each email with its account's picture.
+        let pictures_changed = {
+            let state = self.state();
+            accounts.iter().any(|a| {
+                state
+                    .accounts
+                    .get(&a.id)
+                    .is_some_and(|old| old.picture != a.picture)
+            })
+        };
         let needs_rebuild = {
             let mut state = self.state_mut();
             state.accounts = accounts.iter().map(|a| (a.id, a.clone())).collect();
@@ -398,9 +408,27 @@ impl MainWindow {
         for (folder, row) in rows {
             row.bind_folder(&folder, self.unread_badge(&folder));
         }
+        let account_rows: Vec<(Account, FolderRow)> = {
+            let state = self.state();
+            accounts
+                .iter()
+                .filter_map(|a| {
+                    state
+                        .account_rows
+                        .get(&a.id)
+                        .map(|row| (a.clone(), row.clone()))
+                })
+                .collect()
+        };
+        for (account, row) in account_rows {
+            row.update_account(&account);
+        }
         let unified_row = self.state().unified_row.clone();
         if let Some(row) = unified_row {
             row.bind_unified_inbox(self.unified_badge());
+        }
+        if pictures_changed && self.is_unified_view() {
+            self.refresh_emails(self.selected_email().map(|email| email.id()));
         }
         self.sync_inbox_watchers();
     }
@@ -449,7 +477,10 @@ impl MainWindow {
 
     /// One icon per account for the collapsed sidebar, in the tree's order.
     fn rebuild_account_rail(&self, accounts: &[Account]) {
-        let shape: Vec<(i64, String)> = accounts.iter().map(|a| (a.id, a.email.clone())).collect();
+        let shape: Vec<(i64, String, String)> = accounts
+            .iter()
+            .map(|a| (a.id, a.email.clone(), a.picture.clone()))
+            .collect();
         if self.state().rail_accounts == shape {
             return;
         }
@@ -465,6 +496,14 @@ impl MainWindow {
                 .css_classes(["flat", "account-icon"])
                 .build();
             crate::account_colors::tag(&button, Some(account.id));
+            if let Some(texture) = crate::account_pictures::texture(account) {
+                let picture = adw::Avatar::builder()
+                    .size(20)
+                    .text(account.name())
+                    .custom_image(&texture)
+                    .build();
+                button.set_child(Some(&picture));
+            }
             let account_id = account.id;
             button.connect_clicked(glib::clone!(
                 #[weak(rename_to = window)]
