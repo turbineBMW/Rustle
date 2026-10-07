@@ -60,6 +60,9 @@ pub struct FetchedHeader {
     pub is_pinned: bool,
     /// A snippet of the body, already decoded; empty when the server sent none.
     pub preview: String,
+    /// The start of the body as text, for the search index: the same 4 KiB
+    /// the preview comes from, not cut down to a line.
+    pub body_text: String,
 }
 
 struct Xoauth2<'a>(&'a Credential);
@@ -417,8 +420,8 @@ impl ImapSession {
                     flags.contains(&Flag::Flagged),
                     flags.iter().any(is_pinned_flag),
                 );
-                header.preview =
-                    crate::mime::preview_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
+                (header.preview, header.body_text) =
+                    crate::mime::texts_from_slices(header_bytes, fetch.text().unwrap_or(&[]));
                 Some(header)
             })
             .collect())
@@ -559,6 +562,7 @@ pub fn parse_header(
         is_flagged,
         is_pinned,
         preview: String::new(),
+        body_text: String::new(),
     }
 }
 

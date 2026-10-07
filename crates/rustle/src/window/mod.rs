@@ -168,6 +168,11 @@ pub struct State {
     pub smart_generation: u64,
     /// The assistant and server searches still out.
     pub smart_pending: u32,
+    /// Emails the server matched for the typed search, and the query they
+    /// answer; bumped generation drops answers to an older query.
+    pub typed_matches: (String, HashSet<i64>),
+    pub typed_generation: u64,
+    pub typed_pending: u32,
     /// The composer open in the reader pane, if any.
     pub inline_composer: Option<InlineComposer>,
     /// Actions whose accelerators the inline composer's editor needs, held

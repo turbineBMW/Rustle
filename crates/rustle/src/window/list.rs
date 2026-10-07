@@ -11,6 +11,7 @@ use gtk::{gdk, gio};
 use rustle_core::dates;
 use rustle_core::folders;
 use rustle_core::models::Email;
+use std::collections::HashSet;
 use std::time::Duration;
 
 impl MainWindow {
@@ -39,6 +40,14 @@ impl MainWindow {
         let folder_ids = self.current_folder_ids();
         let query = imp.search_entry.text().trim().to_string();
         let smart = self.state().smart_search.clone();
+        let server_ids = {
+            let state = self.state();
+            if state.typed_matches.0 == query {
+                state.typed_matches.1.clone()
+            } else {
+                HashSet::new()
+            }
+        };
         let matches = {
             let db = self.db();
             let db = db.borrow();
@@ -47,7 +56,7 @@ impl MainWindow {
             } else if query.is_empty() {
                 db.emails_in_folders(&folder_ids)
             } else {
-                db.search_emails(&folder_ids, &query)
+                db.search_emails_with(&folder_ids, &query, &server_ids)
             };
             result.unwrap_or_else(|error| {
                 log::error!("could not load emails: {error}");
@@ -182,6 +191,7 @@ impl MainWindow {
                 move || {
                     window.state_mut().search_timeout = None;
                     window.refresh_emails(None);
+                    window.search_server_for_typed();
                 }
             ),
         );
