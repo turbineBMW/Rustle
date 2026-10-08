@@ -5,6 +5,7 @@
 use super::{MainWindow, MOVE_UNDO_MS};
 use crate::i18n::{self, gettext};
 use crate::objects::EmailObject;
+use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gio;
@@ -200,7 +201,29 @@ impl MainWindow {
     fn start_move(&self, groups: Vec<(Account, Folder, Folder, Vec<EmailObject>)>, verb: &str) {
         self.commit_pending_moves();
         let mut pending_moves = Vec::new();
+        // Rows the server hasn't given a UID: nothing to move there.
+        let mut deleted_drafts = 0u64;
+        let mut is_unsynced_left = false;
         for (account, source, dest, emails) in groups {
+            let local: Vec<(i64, String)> = emails
+                .iter()
+                .filter_map(|email| {
+                    email.with(|mail| {
+                        mail.server_id
+                            .is_none()
+                            .then(|| (mail.id, mail.message_id.clone()))
+                    })
+                })
+                .collect();
+            if !local.is_empty() {
+                let is_draft = folders::role_for_folder(&source.name) == FolderRole::Drafts;
+                if is_draft && folders::role_for_folder(&dest.name) == FolderRole::Trash {
+                    deleted_drafts += local.len() as u64;
+                    self.delete_local_drafts(&account, &local);
+                } else {
+                    is_unsynced_left = true;
+                }
+            }
             // Pair each mail with its UID in one pass so the "has a UID"
             // narrowing survives into the index-aligned vectors. A locally
             // saved copy has no UID yet.
@@ -251,7 +274,24 @@ impl MainWindow {
                 tombstones,
             });
         }
+        if is_unsynced_left {
+            self.toast(&gettext(
+                "Some messages haven't reached the server yet. Try again once they have.",
+            ));
+        }
         if pending_moves.is_empty() {
+            if deleted_drafts > 0 {
+                self.reload_folders();
+                self.refresh_emails(None);
+                if !is_unsynced_left {
+                    self.toast(&i18n::plural(
+                        "Draft deleted",
+                        "{n} drafts deleted",
+                        deleted_drafts,
+                        &[],
+                    ));
+                }
+            }
             return;
         }
 
@@ -282,6 +322,31 @@ impl MainWindow {
             state.pending_timeout = Some(timeout);
         }
         self.imp().toast_overlay.add_toast(toast);
+    }
+
+    /// Drafts kept on this device without a server UID: a draft whose
+    /// upload couldn't learn it, or one never uploaded. Trashing one deletes
+    /// it at once, as the composer's Delete does, and with it any copy the
+    /// server holds under its Message-ID.
+    fn delete_local_drafts(&self, account: &Account, drafts: &[(i64, String)]) {
+        for (email_id, message_id) in drafts {
+            if let Err(error) = self.db().borrow().delete_email(*email_id) {
+                log::error!(
+                    "could not delete a local draft (account {}): {error}",
+                    account.email
+                );
+                continue;
+            }
+            if message_id.is_empty() {
+                continue;
+            }
+            let account = account.clone();
+            let message_id = message_id.clone();
+            workers::run(
+                move || crate::composer::discard_draft_job(&account, &message_id),
+                |()| {},
+            );
+        }
     }
 
     fn take_pending(&self) -> Vec<PendingMove> {

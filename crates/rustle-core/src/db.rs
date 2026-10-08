@@ -1189,6 +1189,9 @@ impl Database {
                 is_new = true;
             }
         }
+        if is_new && self.adopt_local_copy(folder_id, header)? {
+            is_new = false;
+        }
         self.conn.execute(
             "INSERT INTO emails (folder_id, server_id, sender, subject, preview, date, unread, starred,
                 message_id, sender_address, recipient, recipient_address,
@@ -1231,6 +1234,36 @@ impl Database {
             ],
         )?;
         Ok(is_new)
+    }
+
+    /// A copy saved here before the server had it (a draft whose upload
+    /// couldn't learn its UID) arriving from the server: the local row takes
+    /// the UID, so the folder keeps one row, with its cached body, instead
+    /// of gaining a second. Any further local copies of it go. True when a
+    /// row was adopted.
+    fn adopt_local_copy(&self, folder_id: i64, header: &MessageHeader) -> Result<bool> {
+        if header.message_id.is_empty() {
+            return Ok(false);
+        }
+        let local: Vec<i64> = self
+            .conn
+            .prepare(
+                "SELECT id FROM emails WHERE folder_id = ?1 AND message_id = ?2
+                 AND (server_id IS NULL OR server_id = '') ORDER BY id",
+            )?
+            .query_map(params![folder_id, header.message_id], |row| row.get(0))?
+            .collect::<Result<_>>()?;
+        let Some((adopted, rest)) = local.split_first() else {
+            return Ok(false);
+        };
+        for id in rest {
+            self.delete_email(*id)?;
+        }
+        self.conn.execute(
+            "UPDATE emails SET server_id = ?2 WHERE id = ?1",
+            params![adopted, header.uid],
+        )?;
+        Ok(true)
     }
 
     /// A locally saved row the server now holds as `uid`: the row takes the
@@ -2394,6 +2427,56 @@ mod tests {
         let rows = db.emails_in_folder(gmail.id).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].server_id.as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn a_synced_draft_takes_over_its_unlinked_local_copy() {
+        let db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let drafts = db.get_or_create_folder(account.id, "Drafts", "d").unwrap();
+        let sent = db.get_or_create_folder(account.id, "Sent", "s").unwrap();
+        let local = MessageHeader {
+            subject: "Later".into(),
+            message_id: "<d@x>".into(),
+            ..MessageHeader::default()
+        };
+        // The upload couldn't learn its UID, twice over.
+        let row = db.save_email(drafts.id, &local).unwrap();
+        db.save_raw_message(row.id, b"Subject: Later\r\n\r\nbody")
+            .unwrap();
+        db.save_email(drafts.id, &local).unwrap();
+        // Another folder's copy, and a local draft of another message, stay.
+        db.save_email(sent.id, &local).unwrap();
+        let other = MessageHeader {
+            message_id: "<e@x>".into(),
+            ..local.clone()
+        };
+        db.save_email(drafts.id, &other).unwrap();
+
+        let synced = MessageHeader {
+            uid: "3".into(),
+            ..local.clone()
+        };
+        assert!(
+            !db.save_incoming_email(drafts.id, &synced).unwrap(),
+            "not new mail: the draft was already here"
+        );
+        let rows = db.emails_in_folder(drafts.id).unwrap();
+        assert_eq!(rows.len(), 2);
+        let adopted = rows.iter().find(|r| r.message_id == "<d@x>").unwrap();
+        assert_eq!(adopted.id, row.id, "the first copy, with its cached body");
+        assert_eq!(adopted.server_id.as_deref(), Some("3"));
+        assert!(db.raw_message(row.id).unwrap().is_some());
+        assert_eq!(db.emails_in_folder(sent.id).unwrap().len(), 1);
+
+        // A header without a Message-ID adopts nothing.
+        let bare = MessageHeader {
+            uid: "4".into(),
+            message_id: String::new(),
+            ..other.clone()
+        };
+        assert!(db.save_incoming_email(drafts.id, &bare).unwrap());
+        assert_eq!(db.emails_in_folder(drafts.id).unwrap().len(), 3);
     }
 
     #[test]
