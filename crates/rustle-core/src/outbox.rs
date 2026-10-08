@@ -97,11 +97,11 @@ pub struct Settled {
     pub errors: Vec<Failure>,
 }
 
-/// Back from the server, on the main thread. A message it took leaves the
-/// Outbox before anything else, and stays there only if the database won't
-/// let it go -- then it stays claimed, so this session never sends it again.
-/// Its copy in Sent is filed after, and a copy that can't be filed is only
-/// logged: the message is gone either way. Everything else is let go.
+/// Back from the server, on the main thread. A message it took gets its copy
+/// in Sent, then leaves the Outbox whether or not the copy could be filed --
+/// a failed copy is only logged. It stays in the Outbox only if the database
+/// won't let it go, and then it stays claimed, so this session never sends
+/// it again. Everything else is let go.
 pub fn settle(
     db: &Database,
     in_flight: &mut InFlight,
@@ -115,15 +115,9 @@ pub fn settle(
             settled.errors.push(error);
             continue;
         }
-        if let Err(error) = db.delete_email(job.email_id) {
-            log::error!(
-                "message {} was sent but could not leave the Outbox (account {account_id}): {error}",
-                job.email_id
-            );
-            continue;
-        }
-        in_flight.release(job.email_id);
-        settled.sent += 1;
+        // The copy first, while the Outbox row still holds its id: SQLite
+        // hands a freed highest id to the next row, and an Undo or Edit
+        // still on screen for the sent message would find the copy.
         let filed = db.sent_folder(account_id).and_then(|sent| {
             let row = db.save_email(sent.id, &job.sent_header)?;
             db.save_raw_message(row.id, &job.raw)
@@ -134,6 +128,15 @@ pub fn settle(
                 job.email_id
             );
         }
+        if let Err(error) = db.delete_email(job.email_id) {
+            log::error!(
+                "message {} was sent but could not leave the Outbox (account {account_id}): {error}",
+                job.email_id
+            );
+            continue;
+        }
+        in_flight.release(job.email_id);
+        settled.sent += 1;
     }
     settled
 }
@@ -276,6 +279,8 @@ mod tests {
         let sent = db.sent_folder(account.id).unwrap();
         let copies = db.emails_in_folder(sent.id).unwrap();
         assert_eq!(copies.len(), 1);
+        // Not the Outbox row's id handed on: Undo may still name that one.
+        assert_ne!(copies[0].id, email_id);
         assert_eq!(copies[0].subject, "Hi");
         assert_eq!(copies[0].recipient_address, "you@example.com");
         assert_eq!(db.raw_message(copies[0].id).unwrap().as_deref(), Some(RAW));
