@@ -8,6 +8,7 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::pango;
 use gtk::subclass::prelude::*;
+use rustle_core::mime::displayable;
 use rustle_core::models::{Account, Email};
 use std::cell::{Cell, RefCell};
 
@@ -158,6 +159,9 @@ impl EmailRow {
         } else {
             (&email.sender, &email.sender_address)
         };
+        // Whatever a message put in these, a NUL would abort the app when
+        // it reached the label.
+        let name = &*displayable(name);
 
         imp.avatar.set_text(Some(name));
         self.load_avatar(address);
@@ -173,8 +177,8 @@ impl EmailRow {
         imp.pinned.set(email.is_pinned);
         imp.date.set_label(&i18n::time_label(&email.date));
         imp.date_value.replace(email.date.to_string());
-        imp.subject.set_label(&email.subject);
-        imp.preview.set_label(&email.preview);
+        imp.subject.set_label(&displayable(&email.subject));
+        imp.preview.set_label(&displayable(&email.preview));
         let picture = account.and_then(account_pictures::texture);
         imp.account_picture.set_custom_image(picture.as_ref());
         imp.account_picture.set_visible(picture.is_some());
