@@ -229,7 +229,21 @@ impl MainWindow {
             FlagField::Starred => mail.is_starred,
             FlagField::Pinned => mail.is_pinned,
         };
-        let value = !emails.iter().any(|email| email.with(read));
+        let value = toggled_value(emails.iter().map(|email| email.with(read)));
+        self.set_flag(emails, field, value);
+    }
+
+    /// Shift+I and Shift+U: set read or unread outright, whatever the
+    /// selection's mix. Only the emails not already so are touched.
+    pub(super) fn set_unread(&self, emails: &[EmailObject], unread: bool) {
+        let changing = differing(emails, |email| email.with(|c| c.is_unread), unread);
+        if !changing.is_empty() {
+            self.set_flag(&changing, FlagField::Unread, unread);
+        }
+    }
+
+    /// Set one boolean flag across emails, locally and on the server.
+    fn set_flag(&self, emails: &[EmailObject], field: FlagField, value: bool) {
         {
             let db = self.db();
             let db = db.borrow();
@@ -426,5 +440,44 @@ impl MainWindow {
         actions.append_submenu(Some(&gettext("Move to")), &self.build_move_menu("context"));
         menu.append_section(None, &actions);
         menu
+    }
+}
+
+/// What a toggle sets a flag to across a selection: on, unless any of it
+/// has it already. A mixed selection is cleared, as the menu says ("Mark
+/// Read" when anything is unread).
+fn toggled_value(current: impl IntoIterator<Item = bool>) -> bool {
+    !current.into_iter().any(|is_set| is_set)
+}
+
+/// The items whose flag isn't `wanted` yet.
+fn differing<T: Clone>(items: &[T], current: impl Fn(&T) -> bool, wanted: bool) -> Vec<T> {
+    items
+        .iter()
+        .filter(|item| current(item) != wanted)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toggle_clears_a_mixed_selection() {
+        assert!(!toggled_value([true, false]));
+        assert!(!toggled_value([true]));
+        assert!(toggled_value([false, false]));
+    }
+
+    #[test]
+    fn marking_touches_only_what_differs() {
+        // (id, is unread)
+        let mixed = [(1, true), (2, false), (3, true)];
+        let unread = |item: &(i32, bool)| item.1;
+        // Shift+U on a mixed selection leaves it all unread, not read.
+        assert_eq!(differing(&mixed, unread, true), vec![(2, false)]);
+        assert_eq!(differing(&mixed, unread, false), vec![(1, true), (3, true)]);
+        assert!(differing(&[(4, true)], unread, true).is_empty());
     }
 }
