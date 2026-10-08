@@ -4,6 +4,7 @@ mod accent;
 mod account_colors;
 mod account_pictures;
 mod application;
+mod autostart;
 mod avatar_loader;
 #[cfg(feature = "graph")]
 mod bridge;

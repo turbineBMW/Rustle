@@ -1,0 +1,19 @@
+[Unit]
+Description=Rustle, checking mail in the background
+Documentation=https://github.com/turbineBMW/Rustle
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.turbinebmw.Rustle
+# --hidden builds the window, so syncing and the inbox watchers run, without
+# showing it; opening Rustle from the launcher then presents it.
+ExecStart=@bindir@/rustle --hidden
+# A crash brings it back, and with it the built-in Microsoft 365 bridge.
+# Quitting from the menu exits cleanly and stays quit.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

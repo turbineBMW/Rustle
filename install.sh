@@ -68,6 +68,12 @@ sed "s|@bindir@|$BIN|" data/$APP_ID.service.in > "$SHARE/dbus-1/services/$APP_ID
 # do nothing) until the next login unless the bus is told to re-read it.
 [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && dbus-send --session --dest=org.freedesktop.DBus \
   --type=method_call / org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
+# The user unit "Start at Login" enables on a desktop without the Background
+# portal; enabling it is up to the user, from Preferences.
+if [ "$PREFIX" = "$HOME/.local" ]; then UNITDIR="$SHARE/systemd/user"; else UNITDIR="$PREFIX/lib/systemd/user"; fi
+install -d "$UNITDIR"
+sed "s|@bindir@|$BIN|" data/$APP_ID.user-service.in > "$UNITDIR/$APP_ID.service"
+systemctl --user daemon-reload >/dev/null 2>&1 || true
 install -Dm644 data/$APP_ID.metainfo.xml.in "$SHARE/metainfo/$APP_ID.metainfo.xml"
 for size in 48 64 128 256 512; do
   install -Dm644 "data/icons/hicolor/${size}x${size}/apps/$APP_ID.png" "$SHARE/icons/hicolor/${size}x${size}/apps/$APP_ID.png"

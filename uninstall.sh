@@ -32,6 +32,14 @@ if ! $is_root && pgrep -x rustle >/dev/null 2>&1; then
   gapplication action "$APP_ID" quit 2>/dev/null || true
 fi
 
+# The login unit: disabled, so nothing links to it, then removed.
+if [ "$PREFIX" = "$HOME/.local" ]; then UNITDIR="$SHARE/systemd/user"; else UNITDIR="$PREFIX/lib/systemd/user"; fi
+if [ -e "$UNITDIR/$APP_ID.service" ]; then
+  if ! $is_root; then systemctl --user disable "$APP_ID.service" >/dev/null 2>&1 || true; fi
+  rm -f "$UNITDIR/$APP_ID.service"
+  if ! $is_root; then systemctl --user daemon-reload >/dev/null 2>&1 || true; fi
+fi
+
 # The D-Bus service goes first, so nothing can start Rustle again mid-way.
 rm -f "$SHARE/dbus-1/services/$APP_ID.service"
 rm -f "$BIN/rustle"
