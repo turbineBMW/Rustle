@@ -3,6 +3,7 @@
 
 use crate::address::{self, Mailbox};
 use crate::html::{escape, html_to_text, to_html};
+use crate::mime::ParsedMessage;
 use crate::models::Attachment;
 use lettre::address::Envelope;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
@@ -30,24 +31,76 @@ pub fn forward_subject(subject: &str) -> String {
     }
 }
 
-/// Reply All includes the original To and
-/// Cc, minus ourselves and minus whoever the reply is already addressed to.
-pub fn reply_all_cc(to_header: &str, cc_header: &str, own_email: &str, to_addr: &str) -> String {
-    let excluded = [own_email.to_lowercase(), to_addr.to_lowercase()];
-    let mut unique: Vec<String> = Vec::new();
-    for mailbox in address::parse_list(to_header)
-        .into_iter()
-        .chain(address::parse_list(cc_header))
-    {
-        let addr = mailbox.address;
-        if addr.is_empty() || excluded.contains(&addr.to_lowercase()) {
-            continue;
-        }
-        if !unique.iter().any(|seen| seen.eq_ignore_ascii_case(&addr)) {
-            unique.push(addr);
-        }
+/// Who a reply is addressed to, as composer field entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplyRecipients {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+}
+
+/// The recipients of a reply to `original`. Reply goes to every Reply-To
+/// address, else to the sender. Reply All goes there too, and copies the
+/// sender (when Reply-To pointed elsewhere, as a mailing list or a ticket
+/// queue does) and everyone on the original To and Cc. `own` (the
+/// account's addresses) are left out, and nobody is named twice.
+pub fn reply_recipients(
+    original: &ParsedMessage,
+    own: &[String],
+    should_reply_all: bool,
+) -> ReplyRecipients {
+    let parse = |texts: &[&String]| -> Vec<Mailbox> {
+        texts
+            .iter()
+            .flat_map(|text| address::parse_list(text))
+            .filter(|mailbox| !mailbox.address.is_empty())
+            .collect()
+    };
+    let from = parse(&[&original.from_header]);
+    let reply_to = parse(&[&original.reply_to_header]);
+    let to = if reply_to.is_empty() {
+        from.clone()
+    } else {
+        reply_to
+    };
+    let cc = if should_reply_all {
+        let others: Vec<&String> = original.to.iter().chain(&original.cc).collect();
+        from.into_iter().chain(parse(&others)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let is_own = |mailbox: &Mailbox| {
+        own.iter()
+            .any(|address| address.eq_ignore_ascii_case(&mailbox.address))
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut keep = |mailboxes: Vec<Mailbox>| -> Vec<String> {
+        mailboxes
+            .into_iter()
+            .filter(|mailbox| !is_own(mailbox))
+            .filter(|mailbox| {
+                let key = mailbox.address.to_lowercase();
+                let is_new = !seen.contains(&key);
+                seen.push(key);
+                is_new
+            })
+            .map(|mailbox| recipient_entry(&mailbox))
+            .collect()
+    };
+    let (to, cc) = (keep(to), keep(cc));
+    ReplyRecipients { to, cc }
+}
+
+/// A mailbox as one entry of a composer's address field, which splits on
+/// commas: `Name <address>`, or the bare address when the name would not
+/// survive that.
+fn recipient_entry(mailbox: &Mailbox) -> String {
+    let name = &mailbox.name;
+    if name.is_empty() || name.contains([',', '"', '<', '>']) {
+        mailbox.address.clone()
+    } else {
+        mailbox.display()
     }
-    unique.join(", ")
 }
 
 /// Wraps a signature (an HTML fragment, see `Account::signature_html`) in
@@ -877,15 +930,69 @@ mod tests {
         assert_eq!(forward_subject("FW: Hi"), "FW: Hi");
     }
 
+    fn original(from: &str, reply_to: &str, to: &[&str], cc: &[&str]) -> ParsedMessage {
+        ParsedMessage {
+            from_header: from.into(),
+            reply_to_header: reply_to.into(),
+            to: to.iter().map(|text| text.to_string()).collect(),
+            cc: cc.iter().map(|text| text.to_string()).collect(),
+            ..ParsedMessage::default()
+        }
+    }
+
+    fn recipients(to: &[&str], cc: &[&str]) -> ReplyRecipients {
+        ReplyRecipients {
+            to: to.iter().map(|text| text.to_string()).collect(),
+            cc: cc.iter().map(|text| text.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn reply_all_excludes_self_and_target() {
-        let cc = reply_all_cc(
-            "me@x.y, ada@x.y",
-            "bob@x.y, Ada <ada@x.y>",
-            "me@x.y",
-            "bob@x.y",
+    fn replies_go_to_the_sender_and_reply_all_to_everyone_else() {
+        let own = vec!["Me@x.y".to_string()];
+        let message = original(
+            "Bob Ng <bob@x.y>",
+            "",
+            &["me@x.y", "Ada <ada@x.y>"],
+            &["BOB@x.y", "ada@x.y", "\"Lee, Cy\" <cy@x.y>"],
         );
-        assert_eq!(cc, "ada@x.y");
+        assert_eq!(
+            reply_recipients(&message, &own, false),
+            recipients(&["Bob Ng <bob@x.y>"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["Bob Ng <bob@x.y>"], &["Ada <ada@x.y>", "cy@x.y"])
+        );
+    }
+
+    #[test]
+    fn reply_to_wins_and_reply_all_keeps_the_author() {
+        let own = vec!["me@x.y".to_string()];
+        // A list that sets Reply-To to itself, naming two addresses.
+        let message = original(
+            "Ada <ada@x.y>",
+            "list@x.y, Tickets <tickets@x.y>",
+            &["list@x.y"],
+            &["me@x.y", "bob@x.y"],
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, false),
+            recipients(&["list@x.y", "Tickets <tickets@x.y>"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(
+                &["list@x.y", "Tickets <tickets@x.y>"],
+                &["Ada <ada@x.y>", "bob@x.y"]
+            )
+        );
+        // Reply-To the sender's own address changes nothing.
+        let message = original("Ada <ada@x.y>", "ADA@x.y", &["me@x.y"], &[]);
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["ADA@x.y"], &[])
+        );
     }
 
     #[test]

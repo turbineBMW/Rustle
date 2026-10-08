@@ -278,13 +278,11 @@ impl MainWindow {
         let Some(account) = self.compose_account() else {
             return;
         };
-        // Reply-To wins over From: it is how a sender asks for replies elsewhere.
-        let reply_target = if parsed.reply_to_header.trim().is_empty() {
-            &parsed.from_header
-        } else {
-            &parsed.reply_to_header
-        };
-        let to = address::first_address(reply_target);
+        let recipients = compose::reply_recipients(
+            &parsed,
+            std::slice::from_ref(&account.email),
+            should_reply_all,
+        );
         // ponytail: quotes are flattened to text; inlining the original's real
         // HTML would need a sanitizer, since the composer runs with JavaScript
         // enabled.
@@ -294,28 +292,18 @@ impl MainWindow {
             &mime::readable_text(&parsed),
             &account.signature_html(),
         );
-        let cc = if should_reply_all {
-            compose::reply_all_cc(
-                &parsed.to.join(", "),
-                &parsed.cc.join(", "),
-                &account.email,
-                &to,
-            )
-        } else {
-            String::new()
-        };
         self.open_composer(
             &account,
             Draft {
-                to,
-                cc,
+                to: recipients.to.join(", "),
+                cc: recipients.cc.join(", "),
                 subject: compose::reply_subject(&parsed.subject),
                 body_html,
                 original_people: [&parsed.from_header, &parsed.reply_to_header]
                     .into_iter()
                     .chain(&parsed.to)
                     .chain(&parsed.cc)
-                    .flat_map(|text| rustle_core::address::parse_list(text))
+                    .flat_map(|text| address::parse_list(text))
                     .map(|mailbox| mailbox.address)
                     .collect(),
                 original_attachments: parsed.attachments.clone(),
