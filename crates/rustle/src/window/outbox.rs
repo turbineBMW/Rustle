@@ -135,6 +135,8 @@ impl MainWindow {
                 subject: parsed.subject,
                 body_html,
                 attachments: parsed.attachments,
+                in_reply_to: parsed.in_reply_to,
+                references: parsed.references,
                 ..Draft::default()
             },
         );

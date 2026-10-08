@@ -120,6 +120,9 @@ impl MainWindow {
                     account_id: account.id,
                     message_id,
                 }),
+                // A reply saved as a draft still answers its message.
+                in_reply_to: parsed.in_reply_to,
+                references: parsed.references,
                 ..Draft::default()
             },
         );

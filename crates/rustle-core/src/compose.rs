@@ -3,6 +3,7 @@
 
 use crate::address::{self, Mailbox};
 use crate::html::{escape, html_to_text, to_html};
+use crate::mime::{self, ParsedMessage};
 use crate::models::Attachment;
 use lettre::address::Envelope;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
@@ -30,24 +31,127 @@ pub fn forward_subject(subject: &str) -> String {
     }
 }
 
-/// Reply All includes the original To and
-/// Cc, minus ourselves and minus whoever the reply is already addressed to.
-pub fn reply_all_cc(to_header: &str, cc_header: &str, own_email: &str, to_addr: &str) -> String {
-    let excluded = [own_email.to_lowercase(), to_addr.to_lowercase()];
-    let mut unique: Vec<String> = Vec::new();
-    for mailbox in address::parse_list(to_header)
+/// Who a reply is addressed to, as composer field entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReplyRecipients {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+}
+
+/// The recipients of a reply to `original`. Reply goes to every Reply-To
+/// address, else to the sender. Reply All goes there too, and copies the
+/// sender (when Reply-To pointed elsewhere, as a mailing list or a ticket
+/// queue does) and everyone on the original To and Cc. A reply to a
+/// message `own` sent (one in Sent, say) goes on to its To, and Reply All
+/// to its Cc as well, as it does in Thunderbird and Gmail. `own` (the
+/// account's addresses) are left out, and nobody is named twice.
+pub fn reply_recipients(
+    original: &ParsedMessage,
+    own: &[String],
+    should_reply_all: bool,
+) -> ReplyRecipients {
+    let parse = |texts: &[String]| -> Vec<Mailbox> {
+        texts
+            .iter()
+            .flat_map(|text| address::parse_list(text))
+            .filter(|mailbox| !mailbox.address.is_empty())
+            .collect()
+    };
+    let is_own = |mailbox: &Mailbox| {
+        own.iter()
+            .any(|address| address.eq_ignore_ascii_case(&mailbox.address))
+    };
+    let from = parse(std::slice::from_ref(&original.from_header));
+    // A Reply-To naming only us is no reason to write to ourselves.
+    let mut reply_to = parse(std::slice::from_ref(&original.reply_to_header));
+    reply_to.retain(|mailbox| !is_own(mailbox));
+    let (original_to, original_cc) = (parse(&original.to), parse(&original.cc));
+    let is_ours = !from.is_empty() && from.iter().all(is_own);
+    let (to, cc) = if is_ours {
+        let cc = if should_reply_all {
+            original_cc
+        } else {
+            Vec::new()
+        };
+        (original_to, cc)
+    } else {
+        let cc = if should_reply_all {
+            from.iter()
+                .cloned()
+                .chain(original_to)
+                .chain(original_cc)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let to = if reply_to.is_empty() {
+            from.clone()
+        } else {
+            reply_to
+        };
+        (to, cc)
+    };
+    // Who to write to when that leaves nobody but ourselves: a note to self.
+    let to_self = to.first().or(from.first()).map(recipient_entry);
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut keep = |mailboxes: Vec<Mailbox>| -> Vec<String> {
+        mailboxes
+            .into_iter()
+            .filter(|mailbox| !is_own(mailbox))
+            .filter(|mailbox| {
+                let key = mailbox.address.to_lowercase();
+                let is_new = !seen.contains(&key);
+                seen.push(key);
+                is_new
+            })
+            .map(|mailbox| recipient_entry(&mailbox))
+            .collect()
+    };
+    let (mut to, mut cc) = (keep(to), keep(cc));
+    if to.is_empty() {
+        to = if cc.is_empty() {
+            to_self.into_iter().collect()
+        } else {
+            std::mem::take(&mut cc)
+        };
+    }
+    ReplyRecipients { to, cc }
+}
+
+/// The In-Reply-To and References a reply to `parent` carries (RFC 5322
+/// §3.6.4), each "" when there is nothing to say: In-Reply-To is the
+/// parent's Message-ID; References is the parent's References (or, without
+/// them, its In-Reply-To when that names a single message) followed by
+/// that Message-ID.
+pub fn reply_threading(parent: &ParsedMessage) -> (String, String) {
+    let parent_id = mime::message_ids(&parent.message_id)
         .into_iter()
-        .chain(address::parse_list(cc_header))
-    {
-        let addr = mailbox.address;
-        if addr.is_empty() || excluded.contains(&addr.to_lowercase()) {
-            continue;
-        }
-        if !unique.iter().any(|seen| seen.eq_ignore_ascii_case(&addr)) {
-            unique.push(addr);
+        .next()
+        .unwrap_or_default();
+    let mut references = mime::message_ids(&parent.references);
+    if references.is_empty() {
+        let in_reply_to = mime::message_ids(&parent.in_reply_to);
+        if in_reply_to.len() == 1 {
+            references = in_reply_to;
         }
     }
-    unique.join(", ")
+    if !parent_id.is_empty() && !references.contains(&parent_id) {
+        references.push(parent_id.clone());
+    }
+    (parent_id, references.join(" "))
+}
+
+/// A mailbox as one entry of a composer's address field, which splits on
+/// commas: `Name <address>`, or the bare address when the name would not
+/// survive that.
+fn recipient_entry(mailbox: &Mailbox) -> String {
+    let name = &mailbox.name;
+    if name.is_empty() || name.contains([',', '"', '<', '>']) {
+        mailbox.address.clone()
+    } else {
+        mailbox.display()
+    }
 }
 
 /// Wraps a signature (an HTML fragment, see `Account::signature_html`) in
@@ -178,6 +282,10 @@ pub struct Outgoing<'a> {
     pub attachments: &'a [Attachment],
     /// The Message-ID header, angle brackets included; None makes one up.
     pub message_id: Option<&'a str>,
+    /// For a reply, what threads it under the message it answers (see
+    /// `reply_threading`); "" leaves the header out.
+    pub in_reply_to: &'a str,
+    pub references: &'a str,
     /// Send text/plain alone: the body's text, no HTML part.
     pub plain_text: bool,
 }
@@ -333,6 +441,13 @@ fn headers(message: &Outgoing, is_draft: bool) -> Result<MessageBuilder, Compose
         .date_now();
     if let Some(id) = message.message_id {
         builder = builder.message_id(Some(id.to_string()));
+    }
+    // Folded between ids when long, as lettre folds any header at spaces.
+    if !message.in_reply_to.is_empty() {
+        builder = builder.in_reply_to(message.in_reply_to.to_string());
+    }
+    if !message.references.is_empty() {
+        builder = builder.references(message.references.to_string());
     }
     if is_draft {
         // A draft goes nowhere, so its envelope is a formality, and one
@@ -877,15 +992,203 @@ mod tests {
         assert_eq!(forward_subject("FW: Hi"), "FW: Hi");
     }
 
+    fn original(from: &str, reply_to: &str, to: &[&str], cc: &[&str]) -> ParsedMessage {
+        ParsedMessage {
+            from_header: from.into(),
+            reply_to_header: reply_to.into(),
+            to: to.iter().map(|text| text.to_string()).collect(),
+            cc: cc.iter().map(|text| text.to_string()).collect(),
+            ..ParsedMessage::default()
+        }
+    }
+
+    fn recipients(to: &[&str], cc: &[&str]) -> ReplyRecipients {
+        ReplyRecipients {
+            to: to.iter().map(|text| text.to_string()).collect(),
+            cc: cc.iter().map(|text| text.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn reply_all_excludes_self_and_target() {
-        let cc = reply_all_cc(
-            "me@x.y, ada@x.y",
-            "bob@x.y, Ada <ada@x.y>",
-            "me@x.y",
-            "bob@x.y",
+    fn replies_go_to_the_sender_and_reply_all_to_everyone_else() {
+        let own = vec!["Me@x.y".to_string()];
+        let message = original(
+            "Bob Ng <bob@x.y>",
+            "",
+            &["me@x.y", "Ada <ada@x.y>"],
+            &["BOB@x.y", "ada@x.y", "\"Lee, Cy\" <cy@x.y>"],
         );
-        assert_eq!(cc, "ada@x.y");
+        assert_eq!(
+            reply_recipients(&message, &own, false),
+            recipients(&["Bob Ng <bob@x.y>"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["Bob Ng <bob@x.y>"], &["Ada <ada@x.y>", "cy@x.y"])
+        );
+    }
+
+    #[test]
+    fn replies_thread_under_their_parent() {
+        let parent = |id: &str, references: &str, in_reply_to: &str| ParsedMessage {
+            message_id: id.into(),
+            references: references.into(),
+            in_reply_to: in_reply_to.into(),
+            ..ParsedMessage::default()
+        };
+        let threading = |id, references, in_reply_to| {
+            let (in_reply_to, references) = reply_threading(&parent(id, references, in_reply_to));
+            (in_reply_to, references)
+        };
+        assert_eq!(
+            threading("<c@x>", "<a@x> <b@x>", "<b@x>"),
+            ("<c@x>".into(), "<a@x> <b@x> <c@x>".into())
+        );
+        // No References: a lone In-Reply-To stands in for them.
+        assert_eq!(
+            threading("<c@x>", "", "<b@x>"),
+            ("<c@x>".into(), "<b@x> <c@x>".into())
+        );
+        // One naming several messages can't say which is the parent.
+        assert_eq!(
+            threading("<c@x>", "", "<a@x> <b@x>"),
+            ("<c@x>".into(), "<c@x>".into())
+        );
+        assert_eq!(threading("<c@x>", "", ""), ("<c@x>".into(), "<c@x>".into()));
+        // Without a Message-ID there is no parent to name.
+        assert_eq!(threading("", "<a@x>", ""), (String::new(), "<a@x>".into()));
+        assert_eq!(threading("", "", ""), (String::new(), String::new()));
+        // The parent already listed is not listed twice.
+        assert_eq!(
+            threading("<b@x>", "<a@x> <b@x>", ""),
+            ("<b@x>".into(), "<a@x> <b@x>".into())
+        );
+    }
+
+    #[test]
+    fn threading_headers_fold_and_survive_a_draft() {
+        let references: Vec<String> = (0..30)
+            .map(|n| format!("<{n}.CAKx8Lr9ZqT3pYw@mail.gmail.com>"))
+            .collect();
+        let references = references.join(" ");
+        let to = vec!["ada@x.y".to_string()];
+        let message = Outgoing {
+            from: "me@x.y",
+            to: &to,
+            subject: "Re: Plan",
+            body_html: "<p>Yes</p>",
+            message_id: Some("<new@x.y>"),
+            in_reply_to: "<29.CAKx8Lr9ZqT3pYw@mail.gmail.com>",
+            references: &references,
+            ..Outgoing::default()
+        };
+        for raw in [
+            build_mime_message(&message).unwrap(),
+            build_draft_message(&message).unwrap(),
+            build_protected_message(
+                &message,
+                Protection {
+                    sign: true,
+                    encrypt: false,
+                },
+                &FakeCrypto(Default::default()),
+            )
+            .unwrap(),
+        ] {
+            let text = String::from_utf8_lossy(&raw);
+            let head = text.split("\r\n\r\n").next().unwrap();
+            let folded: Vec<&str> = head
+                .lines()
+                .skip_while(|line| !line.starts_with("References:"))
+                .take_while(|line| line.starts_with("References:") || line.starts_with(' '))
+                .collect();
+            assert!(folded.len() > 1, "{head}");
+            assert!(folded.iter().all(|line| line.len() <= 78), "{head}");
+            let parsed = crate::mime::parse_message(&raw);
+            assert_eq!(parsed.in_reply_to, "<29.CAKx8Lr9ZqT3pYw@mail.gmail.com>");
+            assert_eq!(parsed.references, references);
+        }
+        // A forward, or a new message, carries neither.
+        let text = String::from_utf8_lossy(
+            &build_mime_message(&Outgoing {
+                in_reply_to: "",
+                references: "",
+                ..message
+            })
+            .unwrap(),
+        )
+        .into_owned();
+        assert!(!text.contains("In-Reply-To") && !text.contains("References"));
+    }
+
+    #[test]
+    fn replies_to_our_own_message_go_where_it_went() {
+        let own = vec!["me@x.y".to_string()];
+        let sent = original(
+            "Me <ME@x.y>",
+            "",
+            &["Ada <ada@x.y>", "bob@x.y"],
+            &["cy@x.y", "me@x.y"],
+        );
+        assert_eq!(
+            reply_recipients(&sent, &own, false),
+            recipients(&["Ada <ada@x.y>", "bob@x.y"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&sent, &own, true),
+            recipients(&["Ada <ada@x.y>", "bob@x.y"], &["cy@x.y"])
+        );
+        // Sent to ourselves and Cc'd on: the Cc moves up to To.
+        let sent = original("me@x.y", "", &["me@x.y"], &["cy@x.y"]);
+        assert_eq!(
+            reply_recipients(&sent, &own, true),
+            recipients(&["cy@x.y"], &[])
+        );
+        // A note to self stays one.
+        assert_eq!(
+            reply_recipients(&sent, &own, false),
+            recipients(&["me@x.y"], &[])
+        );
+        let bcc_only = original("Me <me@x.y>", "", &[], &[]);
+        assert_eq!(
+            reply_recipients(&bcc_only, &own, true),
+            recipients(&["Me <me@x.y>"], &[])
+        );
+    }
+
+    #[test]
+    fn reply_to_wins_and_reply_all_keeps_the_author() {
+        let own = vec!["me@x.y".to_string()];
+        // A list that sets Reply-To to itself, naming two addresses.
+        let message = original(
+            "Ada <ada@x.y>",
+            "list@x.y, Tickets <tickets@x.y>",
+            &["list@x.y"],
+            &["me@x.y", "bob@x.y"],
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, false),
+            recipients(&["list@x.y", "Tickets <tickets@x.y>"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(
+                &["list@x.y", "Tickets <tickets@x.y>"],
+                &["Ada <ada@x.y>", "bob@x.y"]
+            )
+        );
+        // A Reply-To pointing at us is passed over.
+        let message = original("Ada <ada@x.y>", "me@x.y", &["me@x.y"], &["bob@x.y"]);
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["Ada <ada@x.y>"], &["bob@x.y"])
+        );
+        // Reply-To the sender's own address changes nothing.
+        let message = original("Ada <ada@x.y>", "ADA@x.y", &["me@x.y"], &[]);
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["ADA@x.y"], &[])
+        );
     }
 
     #[test]
@@ -903,6 +1206,8 @@ mod tests {
                 content: b"x".to_vec(),
             }],
             message_id: None,
+            in_reply_to: "",
+            references: "",
             plain_text: false,
         })
         .unwrap();

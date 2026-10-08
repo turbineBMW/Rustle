@@ -49,6 +49,10 @@ pub struct Draft {
     /// added who wasn't on it, and the addresses that were (lowercase).
     pub original_attachments: Vec<Attachment>,
     pub original_people: Vec<String>,
+    /// A reply's In-Reply-To and References (`compose::reply_threading`),
+    /// kept through drafts and the Outbox; "" for anything else.
+    pub in_reply_to: String,
+    pub references: String,
 }
 
 /// A saved draft being finished: the row it was opened from, and the
@@ -317,6 +321,9 @@ mod imp {
         /// The Message-ID every save of this draft carries, so each save
         /// replaces the copy the last one left.
         pub message_id: RefCell<String>,
+        /// What threads a reply under the message it answers.
+        pub in_reply_to: RefCell<String>,
+        pub references: RefCell<String>,
         pub resumed: RefCell<Option<ResumedDraft>>,
         /// What the fields held when it opened: closing unchanged asks nothing.
         pub(super) opened_with: RefCell<Snapshot>,
@@ -464,6 +471,8 @@ impl Composer {
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| compose::new_message_id(&account.email));
         imp.message_id.replace(message_id);
+        imp.in_reply_to.replace(draft.in_reply_to);
+        imp.references.replace(draft.references);
         imp.resumed.replace(draft.resumed);
         imp.originals.replace(draft.original_attachments);
         imp.original_people.replace(
@@ -1897,6 +1906,7 @@ impl Composer {
         let body_html = imp.body_html.borrow();
         let attachments = self.attachments();
         let message_id = imp.message_id.borrow();
+        let (in_reply_to, references) = (imp.in_reply_to.borrow(), imp.references.borrow());
         let message = compose::Outgoing {
             from: &account.email,
             to: &to,
@@ -1906,6 +1916,8 @@ impl Composer {
             body_html: &body_html,
             attachments: &attachments,
             message_id: Some(&message_id),
+            in_reply_to: &in_reply_to,
+            references: &references,
             plain_text: imp.plain_text.get(),
         };
         if is_draft {
@@ -1976,6 +1988,8 @@ impl Composer {
         let body_html = imp.body_html.borrow().clone();
         let attachments = self.attachments();
         let message_id = imp.message_id.borrow().clone();
+        let in_reply_to = imp.in_reply_to.borrow().clone();
+        let references = imp.references.borrow().clone();
         let plain_text = imp.plain_text.get();
         let recipients: Vec<String> = to_addrs
             .iter()
@@ -2003,6 +2017,8 @@ impl Composer {
                     body_html: &body_html,
                     attachments: &attachments,
                     message_id: Some(&message_id),
+                    in_reply_to: &in_reply_to,
+                    references: &references,
                     plain_text,
                 };
                 let gpg = rustle_core::pgp::Gpg {
