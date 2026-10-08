@@ -184,7 +184,7 @@ impl MainWindow {
         composer.connect_pop_out(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_| window.displace_inline_composer()
+            move |_| window.on_pop_out_clicked()
         ));
         let imp = self.imp();
         let showed_content = imp.inner_split.shows_content();
@@ -249,8 +249,16 @@ impl MainWindow {
         }
     }
 
+    /// Asked for by its pop-out button: a window, typed in or not.
+    fn on_pop_out_clicked(&self) {
+        if let Some(inline) = self.take_inline_composer(true) {
+            composer::present_in_window(self.application().as_ref(), &inline.composer);
+        }
+    }
+
+    /// Made way for something else, rather than asked for: nothing typed
+    /// yet, nothing to carry over.
     fn pop_out(&self, composer: Composer) {
-        // Nothing typed yet: nothing to carry over.
         if !composer.is_blank() {
             composer::present_in_window(self.application().as_ref(), &composer);
         }
