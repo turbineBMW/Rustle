@@ -12,7 +12,7 @@ use gtk::glib;
 use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::Account;
 use rustle_core::{compose, html, mime};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Window actions whose accelerators an editor needs for itself (Ctrl+I is
 /// italic, Ctrl+Delete deletes a word...). Application accelerators run in
@@ -201,9 +201,8 @@ impl MainWindow {
     }
 
     fn on_composer_finished(&self) {
-        let keep_id = self.selected_email().map(|c| c.id());
         self.reload_folders();
-        self.refresh_emails(keep_id);
+        self.refresh_keeping_selection();
         let accounts: Vec<Account> = self.state().accounts.values().cloned().collect();
         for account in accounts {
             self.drain_outbox(&account);
@@ -231,7 +230,10 @@ impl MainWindow {
             .inline_composer
             .as_ref()
             .map(|inline| inline.selection.clone());
-        if opened_on.is_some_and(|ids| ids != self.selected_ids()) {
+        // As sets: a refresh can reorder the same selection (a pin moves a
+        // message to the top) without the user picking anything else.
+        let selected: HashSet<i64> = self.selected_ids().into_iter().collect();
+        if opened_on.is_some_and(|ids| ids.into_iter().collect::<HashSet<_>>() != selected) {
             let Some(inline) = self.take_inline_composer(false) else {
                 return;
             };
@@ -266,13 +268,6 @@ impl MainWindow {
             imp.inner_split.set_show_content(false);
         }
         Some(inline)
-    }
-
-    fn selected_ids(&self) -> Vec<i64> {
-        self.selected_emails()
-            .iter()
-            .map(|email| email.id())
-            .collect()
     }
 
     fn on_focus_moved(&self) {

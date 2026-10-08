@@ -29,6 +29,7 @@ mod imp {
         pub address: RefCell<String>,
         pub date_value: RefCell<String>,
         pub pinned: Cell<bool>,
+        pub email_id: Cell<i64>,
         pub avatars: RefCell<Option<AvatarLoader>>,
     }
 
@@ -77,6 +78,7 @@ mod imp {
                 address: RefCell::new(String::new()),
                 date_value: RefCell::new(String::new()),
                 pinned: Cell::new(false),
+                email_id: Cell::new(0),
                 avatars: RefCell::new(None),
             }
         }
@@ -150,6 +152,7 @@ impl EmailRow {
     /// colour.
     pub fn bind(&self, email: &Email, is_outgoing: bool, account: Option<&Account>) {
         let imp = self.imp();
+        imp.email_id.set(email.id);
         let (name, address) = if is_outgoing && !email.recipient.is_empty() {
             (&email.recipient, &email.recipient_address)
         } else {
@@ -194,6 +197,11 @@ impl EmailRow {
         } else {
             self.remove_css_class("unread");
         }
+    }
+
+    /// The email it was last filled from.
+    pub fn email_id(&self) -> i64 {
+        self.imp().email_id.get()
     }
 
     /// The section header this row belongs under, for the sticky label.

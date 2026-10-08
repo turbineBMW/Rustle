@@ -420,7 +420,7 @@ impl MainWindow {
             glib::clone!(
                 #[weak]
                 window,
-                move |_, _| window.refresh_emails(None)
+                move |_, _| window.refresh_keeping_selection()
             ),
         );
         settings.connect_changed(
@@ -436,7 +436,7 @@ impl MainWindow {
             glib::clone!(
                 #[weak]
                 window,
-                move |_, _| window.refresh_emails(window.selected_email().map(|email| email.id()))
+                move |_, _| window.refresh_keeping_selection()
             ),
         );
         settings.connect_changed(
@@ -702,7 +702,7 @@ impl MainWindow {
         imp.unread_button.connect_toggled(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_| window.refresh_emails(None)
+            move |_| window.refresh_emails(&[])
         ));
         // Load older mail when the list is scrolled to the bottom.
         imp.email_scroller.connect_edge_reached(glib::clone!(

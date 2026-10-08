@@ -139,6 +139,14 @@ impl MainWindow {
             .collect()
     }
 
+    /// The ids of every selected email, in list order.
+    pub(super) fn selected_ids(&self) -> Vec<i64> {
+        self.selected_emails()
+            .iter()
+            .map(|email| email.id())
+            .collect()
+    }
+
     pub(super) fn selected_email(&self) -> Option<EmailObject> {
         let selected = self.selected_emails();
         if selected.len() == 1 {
@@ -222,10 +230,10 @@ impl MainWindow {
             FlagField::Pinned => mail.is_pinned,
         };
         let value = !emails.iter().any(|email| email.with(read));
-        let keep_id = if emails.len() == 1 {
-            Some(emails[0].id())
+        let keep: Vec<i64> = if emails.len() == 1 {
+            vec![emails[0].id()]
         } else {
-            None
+            Vec::new()
         };
         {
             let db = self.db();
@@ -252,7 +260,7 @@ impl MainWindow {
                 });
             }
         }
-        self.after_flag_change(keep_id);
+        self.after_flag_change(&keep);
 
         // One STORE per mailbox rather than one per message: in the unified
         // inbox a selection can span several accounts. The queue sends it,
@@ -295,9 +303,9 @@ impl MainWindow {
 
     /// Update badges and the list after a flag change, keeping the
     /// email selected so the reader doesn't reload.
-    fn after_flag_change(&self, keep_id: Option<i64>) {
+    fn after_flag_change(&self, keep: &[i64]) {
         self.reload_folders();
-        self.refresh_emails(keep_id);
+        self.refresh_emails(keep);
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.

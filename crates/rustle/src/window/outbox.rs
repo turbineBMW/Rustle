@@ -43,7 +43,7 @@ impl MainWindow {
         ));
         self.imp().toast_overlay.add_toast(toast);
         self.reload_folders();
-        self.refresh_emails(self.selected_email().map(|email| email.id()));
+        self.refresh_keeping_selection();
         self.schedule_outbox();
     }
 
@@ -122,6 +122,10 @@ impl MainWindow {
             log::error!("could not take message {email_id} out of the Outbox: {error}");
             return;
         }
+        // Before the composer opens: it pops out when the selection it
+        // opened on changes, as it would if the message left the list after.
+        self.reload_folders();
+        self.refresh_keeping_selection();
         self.open_composer(
             &account,
             Draft {
@@ -134,8 +138,6 @@ impl MainWindow {
                 ..Draft::default()
             },
         );
-        self.reload_folders();
-        self.refresh_emails(None);
         self.schedule_outbox();
     }
 

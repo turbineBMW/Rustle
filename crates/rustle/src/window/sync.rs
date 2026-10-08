@@ -102,7 +102,7 @@ impl MainWindow {
         let sent_count = settled.sent as u64;
         if sent_count > 0 {
             self.reload_folders();
-            self.refresh_emails(None);
+            self.refresh_keeping_selection();
             self.toast(&i18n::plural(
                 "Sent {n} queued message.",
                 "Sent {n} queued messages.",
@@ -226,8 +226,8 @@ impl MainWindow {
         if self.is_stale(account) {
             return;
         }
-        // Remember the open email so a background poll doesn't yank it.
-        let keep_id = self.selected_email().map(|c| c.id());
+        // Remember the selection so a background poll doesn't yank it.
+        let keep = self.selected_ids();
 
         let mut new_messages: Vec<MessageHeader> = Vec::new();
         let mut arrived: Vec<MessageHeader> = Vec::new();
@@ -364,7 +364,7 @@ impl MainWindow {
         new_messages.retain(|message| !handled.contains(&message.uid));
 
         self.reload_folders();
-        self.refresh_emails(keep_id);
+        self.refresh_emails(&keep);
         self.hide_connection_banner(BannerSource::Sync);
         // A stuck queue keeps its banner through a sync that went fine.
         self.update_queue_status();

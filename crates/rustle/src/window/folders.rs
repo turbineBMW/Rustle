@@ -288,7 +288,7 @@ impl MainWindow {
         if self.state().is_folder_refresh_suppressed {
             return;
         }
-        self.refresh_emails(None);
+        self.refresh_emails(&[]);
 
         // Only sync on a real view change -- rebuilding the sidebar re-emits
         // selection-changed for the same folder, which would loop. A folder
@@ -451,7 +451,7 @@ impl MainWindow {
             row.bind_unified_inbox(self.unified_badge());
         }
         if pictures_changed && self.is_unified_view() {
-            self.refresh_emails(self.selected_email().map(|email| email.id()));
+            self.refresh_keeping_selection();
         }
         self.sync_inbox_watchers();
     }
