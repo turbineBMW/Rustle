@@ -292,9 +292,12 @@ impl MainWindow {
             &mime::readable_text(&parsed),
             &account.signature_html(),
         );
+        let (in_reply_to, references) = compose::reply_threading(&parsed);
         self.open_composer(
             &account,
             Draft {
+                in_reply_to,
+                references,
                 to: recipients.to.join(", "),
                 cc: recipients.cc.join(", "),
                 subject: compose::reply_subject(&parsed.subject),

@@ -37,6 +37,10 @@ pub struct ParsedMessage {
     pub date: String,
     /// The Message-ID header, angle brackets included; "" when there is none.
     pub message_id: String,
+    /// The In-Reply-To and References ids, each `<id>`, space-separated;
+    /// "" when there are none.
+    pub in_reply_to: String,
+    pub references: String,
     pub unsubscribe: Option<Unsubscribe>,
     /// The meeting a calendar invite, update, cancellation or reply is about.
     pub invitation: Option<Invitation>,
@@ -195,6 +199,8 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
             .message_id()
             .map(|id| format!("<{id}>"))
             .unwrap_or_default(),
+        in_reply_to: message_ids(&raw_header(&message, "In-Reply-To")).join(" "),
+        references: message_ids(&raw_header(&message, "References")).join(" "),
         ..ParsedMessage::default()
     };
     result.date = if result.date_header.is_empty() {
@@ -318,6 +324,17 @@ fn raw_header(message: &mail_parser::Message, name: &str) -> String {
         .header_raw(name)
         .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default()
+}
+
+/// Every `<id>` in a header such as References, as written. Only printable
+/// ASCII counts: anything else is not an id a reply could carry on.
+pub fn message_ids(header: &str) -> Vec<String> {
+    static ID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"<[\x21-\x3b\x3d\x3f-\x7e]+>").expect("a valid pattern")
+    });
+    ID.find_iter(header)
+        .map(|found| found.as_str().to_string())
+        .collect()
 }
 
 /// An address header decoded for people to read and for

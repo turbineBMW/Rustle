@@ -3,7 +3,7 @@
 
 use crate::address::{self, Mailbox};
 use crate::html::{escape, html_to_text, to_html};
-use crate::mime::ParsedMessage;
+use crate::mime::{self, ParsedMessage};
 use crate::models::Attachment;
 use lettre::address::Envelope;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
@@ -117,6 +117,29 @@ pub fn reply_recipients(
         };
     }
     ReplyRecipients { to, cc }
+}
+
+/// The In-Reply-To and References a reply to `parent` carries (RFC 5322
+/// §3.6.4), each "" when there is nothing to say: In-Reply-To is the
+/// parent's Message-ID; References is the parent's References (or, without
+/// them, its In-Reply-To when that names a single message) followed by
+/// that Message-ID.
+pub fn reply_threading(parent: &ParsedMessage) -> (String, String) {
+    let parent_id = mime::message_ids(&parent.message_id)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let mut references = mime::message_ids(&parent.references);
+    if references.is_empty() {
+        let in_reply_to = mime::message_ids(&parent.in_reply_to);
+        if in_reply_to.len() == 1 {
+            references = in_reply_to;
+        }
+    }
+    if !parent_id.is_empty() && !references.contains(&parent_id) {
+        references.push(parent_id.clone());
+    }
+    (parent_id, references.join(" "))
 }
 
 /// A mailbox as one entry of a composer's address field, which splits on
@@ -259,6 +282,10 @@ pub struct Outgoing<'a> {
     pub attachments: &'a [Attachment],
     /// The Message-ID header, angle brackets included; None makes one up.
     pub message_id: Option<&'a str>,
+    /// For a reply, what threads it under the message it answers (see
+    /// `reply_threading`); "" leaves the header out.
+    pub in_reply_to: &'a str,
+    pub references: &'a str,
     /// Send text/plain alone: the body's text, no HTML part.
     pub plain_text: bool,
 }
@@ -414,6 +441,13 @@ fn headers(message: &Outgoing, is_draft: bool) -> Result<MessageBuilder, Compose
         .date_now();
     if let Some(id) = message.message_id {
         builder = builder.message_id(Some(id.to_string()));
+    }
+    // Folded between ids when long, as lettre folds any header at spaces.
+    if !message.in_reply_to.is_empty() {
+        builder = builder.in_reply_to(message.in_reply_to.to_string());
+    }
+    if !message.references.is_empty() {
+        builder = builder.references(message.references.to_string());
     }
     if is_draft {
         // A draft goes nowhere, so its envelope is a formality, and one
@@ -995,6 +1029,99 @@ mod tests {
     }
 
     #[test]
+    fn replies_thread_under_their_parent() {
+        let parent = |id: &str, references: &str, in_reply_to: &str| ParsedMessage {
+            message_id: id.into(),
+            references: references.into(),
+            in_reply_to: in_reply_to.into(),
+            ..ParsedMessage::default()
+        };
+        let threading = |id, references, in_reply_to| {
+            let (in_reply_to, references) = reply_threading(&parent(id, references, in_reply_to));
+            (in_reply_to, references)
+        };
+        assert_eq!(
+            threading("<c@x>", "<a@x> <b@x>", "<b@x>"),
+            ("<c@x>".into(), "<a@x> <b@x> <c@x>".into())
+        );
+        // No References: a lone In-Reply-To stands in for them.
+        assert_eq!(
+            threading("<c@x>", "", "<b@x>"),
+            ("<c@x>".into(), "<b@x> <c@x>".into())
+        );
+        // One naming several messages can't say which is the parent.
+        assert_eq!(
+            threading("<c@x>", "", "<a@x> <b@x>"),
+            ("<c@x>".into(), "<c@x>".into())
+        );
+        assert_eq!(threading("<c@x>", "", ""), ("<c@x>".into(), "<c@x>".into()));
+        // Without a Message-ID there is no parent to name.
+        assert_eq!(threading("", "<a@x>", ""), (String::new(), "<a@x>".into()));
+        assert_eq!(threading("", "", ""), (String::new(), String::new()));
+        // The parent already listed is not listed twice.
+        assert_eq!(
+            threading("<b@x>", "<a@x> <b@x>", ""),
+            ("<b@x>".into(), "<a@x> <b@x>".into())
+        );
+    }
+
+    #[test]
+    fn threading_headers_fold_and_survive_a_draft() {
+        let references: Vec<String> = (0..30)
+            .map(|n| format!("<{n}.CAKx8Lr9ZqT3pYw@mail.gmail.com>"))
+            .collect();
+        let references = references.join(" ");
+        let to = vec!["ada@x.y".to_string()];
+        let message = Outgoing {
+            from: "me@x.y",
+            to: &to,
+            subject: "Re: Plan",
+            body_html: "<p>Yes</p>",
+            message_id: Some("<new@x.y>"),
+            in_reply_to: "<29.CAKx8Lr9ZqT3pYw@mail.gmail.com>",
+            references: &references,
+            ..Outgoing::default()
+        };
+        for raw in [
+            build_mime_message(&message).unwrap(),
+            build_draft_message(&message).unwrap(),
+            build_protected_message(
+                &message,
+                Protection {
+                    sign: true,
+                    encrypt: false,
+                },
+                &FakeCrypto(Default::default()),
+            )
+            .unwrap(),
+        ] {
+            let text = String::from_utf8_lossy(&raw);
+            let head = text.split("\r\n\r\n").next().unwrap();
+            let folded: Vec<&str> = head
+                .lines()
+                .skip_while(|line| !line.starts_with("References:"))
+                .take_while(|line| line.starts_with("References:") || line.starts_with(' '))
+                .collect();
+            assert!(folded.len() > 1, "{head}");
+            assert!(folded.iter().all(|line| line.len() <= 78), "{head}");
+            let parsed = crate::mime::parse_message(&raw);
+            assert_eq!(parsed.in_reply_to, "<29.CAKx8Lr9ZqT3pYw@mail.gmail.com>");
+            assert_eq!(parsed.references, references);
+        }
+        // A forward, or a new message, carries neither.
+        let text = String::from_utf8_lossy(
+            &build_mime_message(&Outgoing {
+                in_reply_to: "",
+                references: "",
+                ..message
+            })
+            .unwrap(),
+        )
+        .into_owned();
+        assert!(!text.contains("In-Reply-To") && !text.contains("References"));
+    }
+
+    #[test]
     fn replies_to_our_own_message_go_where_it_went() {
         let own = vec!["me@x.y".to_string()];
         let sent = original(
@@ -1079,6 +1206,8 @@ mod tests {
                 content: b"x".to_vec(),
             }],
             message_id: None,
+            in_reply_to: "",
+            references: "",
             plain_text: false,
         })
         .unwrap();
