@@ -50,6 +50,26 @@ impl MainWindow {
         self.refresh_emails(&keep);
     }
 
+    /// Select exactly the emails in `ids` that are listed, without the
+    /// reader treating it as a new selection.
+    pub(super) fn select_ids(&self, ids: &[i64]) {
+        let model = self.email_model();
+        let listed: Vec<i64> = (0..model.n_items())
+            .filter_map(|position| model.item(position).and_downcast::<EmailObject>())
+            .map(|email| email.id())
+            .collect();
+        let keep: HashSet<i64> = ids.iter().copied().collect();
+        let selected = gtk::Bitset::new_empty();
+        for position in positions_of(&listed, &keep) {
+            selected.add(position);
+        }
+        let selection = self.selection();
+        let everything = gtk::Bitset::new_range(0, selection.n_items());
+        self.state_mut().is_selection_update_in_progress = true;
+        selection.set_selection(&selected, &everything);
+        self.state_mut().is_selection_update_in_progress = false;
+    }
+
     /// The view's emails, narrowed by the search box and filter.
     fn matching_emails(&self, keep: &HashSet<i64>) -> Vec<Email> {
         let imp = self.imp();

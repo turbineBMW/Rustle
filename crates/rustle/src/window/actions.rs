@@ -319,6 +319,11 @@ impl MainWindow {
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.
+    /// Right-click a row: its menu acts on that email. One outside the
+    /// selection is selected only while the menu is open, without opening
+    /// it in the reader (so it isn't marked read); the selection comes back
+    /// when the menu closes. Right-clicking inside the selection acts on all
+    /// of it, as before.
     pub(super) fn on_row_right_click(
         &self,
         gesture: &gtk::GestureClick,
@@ -330,28 +335,29 @@ impl MainWindow {
         if position == gtk::INVALID_LIST_POSITION {
             return;
         }
-        // Selecting the row opens it in the reader, which marks it read and
-        // would rebuild the list under the menu about to open on this row.
-        self.state_mut().is_row_menu_open = true;
-        let selection = self.selection();
-        if !selection.is_selected(position) {
-            self.state_mut().is_selection_update_in_progress = true;
-            selection.unselect_all();
-            selection.select_item(position, true);
-            self.state_mut().is_selection_update_in_progress = false;
-            self.update_reader();
-        }
         let Some(email) = self
             .email_model()
             .item(position)
             .and_downcast::<EmailObject>()
         else {
-            self.end_row_menu();
             return;
         };
         let Some(row_widget) = gesture.widget().filter(|row| row.root().is_some()) else {
-            self.end_row_menu();
             return;
+        };
+        // Until the menu closes, a refresh would rebuild the list and take
+        // the row, which the menu hangs off, away with it.
+        self.state_mut().is_row_menu_open = true;
+        let selection = self.selection();
+        let previous = if selection.is_selected(position) {
+            None
+        } else {
+            let previous = self.selected_ids();
+            self.state_mut().is_selection_update_in_progress = true;
+            selection.unselect_all();
+            selection.select_item(position, true);
+            self.state_mut().is_selection_update_in_progress = false;
+            Some(previous)
         };
 
         let popover = gtk::PopoverMenu::from_model(Some(&self.context_menu(&email)));
@@ -359,15 +365,17 @@ impl MainWindow {
         popover.set_parent(&row_widget);
         popover.set_has_arrow(false);
         // GtkModelButton activates its action after closing the popover, so
-        // keep the action hierarchy alive until activation has finished.
+        // keep the action hierarchy (and the stand-in selection it acts on)
+        // until activation has finished.
         popover.connect_closed(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |popover| {
                 let popover = popover.clone();
+                let previous = previous.clone();
                 glib::idle_add_local_once(move || {
                     popover.unparent();
-                    window.end_row_menu();
+                    window.end_row_menu(previous.as_deref());
                 });
             }
         ));
@@ -375,15 +383,23 @@ impl MainWindow {
         popover.popup();
     }
 
-    /// The row menu has gone: the list catches up on any refresh it held off.
-    fn end_row_menu(&self) {
+    /// The row menu has gone: the selection it stood in for comes back, and
+    /// the list catches up on any refresh it held off.
+    fn end_row_menu(&self, previous: Option<&[i64]>) {
         let is_deferred = {
             let mut state = self.state_mut();
             state.is_row_menu_open = false;
             std::mem::take(&mut state.is_refresh_deferred)
         };
+        if let Some(previous) = previous {
+            self.select_ids(previous);
+        }
         if is_deferred {
             self.refresh_keeping_selection();
+        } else if previous.is_some() {
+            // What's selected is back to what the reader shows; the
+            // buttons follow it again.
+            self.update_reader();
         }
     }
 
