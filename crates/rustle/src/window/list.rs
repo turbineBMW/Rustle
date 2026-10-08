@@ -25,6 +25,13 @@ impl MainWindow {
         if self.state().view.is_none() {
             return;
         }
+        {
+            let mut state = self.state_mut();
+            if state.is_row_menu_open {
+                state.is_refresh_deferred = true;
+                return;
+            }
+        }
         let scroller = &self.imp().email_scroller;
         let vadjustment = scroller.vadjustment();
         let scroll_position = vadjustment.value();

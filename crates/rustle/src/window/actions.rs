@@ -330,6 +330,9 @@ impl MainWindow {
         if position == gtk::INVALID_LIST_POSITION {
             return;
         }
+        // Selecting the row opens it in the reader, which marks it read and
+        // would rebuild the list under the menu about to open on this row.
+        self.state_mut().is_row_menu_open = true;
         let selection = self.selection();
         if !selection.is_selected(position) {
             self.state_mut().is_selection_update_in_progress = true;
@@ -343,9 +346,11 @@ impl MainWindow {
             .item(position)
             .and_downcast::<EmailObject>()
         else {
+            self.end_row_menu();
             return;
         };
-        let Some(row_widget) = gesture.widget() else {
+        let Some(row_widget) = gesture.widget().filter(|row| row.root().is_some()) else {
+            self.end_row_menu();
             return;
         };
 
@@ -355,12 +360,31 @@ impl MainWindow {
         popover.set_has_arrow(false);
         // GtkModelButton activates its action after closing the popover, so
         // keep the action hierarchy alive until activation has finished.
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-        });
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |popover| {
+                let popover = popover.clone();
+                glib::idle_add_local_once(move || {
+                    popover.unparent();
+                    window.end_row_menu();
+                });
+            }
+        ));
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         popover.popup();
+    }
+
+    /// The row menu has gone: the list catches up on any refresh it held off.
+    fn end_row_menu(&self) {
+        let is_deferred = {
+            let mut state = self.state_mut();
+            state.is_row_menu_open = false;
+            std::mem::take(&mut state.is_refresh_deferred)
+        };
+        if is_deferred {
+            self.refresh_keeping_selection();
+        }
     }
 
     /// The subset of the window's actions the row context menu offers.

@@ -133,6 +133,11 @@ pub struct State {
     pub rendered_id: Option<i64>,
     pub is_folder_refresh_suppressed: bool,
     pub is_selection_update_in_progress: bool,
+    /// A row's context menu is open on that row's widget: rebuilding the
+    /// list would take the widget, and the menu, away. A refresh asked for
+    /// meanwhile waits for the menu to close.
+    pub is_row_menu_open: bool,
+    pub is_refresh_deferred: bool,
     pub pending_moves: Vec<PendingMove>,
     pub pending_toast: Option<adw::Toast>,
     pub pending_timeout: Option<glib::SourceId>,
