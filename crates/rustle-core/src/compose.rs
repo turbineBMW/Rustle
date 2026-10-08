@@ -41,38 +41,59 @@ pub struct ReplyRecipients {
 /// The recipients of a reply to `original`. Reply goes to every Reply-To
 /// address, else to the sender. Reply All goes there too, and copies the
 /// sender (when Reply-To pointed elsewhere, as a mailing list or a ticket
-/// queue does) and everyone on the original To and Cc. `own` (the
+/// queue does) and everyone on the original To and Cc. A reply to a
+/// message `own` sent (one in Sent, say) goes on to its To, and Reply All
+/// to its Cc as well, as it does in Thunderbird and Gmail. `own` (the
 /// account's addresses) are left out, and nobody is named twice.
 pub fn reply_recipients(
     original: &ParsedMessage,
     own: &[String],
     should_reply_all: bool,
 ) -> ReplyRecipients {
-    let parse = |texts: &[&String]| -> Vec<Mailbox> {
+    let parse = |texts: &[String]| -> Vec<Mailbox> {
         texts
             .iter()
             .flat_map(|text| address::parse_list(text))
             .filter(|mailbox| !mailbox.address.is_empty())
             .collect()
     };
-    let from = parse(&[&original.from_header]);
-    let reply_to = parse(&[&original.reply_to_header]);
-    let to = if reply_to.is_empty() {
-        from.clone()
-    } else {
-        reply_to
-    };
-    let cc = if should_reply_all {
-        let others: Vec<&String> = original.to.iter().chain(&original.cc).collect();
-        from.into_iter().chain(parse(&others)).collect()
-    } else {
-        Vec::new()
-    };
-
     let is_own = |mailbox: &Mailbox| {
         own.iter()
             .any(|address| address.eq_ignore_ascii_case(&mailbox.address))
     };
+    let from = parse(std::slice::from_ref(&original.from_header));
+    // A Reply-To naming only us is no reason to write to ourselves.
+    let mut reply_to = parse(std::slice::from_ref(&original.reply_to_header));
+    reply_to.retain(|mailbox| !is_own(mailbox));
+    let (original_to, original_cc) = (parse(&original.to), parse(&original.cc));
+    let is_ours = !from.is_empty() && from.iter().all(is_own);
+    let (to, cc) = if is_ours {
+        let cc = if should_reply_all {
+            original_cc
+        } else {
+            Vec::new()
+        };
+        (original_to, cc)
+    } else {
+        let cc = if should_reply_all {
+            from.iter()
+                .cloned()
+                .chain(original_to)
+                .chain(original_cc)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let to = if reply_to.is_empty() {
+            from.clone()
+        } else {
+            reply_to
+        };
+        (to, cc)
+    };
+    // Who to write to when that leaves nobody but ourselves: a note to self.
+    let to_self = to.first().or(from.first()).map(recipient_entry);
+
     let mut seen: Vec<String> = Vec::new();
     let mut keep = |mailboxes: Vec<Mailbox>| -> Vec<String> {
         mailboxes
@@ -87,7 +108,14 @@ pub fn reply_recipients(
             .map(|mailbox| recipient_entry(&mailbox))
             .collect()
     };
-    let (to, cc) = (keep(to), keep(cc));
+    let (mut to, mut cc) = (keep(to), keep(cc));
+    if to.is_empty() {
+        to = if cc.is_empty() {
+            to_self.into_iter().collect()
+        } else {
+            std::mem::take(&mut cc)
+        };
+    }
     ReplyRecipients { to, cc }
 }
 
@@ -967,6 +995,41 @@ mod tests {
     }
 
     #[test]
+    fn replies_to_our_own_message_go_where_it_went() {
+        let own = vec!["me@x.y".to_string()];
+        let sent = original(
+            "Me <ME@x.y>",
+            "",
+            &["Ada <ada@x.y>", "bob@x.y"],
+            &["cy@x.y", "me@x.y"],
+        );
+        assert_eq!(
+            reply_recipients(&sent, &own, false),
+            recipients(&["Ada <ada@x.y>", "bob@x.y"], &[])
+        );
+        assert_eq!(
+            reply_recipients(&sent, &own, true),
+            recipients(&["Ada <ada@x.y>", "bob@x.y"], &["cy@x.y"])
+        );
+        // Sent to ourselves and Cc'd on: the Cc moves up to To.
+        let sent = original("me@x.y", "", &["me@x.y"], &["cy@x.y"]);
+        assert_eq!(
+            reply_recipients(&sent, &own, true),
+            recipients(&["cy@x.y"], &[])
+        );
+        // A note to self stays one.
+        assert_eq!(
+            reply_recipients(&sent, &own, false),
+            recipients(&["me@x.y"], &[])
+        );
+        let bcc_only = original("Me <me@x.y>", "", &[], &[]);
+        assert_eq!(
+            reply_recipients(&bcc_only, &own, true),
+            recipients(&["Me <me@x.y>"], &[])
+        );
+    }
+
+    #[test]
     fn reply_to_wins_and_reply_all_keeps_the_author() {
         let own = vec!["me@x.y".to_string()];
         // A list that sets Reply-To to itself, naming two addresses.
@@ -986,6 +1049,12 @@ mod tests {
                 &["list@x.y", "Tickets <tickets@x.y>"],
                 &["Ada <ada@x.y>", "bob@x.y"]
             )
+        );
+        // A Reply-To pointing at us is passed over.
+        let message = original("Ada <ada@x.y>", "me@x.y", &["me@x.y"], &["bob@x.y"]);
+        assert_eq!(
+            reply_recipients(&message, &own, true),
+            recipients(&["Ada <ada@x.y>"], &["bob@x.y"])
         );
         // Reply-To the sender's own address changes nothing.
         let message = original("Ada <ada@x.y>", "ADA@x.y", &["me@x.y"], &[]);
