@@ -133,6 +133,11 @@ pub struct State {
     pub rendered_id: Option<i64>,
     pub is_folder_refresh_suppressed: bool,
     pub is_selection_update_in_progress: bool,
+    /// A row's context menu is open on that row's widget: rebuilding the
+    /// list would take the widget, and the menu, away. A refresh asked for
+    /// meanwhile waits for the menu to close.
+    pub is_row_menu_open: bool,
+    pub is_refresh_deferred: bool,
     pub pending_moves: Vec<PendingMove>,
     pub pending_toast: Option<adw::Toast>,
     pub pending_timeout: Option<glib::SourceId>,
@@ -420,7 +425,7 @@ impl MainWindow {
             glib::clone!(
                 #[weak]
                 window,
-                move |_, _| window.refresh_emails(None)
+                move |_, _| window.refresh_keeping_selection()
             ),
         );
         settings.connect_changed(
@@ -436,7 +441,7 @@ impl MainWindow {
             glib::clone!(
                 #[weak]
                 window,
-                move |_, _| window.refresh_emails(window.selected_email().map(|email| email.id()))
+                move |_, _| window.refresh_keeping_selection()
             ),
         );
         settings.connect_changed(
@@ -702,7 +707,7 @@ impl MainWindow {
         imp.unread_button.connect_toggled(glib::clone!(
             #[weak(rename_to = window)]
             self,
-            move |_| window.refresh_emails(None)
+            move |_| window.refresh_emails(&[])
         ));
         // Load older mail when the list is scrolled to the bottom.
         imp.email_scroller.connect_edge_reached(glib::clone!(
@@ -819,10 +824,29 @@ impl MainWindow {
     }
 
     fn on_close_request(&self) -> glib::Propagation {
+        let settings = self.settings();
+        let should_hide = settings.boolean(keys::RUN_IN_BACKGROUND);
+        // Going for good, an inline composer with something written in it
+        // asks what its own window would, and the close waits on the
+        // answer. Hidden, the window keeps it for when it comes back.
+        let composer = self
+            .inline_composer()
+            .filter(|composer| !should_hide && composer.has_unsaved_changes());
+        if let Some(composer) = composer {
+            composer.ask_before_leaving(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |has_gone| {
+                    if has_gone {
+                        window.close();
+                    }
+                }
+            ));
+            return glib::Propagation::Stop;
+        }
         // Queued, so a move still in its undo window outlives the window.
         self.commit_pending_moves();
         let imp = self.imp();
-        let settings = self.settings();
         let (width, height) = self.default_size();
         let _ = settings.set_int(keys::WINDOW_WIDTH, width);
         let _ = settings.set_int(keys::WINDOW_HEIGHT, height);
@@ -843,7 +867,7 @@ impl MainWindow {
         // Nothing on screen to render, so give the web process back.
         message_view::release_anchor();
 
-        if settings.boolean(keys::RUN_IN_BACKGROUND) {
+        if should_hide {
             // connect_map renders the reading pane again when the window returns.
             {
                 let mut state = self.state_mut();

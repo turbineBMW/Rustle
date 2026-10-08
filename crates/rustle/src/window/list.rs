@@ -17,26 +17,61 @@ use std::time::Duration;
 
 impl MainWindow {
     /// Rebuild the email list from the current view, applying the
-    /// search query if one is typed. `keep_id` re-selects that email
-    /// if it's still in the list, so a mail action can refresh without
-    /// reloading the reader.
-    pub(super) fn refresh_emails(&self, keep_id: Option<i64>) {
+    /// search query if one is typed. The emails in `keep` stay selected
+    /// if they're still in the list, so a mail action or a background sync
+    /// can refresh without reloading the reader or dropping a
+    /// multi-selection.
+    pub(super) fn refresh_emails(&self, keep: &[i64]) {
         if self.state().view.is_none() {
             return;
+        }
+        {
+            let mut state = self.state_mut();
+            if state.is_row_menu_open {
+                state.is_refresh_deferred = true;
+                return;
+            }
         }
         let scroller = &self.imp().email_scroller;
         let vadjustment = scroller.vadjustment();
         let scroll_position = vadjustment.value();
 
-        let matches = self.matching_emails(keep_id);
-        self.replace_emails(matches, keep_id);
+        let keep: HashSet<i64> = keep.iter().copied().collect();
+        let matches = self.matching_emails(&keep);
+        self.replace_emails(matches, &keep);
         self.show_list_or_placeholder();
         self.update_reader();
         restore_scroll(&vadjustment, scroll_position);
     }
 
+    /// Refresh the list, leaving whatever is selected selected.
+    pub(super) fn refresh_keeping_selection(&self) {
+        let keep = self.selected_ids();
+        self.refresh_emails(&keep);
+    }
+
+    /// Select exactly the emails in `ids` that are listed, without the
+    /// reader treating it as a new selection.
+    pub(super) fn select_ids(&self, ids: &[i64]) {
+        let model = self.email_model();
+        let listed: Vec<i64> = (0..model.n_items())
+            .filter_map(|position| model.item(position).and_downcast::<EmailObject>())
+            .map(|email| email.id())
+            .collect();
+        let keep: HashSet<i64> = ids.iter().copied().collect();
+        let selected = gtk::Bitset::new_empty();
+        for position in positions_of(&listed, &keep) {
+            selected.add(position);
+        }
+        let selection = self.selection();
+        let everything = gtk::Bitset::new_range(0, selection.n_items());
+        self.state_mut().is_selection_update_in_progress = true;
+        selection.set_selection(&selected, &everything);
+        self.state_mut().is_selection_update_in_progress = false;
+    }
+
     /// The view's emails, narrowed by the search box and filter.
-    fn matching_emails(&self, keep_id: Option<i64>) -> Vec<Email> {
+    fn matching_emails(&self, keep: &HashSet<i64>) -> Vec<Email> {
         let imp = self.imp();
         let folder_ids = self.current_folder_ids();
         let query = imp.search_entry.text().trim().to_string();
@@ -72,31 +107,61 @@ impl MainWindow {
         if !imp.unread_button.is_active() {
             return matches;
         }
-        // Keep the email being read even once it's marked read, so
+        // Keep the emails being read even once they're marked read, so
         // opening a mail here doesn't make it vanish under you.
         matches
             .into_iter()
-            .filter(|c| c.is_unread || Some(c.id) == keep_id)
+            .filter(|c| c.is_unread || keep.contains(&c.id))
             .collect()
     }
 
-    /// Swap in the new list, keeping `keep_id` selected if it survived.
-    /// MultiSelection tracks positions while keep_id tracks the email
-    /// itself, so the selection is cleared before the store is spliced and
-    /// restored by identity afterwards.
-    fn replace_emails(&self, matches: Vec<Email>, keep_id: Option<i64>) {
-        let target = keep_id.and_then(|id| matches.iter().position(|c| c.id == id));
+    /// Swap in the new list, keeping the emails in `keep` selected if they
+    /// survived. MultiSelection tracks positions while `keep` tracks the
+    /// emails themselves, so the selection is cleared before the store is
+    /// spliced and restored by identity afterwards. The rows are new
+    /// objects, which the list can't follow its keyboard focus to, so the
+    /// focus is put back on its email too.
+    fn replace_emails(&self, matches: Vec<Email>, keep: &HashSet<i64>) {
+        let ids: Vec<i64> = matches.iter().map(|c| c.id).collect();
+        let targets = positions_of(&ids, keep);
+        let focus = self
+            .focused_email_id()
+            .and_then(|id| ids.iter().position(|&listed| listed == id));
         let sections = day_sections(matches);
         let store = self.email_sections();
         let selection = self.selection();
         self.state_mut().is_selection_update_in_progress = true;
         selection.unselect_all();
         store.splice(0, store.n_items(), &sections);
-        match target {
-            Some(index) => selection.select_item(index as u32, true),
-            None => selection.unselect_all(),
-        };
+        if !targets.is_empty() {
+            let selected = gtk::Bitset::new_empty();
+            for position in targets {
+                selected.add(position);
+            }
+            let everything = gtk::Bitset::new_range(0, selection.n_items());
+            selection.set_selection(&selected, &everything);
+        }
         self.state_mut().is_selection_update_in_progress = false;
+        // Scrolls too, but the caller puts the scroll position back after.
+        if let Some(position) = focus {
+            self.imp()
+                .email_list
+                .scroll_to(position as u32, gtk::ListScrollFlags::FOCUS, None);
+        }
+    }
+
+    /// The email whose row has the keyboard focus, if one has.
+    fn focused_email_id(&self) -> Option<i64> {
+        let focus = GtkWindowExt::focus(self)?;
+        if !focus.is_ancestor(&*self.imp().email_list) {
+            return None;
+        }
+        // The list's own row widget takes the focus, around ours.
+        let row = focus
+            .ancestor(EmailRow::static_type())
+            .or_else(|| focus.first_child())
+            .and_downcast::<EmailRow>()?;
+        Some(row.email_id())
     }
 
     pub(super) fn show_list_or_placeholder(&self) {
@@ -196,7 +261,7 @@ impl MainWindow {
                 self,
                 move || {
                     window.state_mut().search_timeout = None;
-                    window.refresh_emails(None);
+                    window.refresh_emails(&[]);
                     window.search_server_for_typed();
                 }
             ),
@@ -444,4 +509,32 @@ fn group_conversations(matches: Vec<Email>) -> Vec<Email> {
             Some(email)
         })
         .collect()
+}
+
+/// The positions in `ids` (the list, in display order) of the emails in
+/// `keep`.
+fn positions_of(ids: &[i64], keep: &HashSet<i64>) -> Vec<u32> {
+    ids.iter()
+        .enumerate()
+        .filter(|(_, id)| keep.contains(id))
+        .map(|(position, _)| position as u32)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_follow_the_emails_not_where_they_were() {
+        let keep = HashSet::from([7, 3, 9]);
+        // New mail on top pushed them down, and 9 went away.
+        assert_eq!(positions_of(&[11, 12, 7, 5, 3], &keep), vec![2, 4]);
+    }
+
+    #[test]
+    fn nothing_kept_selects_nothing() {
+        assert!(positions_of(&[1, 2, 3], &HashSet::new()).is_empty());
+        assert!(positions_of(&[], &HashSet::from([1])).is_empty());
+    }
 }

@@ -90,7 +90,7 @@ impl MainWindow {
         // Back to plain search over whatever is typed, or the other way:
         // nothing runs until Enter.
         if !is_active {
-            self.refresh_emails(self.selected_email().map(|email| email.id()));
+            self.refresh_keeping_selection();
         }
     }
 
@@ -103,7 +103,7 @@ impl MainWindow {
         }
         if imp.search_entry.text().trim().is_empty() && self.state().smart_search.is_some() {
             self.clear_smart_search();
-            self.refresh_emails(None);
+            self.refresh_emails(&[]);
         }
         true
     }
@@ -200,7 +200,7 @@ impl MainWindow {
             filter: filter.clone(),
             server_ids: HashSet::new(),
         });
-        self.refresh_emails(None);
+        self.refresh_emails(&[]);
         if let Some(criteria) = filter.imap_criteria() {
             self.search_server(&criteria, generation);
         }
@@ -318,7 +318,7 @@ impl MainWindow {
         };
         self.update_ask_spinner();
         if is_new {
-            self.refresh_emails(self.selected_email().map(|email| email.id()));
+            self.refresh_keeping_selection();
         }
     }
 
@@ -372,7 +372,7 @@ impl MainWindow {
         };
         self.update_ask_spinner();
         if is_new {
-            self.refresh_emails(self.selected_email().map(|email| email.id()));
+            self.refresh_keeping_selection();
         }
     }
 }

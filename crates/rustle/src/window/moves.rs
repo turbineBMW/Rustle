@@ -282,7 +282,7 @@ impl MainWindow {
         if pending_moves.is_empty() {
             if deleted_drafts > 0 {
                 self.reload_folders();
-                self.refresh_emails(None);
+                self.refresh_keeping_selection();
                 if !is_unsynced_left {
                     self.toast(&i18n::plural(
                         "Draft deleted",
@@ -296,7 +296,7 @@ impl MainWindow {
         }
 
         self.reload_folders();
-        self.refresh_emails(None);
+        self.refresh_keeping_selection();
 
         let toast = adw::Toast::builder()
             .title(verb)
@@ -402,7 +402,7 @@ impl MainWindow {
         }
         self.clear_move_tombstones(pending, 0);
         self.reload_folders();
-        self.refresh_emails(None);
+        self.refresh_keeping_selection();
     }
 
     fn clear_move_tombstones(&self, pending: &PendingMove, start: usize) {

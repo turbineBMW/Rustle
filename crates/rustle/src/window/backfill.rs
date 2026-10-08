@@ -160,7 +160,7 @@ impl MainWindow {
                 return;
             }
         };
-        let keep_id = self.selected_email().map(|c| c.id());
+        let keep = self.selected_ids();
         let mut fetched_folder: Option<i64> = None;
         let mut saved = 0usize;
         {
@@ -231,7 +231,7 @@ impl MainWindow {
         }
         if saved > 0 {
             if fetched_folder.is_some_and(|id| self.current_folder_ids().contains(&id)) {
-                self.refresh_emails(keep_id);
+                self.refresh_emails(&keep);
             }
             self.reload_folders();
         }

@@ -139,6 +139,14 @@ impl MainWindow {
             .collect()
     }
 
+    /// The ids of every selected email, in list order.
+    pub(super) fn selected_ids(&self) -> Vec<i64> {
+        self.selected_emails()
+            .iter()
+            .map(|email| email.id())
+            .collect()
+    }
+
     pub(super) fn selected_email(&self) -> Option<EmailObject> {
         let selected = self.selected_emails();
         if selected.len() == 1 {
@@ -221,12 +229,21 @@ impl MainWindow {
             FlagField::Starred => mail.is_starred,
             FlagField::Pinned => mail.is_pinned,
         };
-        let value = !emails.iter().any(|email| email.with(read));
-        let keep_id = if emails.len() == 1 {
-            Some(emails[0].id())
-        } else {
-            None
-        };
+        let value = toggled_value(emails.iter().map(|email| email.with(read)));
+        self.set_flag(emails, field, value);
+    }
+
+    /// Shift+I and Shift+U: set read or unread outright, whatever the
+    /// selection's mix. Only the emails not already so are touched.
+    pub(super) fn set_unread(&self, emails: &[EmailObject], unread: bool) {
+        let changing = differing(emails, |email| email.with(|c| c.is_unread), unread);
+        if !changing.is_empty() {
+            self.set_flag(&changing, FlagField::Unread, unread);
+        }
+    }
+
+    /// Set one boolean flag across emails, locally and on the server.
+    fn set_flag(&self, emails: &[EmailObject], field: FlagField, value: bool) {
         {
             let db = self.db();
             let db = db.borrow();
@@ -252,7 +269,7 @@ impl MainWindow {
                 });
             }
         }
-        self.after_flag_change(keep_id);
+        self.after_flag_change();
 
         // One STORE per mailbox rather than one per message: in the unified
         // inbox a selection can span several accounts. The queue sends it,
@@ -294,13 +311,19 @@ impl MainWindow {
     }
 
     /// Update badges and the list after a flag change, keeping the
-    /// email selected so the reader doesn't reload.
-    fn after_flag_change(&self, keep_id: Option<i64>) {
+    /// selection as it was so the reader doesn't reload. Not the flagged
+    /// emails: a notification's Mark Read flags one nobody selected.
+    fn after_flag_change(&self) {
         self.reload_folders();
-        self.refresh_emails(keep_id);
+        self.refresh_keeping_selection();
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.
+    /// Right-click a row: its menu acts on that email. One outside the
+    /// selection is selected only while the menu is open, without opening
+    /// it in the reader (so it isn't marked read); the selection comes back
+    /// when the menu closes. Right-clicking inside the selection acts on all
+    /// of it, as before.
     pub(super) fn on_row_right_click(
         &self,
         gesture: &gtk::GestureClick,
@@ -312,14 +335,6 @@ impl MainWindow {
         if position == gtk::INVALID_LIST_POSITION {
             return;
         }
-        let selection = self.selection();
-        if !selection.is_selected(position) {
-            self.state_mut().is_selection_update_in_progress = true;
-            selection.unselect_all();
-            selection.select_item(position, true);
-            self.state_mut().is_selection_update_in_progress = false;
-            self.update_reader();
-        }
         let Some(email) = self
             .email_model()
             .item(position)
@@ -327,8 +342,22 @@ impl MainWindow {
         else {
             return;
         };
-        let Some(row_widget) = gesture.widget() else {
+        let Some(row_widget) = gesture.widget().filter(|row| row.root().is_some()) else {
             return;
+        };
+        // Until the menu closes, a refresh would rebuild the list and take
+        // the row, which the menu hangs off, away with it.
+        self.state_mut().is_row_menu_open = true;
+        let selection = self.selection();
+        let previous = if selection.is_selected(position) {
+            None
+        } else {
+            let previous = self.selected_ids();
+            self.state_mut().is_selection_update_in_progress = true;
+            selection.unselect_all();
+            selection.select_item(position, true);
+            self.state_mut().is_selection_update_in_progress = false;
+            Some(previous)
         };
 
         let popover = gtk::PopoverMenu::from_model(Some(&self.context_menu(&email)));
@@ -336,13 +365,42 @@ impl MainWindow {
         popover.set_parent(&row_widget);
         popover.set_has_arrow(false);
         // GtkModelButton activates its action after closing the popover, so
-        // keep the action hierarchy alive until activation has finished.
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-        });
+        // keep the action hierarchy (and the stand-in selection it acts on)
+        // until activation has finished.
+        popover.connect_closed(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |popover| {
+                let popover = popover.clone();
+                let previous = previous.clone();
+                glib::idle_add_local_once(move || {
+                    popover.unparent();
+                    window.end_row_menu(previous.as_deref());
+                });
+            }
+        ));
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         popover.popup();
+    }
+
+    /// The row menu has gone: the selection it stood in for comes back, and
+    /// the list catches up on any refresh it held off.
+    fn end_row_menu(&self, previous: Option<&[i64]>) {
+        let is_deferred = {
+            let mut state = self.state_mut();
+            state.is_row_menu_open = false;
+            std::mem::take(&mut state.is_refresh_deferred)
+        };
+        if let Some(previous) = previous {
+            self.select_ids(previous);
+        }
+        if is_deferred {
+            self.refresh_keeping_selection();
+        } else if previous.is_some() {
+            // What's selected is back to what the reader shows; the
+            // buttons follow it again.
+            self.update_reader();
+        }
     }
 
     /// The subset of the window's actions the row context menu offers.
@@ -422,5 +480,44 @@ impl MainWindow {
         actions.append_submenu(Some(&gettext("Move to")), &self.build_move_menu("context"));
         menu.append_section(None, &actions);
         menu
+    }
+}
+
+/// What a toggle sets a flag to across a selection: on, unless any of it
+/// has it already. A mixed selection is cleared, as the menu says ("Mark
+/// Read" when anything is unread).
+fn toggled_value(current: impl IntoIterator<Item = bool>) -> bool {
+    !current.into_iter().any(|is_set| is_set)
+}
+
+/// The items whose flag isn't `wanted` yet.
+fn differing<T: Clone>(items: &[T], current: impl Fn(&T) -> bool, wanted: bool) -> Vec<T> {
+    items
+        .iter()
+        .filter(|item| current(item) != wanted)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toggle_clears_a_mixed_selection() {
+        assert!(!toggled_value([true, false]));
+        assert!(!toggled_value([true]));
+        assert!(toggled_value([false, false]));
+    }
+
+    #[test]
+    fn marking_touches_only_what_differs() {
+        // (id, is unread)
+        let mixed = [(1, true), (2, false), (3, true)];
+        let unread = |item: &(i32, bool)| item.1;
+        // Shift+U on a mixed selection leaves it all unread, not read.
+        assert_eq!(differing(&mixed, unread, true), vec![(2, false)]);
+        assert_eq!(differing(&mixed, unread, false), vec![(1, true), (3, true)]);
+        assert!(differing(&[(4, true)], unread, true).is_empty());
     }
 }

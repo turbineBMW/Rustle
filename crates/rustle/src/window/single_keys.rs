@@ -5,7 +5,6 @@
 //! box, a dialog's entry, or the composer.
 
 use super::MainWindow;
-use crate::objects::EmailObject;
 use crate::settings as keys;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -93,23 +92,7 @@ impl MainWindow {
 
     /// Shift+I and Shift+U: set read or unread, rather than toggle.
     fn mark_selection(&self, unread: bool) -> glib::Propagation {
-        let emails: Vec<EmailObject> = self.selected_emails();
-        let needs_toggle = !emails.is_empty()
-            && emails
-                .iter()
-                .any(|email| email.with(|e| e.is_unread) != unread);
-        if needs_toggle {
-            let all_differ = emails
-                .iter()
-                .all(|email| email.with(|e| e.is_unread) != unread);
-            // The toggle follows the menu's rule (any unread: mark all read),
-            // which lands on what was asked for in every case but one: marking
-            // a mixed selection unread. Flip it twice there.
-            let _ = WidgetExt::activate_action(self, "win.toggle-read", None);
-            if unread && !all_differ {
-                let _ = WidgetExt::activate_action(self, "win.toggle-read", None);
-            }
-        }
+        self.set_unread(&self.selected_emails(), unread);
         glib::Propagation::Stop
     }
 }

@@ -30,6 +30,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit::prelude::*;
 
+/// A host going away once "Save as Draft?" is answered: true when the
+/// composer has gone, false when it stays.
+type LeavingHost = Box<dyn FnOnce(bool)>;
+
 /// The composer fields a new composer starts with.
 #[derive(Clone, Debug, Default)]
 pub struct Draft {
@@ -318,6 +322,10 @@ mod imp {
         pub(super) opened_with: RefCell<Snapshot>,
         /// Set once it is closing for good, so its window closes unasked.
         pub is_done: Cell<bool>,
+        /// "Save as Draft?" is up.
+        pub is_asking: Cell<bool>,
+        /// Hosts going away once it is answered (see `ask_before_leaving`).
+        pub waiting_hosts: RefCell<Vec<LeavingHost>>,
         /// Send text/plain alone.
         pub plain_text: Cell<bool>,
         /// Set by a host that can hold a sent message back for Undo or a
@@ -606,15 +614,36 @@ impl Composer {
     /// Its window is being closed: true when nothing would be lost. Otherwise
     /// it asks what to do with what was written, and closes itself after.
     pub fn may_close(&self) -> bool {
-        let imp = self.imp();
-        if imp.is_done.get() || !self.is_changed() {
+        if !self.has_unsaved_changes() {
             return true;
         }
         // Mid-send, the send closes it when it is through.
-        if imp.cancel_button.is_sensitive() {
+        if self.imp().cancel_button.is_sensitive() {
             self.ask_to_save();
         }
         false
+    }
+
+    /// Whether going now would lose something written in it.
+    pub fn has_unsaved_changes(&self) -> bool {
+        !self.imp().is_done.get() && self.is_changed()
+    }
+
+    /// `may_close` for a host going away with it: the main window it is
+    /// inline in closing, or the app quitting. `then` hears true once
+    /// nothing would be lost -- at once, or after Save Draft or Delete --
+    /// and false when the user keeps editing, or a send is under way.
+    pub fn ask_before_leaving(&self, then: impl FnOnce(bool) + 'static) {
+        if !self.has_unsaved_changes() {
+            then(true);
+            return;
+        }
+        if !self.imp().cancel_button.is_sensitive() {
+            then(false);
+            return;
+        }
+        self.imp().waiting_hosts.borrow_mut().push(Box::new(then));
+        self.ask_to_save();
     }
 
     fn db(&self) -> Rc<RefCell<Database>> {
@@ -1615,6 +1644,10 @@ impl Composer {
 
     /// Closing with something written: keep it as a draft, or throw it away.
     fn ask_to_save(&self) {
+        // Once: a quit can ask while its window's close already has.
+        if self.imp().is_asking.replace(true) {
+            return;
+        }
         let is_resumed = self.imp().resumed.borrow().is_some();
         let (heading, body, delete) = if is_resumed {
             (
@@ -1647,14 +1680,35 @@ impl Composer {
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
-                move |_, response| match response {
-                    "save" => window.save_draft(),
-                    "delete" => window.delete_draft(),
-                    _ => {}
+                move |_, response| {
+                    match response {
+                        "save" => window.save_draft(),
+                        "delete" => window.delete_draft(),
+                        _ => {}
+                    }
+                    window.on_answered();
                 }
             ),
         );
         dialog.present(Some(self));
+    }
+
+    /// Tell the hosts waiting on the question whether it has gone. A save
+    /// that failed keeps it open, as Keep Editing does.
+    fn on_answered(&self) {
+        let imp = self.imp();
+        imp.is_asking.set(false);
+        let has_gone = imp.is_done.get();
+        let waiting = imp.waiting_hosts.take();
+        if waiting.is_empty() {
+            return;
+        }
+        // Once the dialog is through: a host may close the window under it.
+        glib::idle_add_local_once(move || {
+            for then in waiting {
+                then(has_gone);
+            }
+        });
     }
 
     /// Keep it in the account's Drafts: in the database at once, so it is
@@ -1730,6 +1784,9 @@ impl Composer {
             return;
         }
         let composer = self.clone();
+        // Saved on the way out, the last window closes right after: the
+        // hold keeps the app up until the server has its copy.
+        let hold = gio::Application::default().map(|app| app.hold());
         workers::run(
             move || {
                 if let Some(old) = &moved_from {
@@ -1737,7 +1794,10 @@ impl Composer {
                 }
                 save_draft_job(&account, &raw, &message_id)
             },
-            move |result| composer.on_draft_saved(result, email_id, &folder_name),
+            move |result| {
+                composer.on_draft_saved(result, email_id, &folder_name);
+                drop(hold);
+            },
         );
         self.finish();
     }

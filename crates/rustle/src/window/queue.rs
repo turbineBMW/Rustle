@@ -153,9 +153,8 @@ impl MainWindow {
 
         let is_changed = !replay.outcomes.is_empty() || replay.interrupted.is_some();
         if is_changed {
-            let keep_id = self.selected_email().map(|c| c.id());
             self.reload_folders();
-            self.refresh_emails(keep_id);
+            self.refresh_keeping_selection();
         }
         for folder in resync {
             self.start_sync(account, true, Some(&folder), 0);
