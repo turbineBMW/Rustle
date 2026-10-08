@@ -23,6 +23,7 @@ mod sync;
 mod threads;
 mod watch;
 
+use crate::application::RustleApplication;
 use crate::avatar_loader::AvatarLoader;
 use crate::objects::{EmailObject, SidebarItem};
 use crate::settings as keys;
@@ -35,6 +36,7 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::db::Database;
 use rustle_core::models::{Account, Folder};
+use rustle_core::outbox::InFlight;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -201,8 +203,6 @@ pub struct State {
     pub typed_pending: u32,
     /// Wakes the window when the soonest scheduled Outbox message is due.
     pub outbox_timer: Option<glib::SourceId>,
-    /// Outbox messages a drain is sending, which can't be taken back.
-    pub sending_ids: HashSet<i64>,
     /// The bar above a message waiting in the Outbox.
     pub outbox_bar: Option<gtk::Box>,
     /// Accounts whose conversation-key sweep is running.
@@ -320,6 +320,8 @@ mod imp {
 
         pub db: OnceCell<Rc<RefCell<Database>>>,
         pub settings: OnceCell<gio::Settings>,
+        /// The application's: the Outbox messages on their way.
+        pub in_flight: OnceCell<Rc<RefCell<InFlight>>>,
         /// Evolution Data Server's registry signals, which re-read accounts.
         pub eds_subscription: RefCell<Option<gio::SignalSubscription>>,
         /// A re-read waiting for the registry's signals to settle.
@@ -376,7 +378,7 @@ glib::wrapper! {
 
 impl MainWindow {
     pub fn new(
-        app: &impl IsA<gtk::Application>,
+        app: &RustleApplication,
         db: Rc<RefCell<Database>>,
         settings: &gio::Settings,
     ) -> Self {
@@ -384,6 +386,7 @@ impl MainWindow {
         let imp = window.imp();
         let _ = imp.db.set(db);
         let _ = imp.settings.set(settings.clone());
+        let _ = imp.in_flight.set(app.in_flight());
 
         window.set_default_size(
             settings.int(keys::WINDOW_WIDTH),
@@ -511,6 +514,16 @@ impl MainWindow {
 
     pub(super) fn db(&self) -> Rc<RefCell<Database>> {
         self.imp().db.get().expect("set at construction").clone()
+    }
+
+    /// The Outbox messages on their way, app-wide. Not a window's own:
+    /// every main window drains the same Outbox.
+    pub(super) fn in_flight(&self) -> Rc<RefCell<InFlight>> {
+        self.imp()
+            .in_flight
+            .get()
+            .expect("set at construction")
+            .clone()
     }
 
     pub(super) fn settings(&self) -> gio::Settings {

@@ -15,6 +15,7 @@ use adw::subclass::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use rustle_core::db::Database;
+use rustle_core::outbox::InFlight;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
@@ -29,6 +30,9 @@ mod imp {
         pub settings: OnceCell<gio::Settings>,
         pub media_activity: OnceCell<MediaActivity>,
         pub omarchy_theme: OnceCell<OmarchyTheme>,
+        /// The Outbox messages on their way, whichever window or composer
+        /// is sending them.
+        pub in_flight: Rc<RefCell<InFlight>>,
         /// For autostart: build the window (so the sync timer runs) but skip
         /// presenting it. The Background portal puts this flag in the
         /// autostart entry it writes -- see "Start at Login" in preferences.
@@ -82,10 +86,14 @@ mod imp {
 
         fn activate(&self) {
             let app = self.obj();
-            let window = match app.active_window().and_downcast::<MainWindow>() {
-                Some(window) => window,
-                None => app.new_window(),
-            };
+            // The active window may be a composer or a message viewer; the
+            // main window is still there behind it. A second one would
+            // drain the same Outbox and run its own sync timer.
+            let window = app
+                .active_window()
+                .and_downcast::<MainWindow>()
+                .or_else(|| app.main_window())
+                .unwrap_or_else(|| app.new_window());
             if self.should_start_hidden.replace(false) {
                 // Only the launch activation stays hidden; later ones raise it.
                 return;
@@ -145,6 +153,11 @@ impl RustleApplication {
             .clone()
     }
 
+    /// The Outbox messages on their way, app-wide.
+    pub fn in_flight(&self) -> Rc<RefCell<InFlight>> {
+        self.imp().in_flight.clone()
+    }
+
     pub fn media_is_playing(&self) -> bool {
         self.imp()
             .media_activity
@@ -164,11 +177,11 @@ impl RustleApplication {
         let _ = self.imp().settings.set(settings::load());
     }
 
-    fn new_window(&self) -> MainWindow {
+    pub(crate) fn new_window(&self) -> MainWindow {
         MainWindow::new(self, self.db(), &self.settings())
     }
 
-    fn main_window(&self) -> Option<MainWindow> {
+    pub(crate) fn main_window(&self) -> Option<MainWindow> {
         self.windows()
             .into_iter()
             .find_map(|window| window.downcast::<MainWindow>().ok())

@@ -4,6 +4,7 @@
 //! in a window, as it did before.
 
 use super::{MainWindow, PAGE_COMPOSER, PAGE_READER};
+use crate::application::RustleApplication;
 use crate::composer::{self, Composer, Draft, ResumedDraft};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -129,11 +130,35 @@ impl MainWindow {
     }
 
     fn host_composer(&self, composer: Composer) {
-        composer.set_queue_handler(glib::clone!(
-            #[weak(rename_to = window)]
-            self,
-            move |queued| window.on_send_queued(queued)
-        ));
+        // A popped-out composer can outlive this window (closed, and not
+        // kept in the background). Another main window takes its message
+        // then; with none, one due now goes from the composer itself, and a
+        // scheduled one gets a window to keep its time.
+        let window = self.downgrade();
+        let app = self
+            .application()
+            .and_downcast::<RustleApplication>()
+            .map(|app| app.downgrade());
+        composer.set_queue_handler(move |queued| {
+            let host = window
+                .upgrade()
+                .filter(|window| window.application().is_some())
+                .or_else(|| {
+                    let app = app.as_ref()?.upgrade()?;
+                    app.main_window().or_else(|| {
+                        queued.is_scheduled.then(|| {
+                            let window = app.new_window();
+                            window.present();
+                            window
+                        })
+                    })
+                });
+            let Some(host) = host else {
+                return false;
+            };
+            host.on_send_queued(queued);
+            true
+        });
         composer.connect_finished(glib::clone!(
             #[weak(rename_to = window)]
             self,

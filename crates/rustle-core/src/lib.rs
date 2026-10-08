@@ -23,6 +23,7 @@ pub mod mime;
 pub mod models;
 pub mod net;
 pub mod omarchy;
+pub mod outbox;
 pub mod pgp;
 pub mod providers;
 pub mod query;
