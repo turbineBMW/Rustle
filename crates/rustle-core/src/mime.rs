@@ -23,13 +23,15 @@ pub struct ParsedMessage {
     pub html_body: Option<String>,
     pub attachments: Vec<Attachment>,
     pub subject: String,
+    /// From and Reply-To decoded (RFC 2047) and unfolded, as address lists
+    /// `address::parse_list` reads back: names that need it are quoted.
     pub from_header: String,
     pub reply_to_header: String,
     pub from_display: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
-    /// The raw Date header, for quoting in a reply.
+    /// The Date header as written, unfolded, for quoting in a reply.
     pub date_header: String,
     /// The Date header formatted for the Details section.
     pub date: String,
@@ -175,8 +177,8 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
 
     let mut result = ParsedMessage {
         subject: message.subject().unwrap_or("").to_string(),
-        from_header: raw_header(&message, "From"),
-        reply_to_header: raw_header(&message, "Reply-To"),
+        from_header: address_header(&message, "From", message.from()),
+        reply_to_header: address_header(&message, "Reply-To", message.reply_to()),
         from_display: addresses(message.from()).join(", "),
         to: addresses(message.to()),
         cc: addresses(message.cc()),
@@ -302,11 +304,53 @@ fn urlencoding_lite(cid: &str) -> String {
         .replace(' ', "%20")
 }
 
+/// A header's text as written, unfolded: its whitespace runs, line breaks
+/// included, collapsed to single spaces.
 fn raw_header(message: &mail_parser::Message, name: &str) -> String {
     message
         .header_raw(name)
-        .map(|text| text.trim().to_string())
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default()
+}
+
+/// An address header decoded for people to read and for
+/// `address::parse_list` to read back. One that holds no address is kept
+/// as written.
+fn address_header(
+    message: &mail_parser::Message,
+    name: &str,
+    address: Option<&mail_parser::Address>,
+) -> String {
+    let list: Vec<String> = address
+        .into_iter()
+        .flat_map(|address| address.iter())
+        .filter_map(|addr| {
+            let name = addr.name().unwrap_or("").split_whitespace();
+            let name = name.collect::<Vec<_>>().join(" ");
+            let email = addr.address().unwrap_or("").trim();
+            match (name.is_empty(), email.is_empty()) {
+                (false, false) => Some(format!("{} <{email}>", quote_name(&name))),
+                (true, false) => Some(email.to_string()),
+                (false, true) => Some(quote_name(&name)),
+                (true, true) => None,
+            }
+        })
+        .collect();
+    if list.is_empty() {
+        raw_header(message, name)
+    } else {
+        list.join(", ")
+    }
+}
+
+/// A display name, quoted when it holds something an address list would
+/// split on or misread.
+fn quote_name(name: &str) -> String {
+    if name.contains([',', ';', '<', '>', '"', '\\', '(', ')', '@', ':']) {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        name.to_string()
+    }
 }
 
 fn addresses(address: Option<&mail_parser::Address>) -> Vec<String> {
@@ -548,6 +592,30 @@ mod tests {
         assert_eq!(eml_filename(".."), "message.eml");
         assert_eq!(eml_filename("tab\there"), "tab here.eml");
         assert!(eml_filename(&"é".repeat(300)).len() <= 204);
+    }
+
+    #[test]
+    fn sender_headers_are_decoded_and_unfolded() {
+        let raw = b"From: =?UTF-8?B?w4lsb2RpZQ==?=\r\n <e@x.y>\r\nReply-To: \"Lovelace, Ada\" <ada@x.y>,\r\n\t=?ISO-8859-1?Q?Andr=E9?= <andre@x.y>\r\nDate: Wed, 16 Jul 2026\r\n 10:00:00 +0000\r\nSubject: hi\r\n\r\nbody\r\n";
+        let parsed = parse_message(raw);
+        assert_eq!(parsed.from_header, "Élodie <e@x.y>");
+        assert_eq!(
+            parsed.reply_to_header,
+            "\"Lovelace, Ada\" <ada@x.y>, André <andre@x.y>"
+        );
+        assert_eq!(parsed.date_header, "Wed, 16 Jul 2026 10:00:00 +0000");
+        // Read back, the list is what was sent.
+        let back = crate::address::parse_list(&parsed.reply_to_header);
+        assert_eq!(back[0].name, "Lovelace, Ada");
+        assert_eq!(back[1].address, "andre@x.y");
+        // What people see of them is decoded too.
+        assert!(print_html(&parsed).contains("<td>Élodie &lt;e@x.y&gt;</td>"));
+        let quoted =
+            crate::compose::quote_reply_body(&parsed.from_header, &parsed.date_header, "body", "");
+        assert!(quoted.contains("Élodie &lt;e@x.y&gt; wrote:"), "{quoted}");
+        // A From that names nobody is kept as written.
+        let parsed = parse_message(b"From: undisclosed\r\n\r\nx");
+        assert_eq!(parsed.from_header, "undisclosed");
     }
 
     #[test]
