@@ -1,5 +1,6 @@
 //! Preferences: bound straight to GSettings, except autostart, which the
-//! desktop portal decides.
+//! desktop portal decides -- or, on a desktop without its Background portal,
+//! `autostart` sets up itself.
 
 use crate::i18n::{self, gettext};
 use crate::omarchy;
@@ -342,6 +343,10 @@ impl PreferencesDialog {
             )
             .await;
         if let Err(error) = result {
+            if is_missing_portal(&error) {
+                self.autostart_without_portal(&bus, is_wanted).await;
+                return Ok(());
+            }
             log::error!("background portal refused the autostart request: {error}");
             let current = self.settings().boolean(keys::START_AT_LOGIN);
             self.settle_autostart(
@@ -350,6 +355,26 @@ impl PreferencesDialog {
             );
         }
         Ok(())
+    }
+
+    /// No Background portal here (Hyprland and other compositors' portal
+    /// backends don't offer it): enable the systemd user unit, or write an
+    /// autostart entry.
+    async fn autostart_without_portal(&self, bus: &gio::DBusConnection, is_wanted: bool) {
+        match crate::autostart::set(bus, is_wanted).await {
+            Ok(method) => {
+                log::info!("start at login set to {is_wanted} without the portal ({method:?})");
+                self.settle_autostart(is_wanted, None);
+            }
+            Err(error) => {
+                log::error!("could not set start at login to {is_wanted}: {error}");
+                let current = self.settings().boolean(keys::START_AT_LOGIN);
+                self.settle_autostart(
+                    current,
+                    Some(gettext("Could not change whether Rustle starts at login.")),
+                );
+            }
+        }
     }
 
     fn on_autostart_response(&self, parameters: &glib::Variant) {
@@ -398,4 +423,12 @@ impl PreferencesDialog {
             self.add_toast(adw::Toast::new(&message));
         }
     }
+}
+
+/// The desktop has no portal, or one without the Background interface.
+fn is_missing_portal(error: &glib::Error) -> bool {
+    error.matches(gio::DBusError::UnknownMethod)
+        || error.matches(gio::DBusError::UnknownInterface)
+        || error.matches(gio::DBusError::UnknownObject)
+        || error.matches(gio::DBusError::ServiceUnknown)
 }
