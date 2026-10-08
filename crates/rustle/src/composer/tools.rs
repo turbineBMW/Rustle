@@ -25,12 +25,14 @@ pub struct QueuedSend {
     pub is_scheduled: bool,
 }
 
-pub type QueueHandler = Rc<dyn Fn(QueuedSend)>;
+/// True when the host took the message. One that can't any more (its
+/// window has gone) says no, and the composer sends it at once itself.
+pub type QueueHandler = Rc<dyn Fn(QueuedSend) -> bool>;
 
 impl Composer {
     /// Let Send hand the message to `handler` to send later, rather than
     /// sending it at once. Hosts that can show an Undo toast set this.
-    pub fn set_queue_handler(&self, handler: impl Fn(QueuedSend) + 'static) {
+    pub fn set_queue_handler(&self, handler: impl Fn(QueuedSend) -> bool + 'static) {
         self.imp().queue_handler.replace(Some(Rc::new(handler)));
         self.update_send_later();
     }

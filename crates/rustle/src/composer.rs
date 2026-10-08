@@ -2056,21 +2056,34 @@ impl Composer {
         if let Err(error) = self.db().borrow().set_outbox_entry(email_id, &entry) {
             log::error!("could not record when to send queued message {email_id}: {error}");
         }
-        if let (Some(handler), Some(send_at)) = (handler, send_at) {
+        let is_queued = match (handler, send_at) {
+            (Some(handler), Some(send_at)) => handler(QueuedSend {
+                account: account.clone(),
+                email_id,
+                send_at,
+                is_scheduled: scheduled.is_some(),
+            }),
+            _ => false,
+        };
+        if is_queued {
             if let Some((Some(draft_account), message_id)) = finished_draft {
                 workers::run(
                     move || discard_draft_job(&draft_account, &message_id),
                     |_| {},
                 );
             }
-            handler(QueuedSend {
-                account,
-                email_id,
-                send_at,
-                is_scheduled: scheduled.is_some(),
-            });
             self.finish();
             return;
+        }
+        if send_at.is_some() {
+            // The host is gone and nothing will wake for it: it goes now.
+            let now = OutboxEntry {
+                send_at: String::new(),
+                recipients: recipients.clone(),
+            };
+            if let Err(error) = self.db().borrow().set_outbox_entry(email_id, &now) {
+                log::error!("could not reschedule message {email_id} to go now: {error}");
+            }
         }
 
         // Sent from here, it's claimed app-wide like a drained one, so no
