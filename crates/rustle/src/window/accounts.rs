@@ -12,19 +12,8 @@ use gtk::glib;
 use rustle_core::address;
 use rustle_core::compose;
 use rustle_core::eds;
-use rustle_core::mime::ParsedMessage;
+use rustle_core::mime::{self, ParsedMessage};
 use rustle_core::models::Account;
-
-/// ponytail: quotes are flattened to text; inlining the original's real HTML
-/// would need a sanitizer, since the composer runs with JavaScript enabled.
-fn original_text(parsed: Option<&ParsedMessage>) -> String {
-    match parsed {
-        None => String::new(),
-        Some(parsed) => parsed.text_body.clone().unwrap_or_else(|| {
-            rustle_core::html::html_to_text(parsed.html_body.as_deref().unwrap_or(""))
-        }),
-    }
-}
 
 /// How long registry signals are left to settle before accounts are re-read:
 /// one account arrives as several sources.
@@ -296,10 +285,13 @@ impl MainWindow {
             &parsed.reply_to_header
         };
         let to = address::first_address(reply_target);
+        // ponytail: quotes are flattened to text; inlining the original's real
+        // HTML would need a sanitizer, since the composer runs with JavaScript
+        // enabled.
         let body_html = compose::quote_reply_body(
             &parsed.from_header,
             &parsed.date_header,
-            &original_text(Some(&parsed)),
+            &mime::readable_text(&parsed),
             &account.signature_html(),
         );
         let cc = if should_reply_all {
@@ -343,7 +335,7 @@ impl MainWindow {
             &parsed.from_header,
             &parsed.date_header,
             &parsed.subject,
-            &original_text(Some(&parsed)),
+            &mime::readable_text(&parsed),
             &account.signature_html(),
         );
         self.open_composer(

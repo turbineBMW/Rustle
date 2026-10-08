@@ -67,14 +67,21 @@ pub fn search_text(parsed: &ParsedMessage) -> String {
 /// The plain-text part when there is one, otherwise the HTML flattened, with
 /// all whitespace collapsed to single spaces.
 fn body_text(parsed: &ParsedMessage) -> String {
-    let text = match (&parsed.text_body, &parsed.html_body) {
+    let text = readable_text(parsed);
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    displayable(&undo_truncated_base64(&collapsed)).into_owned()
+}
+
+/// The body as text, lines kept: the plain-text part unless it is blank
+/// (HTML mail often carries an empty one), otherwise the HTML flattened.
+/// What a reply or a forward quotes.
+pub fn readable_text(parsed: &ParsedMessage) -> String {
+    match (&parsed.text_body, &parsed.html_body) {
         (Some(text), _) if !text.trim().is_empty() => text.clone(),
         (_, Some(html)) => html::html_to_text(html),
         (Some(text), None) => text.clone(),
         (None, None) => String::new(),
-    };
-    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    displayable(&undo_truncated_base64(&collapsed)).into_owned()
+    }
 }
 
 /// `text` without control characters: a NUL can't go into a GTK label at
@@ -650,6 +657,15 @@ mod tests {
             .map(|a| a.filename.as_str())
             .collect();
         assert_eq!(names, ["other.png"]);
+    }
+
+    #[test]
+    fn quoted_text_skips_a_blank_plain_part() {
+        let raw = b"Content-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n \r\n\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>Only here</p>\r\n--b--\r\n";
+        assert_eq!(readable_text(&parse_message(raw)).trim(), "Only here");
+        let raw = b"Content-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nline one\r\nline two\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n--b--\r\n";
+        assert_eq!(readable_text(&parse_message(raw)), "line one\r\nline two");
+        assert_eq!(readable_text(&ParsedMessage::default()), "");
     }
 
     #[test]
