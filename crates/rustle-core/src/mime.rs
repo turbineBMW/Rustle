@@ -72,15 +72,36 @@ fn body_text(parsed: &ParsedMessage) -> String {
         (None, None) => String::new(),
     };
     let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    undo_truncated_base64(&collapsed)
+    displayable(&undo_truncated_base64(&collapsed)).into_owned()
+}
+
+/// `text` without control characters: a NUL can't go into a GTK label at
+/// all, and the rest have no business in one line of a list either.
+pub fn displayable(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(
+        text.chars()
+            .map(|c| if c.is_whitespace() { ' ' } else { c })
+            .filter(|c| !c.is_control())
+            .collect(),
+    )
 }
 
 /// A base64 part cut off by a partial fetch fails to decode, and mail-parser
-/// then hands back the raw encoding. Decode what is there ourselves.
+/// then hands back the raw encoding. Decode what is there ourselves -- when
+/// it is an encoded block (lines far longer than any word, so a sentence of
+/// letters only isn't mistaken for one) and decodes to text. An encoded
+/// attachment (an image, say) leaves no preview rather than its bytes.
 fn undo_truncated_base64(text: &str) -> String {
     use base64::Engine;
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     let looks_encoded = compact.len() >= 32
+        && text
+            .split_whitespace()
+            .next()
+            .is_some_and(|line| line.len() >= ENCODED_LINE_MIN)
         && compact
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=');
@@ -89,18 +110,42 @@ fn undo_truncated_base64(text: &str) -> String {
     }
     let usable = compact.trim_end_matches('=');
     let usable = &usable[..usable.len() - usable.len() % 4];
-    match base64::engine::general_purpose::STANDARD_NO_PAD.decode(usable) {
-        Ok(bytes) => {
-            let decoded = String::from_utf8_lossy(&bytes);
-            let decoded = if decoded.trim_start().starts_with('<') {
-                html::html_to_text(&decoded)
-            } else {
-                decoded.into_owned()
-            };
-            decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(usable) else {
+        return text.to_string();
+    };
+    let Some(decoded) = decoded_text(bytes) else {
+        return String::new();
+    };
+    let decoded = if decoded.trim_start().starts_with('<') {
+        html::html_to_text(&decoded)
+    } else {
+        decoded
+    };
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Base64 wraps its lines at 76 characters (64 in some mailers); the
+/// first word of a sentence is never this long.
+const ENCODED_LINE_MIN: usize = 24;
+
+/// Decoded bytes as text, or None when they aren't: invalid UTF-8 (beyond a
+/// character the fetch cut in half at the end) or control bytes, which only
+/// binary data has.
+fn decoded_text(bytes: Vec<u8>) -> Option<String> {
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).ok()?
         }
-        Err(_) => text.to_string(),
-    }
+        Err(_) => return None,
+    };
+    let is_binary = text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'));
+    (!is_binary).then_some(text)
 }
 
 /// Build a preview from a header block and the first bytes of the body, as
@@ -568,6 +613,34 @@ mod tests {
             ),
             "**Bumping this to the top** and more te"
         );
+    }
+
+    #[test]
+    fn only_encoded_text_is_decoded_into_a_preview() {
+        let base64 = |text: &str| -> String {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(text)
+        };
+        // Letters only, but a sentence: not base64, whatever it decodes to.
+        let sentence = "Thank you so much for your help with this";
+        assert_eq!(undo_truncated_base64(sentence), sentence);
+        // An attachment's bytes (a PNG's header, NULs and all) leave no
+        // preview, rather than binary no label can hold.
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk";
+        assert_eq!(undo_truncated_base64(png), "");
+        // Text cut in the middle of a character keeps what came before it.
+        let encoded = base64("Caf\u{e9} cr\u{e8}me, \u{e0} bient\u{f4}t");
+        let cut = &encoded[..encoded.len() - 3];
+        assert!(undo_truncated_base64(cut).starts_with("Caf\u{e9} cr\u{e8}me"));
+    }
+
+    #[test]
+    fn displayable_drops_what_a_label_cannot_hold() {
+        assert!(matches!(
+            displayable("plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(displayable("a\0b\u{1}c\nd\te"), "abc d e");
     }
 
     #[test]

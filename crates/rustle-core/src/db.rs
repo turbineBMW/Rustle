@@ -125,6 +125,13 @@ const MIGRATIONS: &[&str] = &[
         move_to INTEGER,
         enabled INTEGER NOT NULL DEFAULT 1
      )",
+    // Previews and search text that a decoded attachment (binary, with NUL
+    // bytes no label can show) or letters mistaken for base64 (decoded to
+    // junk) left behind. Blank, a preview fills in again from the body.
+    "UPDATE emails SET preview = ''
+        WHERE instr(preview, char(0)) > 0 OR instr(preview, char(65533)) > 0;
+     UPDATE emails SET body_text = ''
+        WHERE instr(body_text, char(0)) > 0 OR instr(body_text, char(65533)) > 0;",
 ];
 
 /// `accounts.hidden`: shown, removed by the user (EDS still has it), or
