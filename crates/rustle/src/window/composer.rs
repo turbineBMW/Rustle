@@ -58,6 +58,14 @@ impl MainWindow {
         ));
     }
 
+    /// The composer in the reader pane, if one is open there.
+    pub fn inline_composer(&self) -> Option<Composer> {
+        self.state()
+            .inline_composer
+            .as_ref()
+            .map(|inline| inline.composer.clone())
+    }
+
     /// Whether a folder holds the account's drafts.
     pub(super) fn is_in_drafts(&self, folder_id: i64) -> bool {
         let folder = self.db().borrow().folder(folder_id).ok().flatten();

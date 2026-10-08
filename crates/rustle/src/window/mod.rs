@@ -819,10 +819,29 @@ impl MainWindow {
     }
 
     fn on_close_request(&self) -> glib::Propagation {
+        let settings = self.settings();
+        let should_hide = settings.boolean(keys::RUN_IN_BACKGROUND);
+        // Going for good, an inline composer with something written in it
+        // asks what its own window would, and the close waits on the
+        // answer. Hidden, the window keeps it for when it comes back.
+        let composer = self
+            .inline_composer()
+            .filter(|composer| !should_hide && composer.has_unsaved_changes());
+        if let Some(composer) = composer {
+            composer.ask_before_leaving(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |has_gone| {
+                    if has_gone {
+                        window.close();
+                    }
+                }
+            ));
+            return glib::Propagation::Stop;
+        }
         // Queued, so a move still in its undo window outlives the window.
         self.commit_pending_moves();
         let imp = self.imp();
-        let settings = self.settings();
         let (width, height) = self.default_size();
         let _ = settings.set_int(keys::WINDOW_WIDTH, width);
         let _ = settings.set_int(keys::WINDOW_HEIGHT, height);
@@ -843,7 +862,7 @@ impl MainWindow {
         // Nothing on screen to render, so give the web process back.
         message_view::release_anchor();
 
-        if settings.boolean(keys::RUN_IN_BACKGROUND) {
+        if should_hide {
             // connect_map renders the reading pane again when the window returns.
             {
                 let mut state = self.state_mut();

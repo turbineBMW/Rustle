@@ -254,14 +254,8 @@ impl RustleApplication {
             .build();
         let quit = gio::ActionEntry::builder("quit")
             .activate(|app: &Self, _, _| {
-                // A move still in its undo window goes to the change queue,
-                // which sends it on the next launch if not before.
-                for window in app.windows() {
-                    if let Ok(window) = window.downcast::<MainWindow>() {
-                        window.commit_pending_moves();
-                    }
-                }
-                app.quit()
+                let composers = app.unsaved_composers();
+                app.quit_after(composers);
             })
             .build();
         let focus_mail = gio::ActionEntry::builder("focus-mail")
@@ -335,6 +329,50 @@ impl RustleApplication {
         ] {
             self.set_accels_for_action(name, accels);
         }
+    }
+
+    /// Every composer, inline or in a window of its own, that quitting now
+    /// would lose something written in.
+    fn unsaved_composers(&self) -> Vec<Composer> {
+        self.windows()
+            .into_iter()
+            .filter_map(|window| match window.downcast::<MainWindow>() {
+                Ok(window) => window.inline_composer(),
+                Err(window) => window
+                    .downcast::<adw::Window>()
+                    .ok()?
+                    .content()
+                    .and_downcast::<Composer>(),
+            })
+            .filter(Composer::has_unsaved_changes)
+            .collect()
+    }
+
+    /// Quit once each of `composers` in turn has asked what to do with what
+    /// was written, as closing it would. Keep Editing in any calls it off.
+    fn quit_after(&self, mut composers: Vec<Composer>) {
+        let Some(composer) = composers.pop() else {
+            // A move still in its undo window goes to the change queue,
+            // which sends it on the next launch if not before.
+            for window in self.windows() {
+                if let Ok(window) = window.downcast::<MainWindow>() {
+                    window.commit_pending_moves();
+                }
+            }
+            self.quit();
+            return;
+        };
+        // Where the question can be seen: a main window kept in the
+        // background is hidden.
+        if let Some(window) = composer.root().and_downcast::<gtk::Window>() {
+            window.present();
+        }
+        let app = self.downgrade();
+        composer.ask_before_leaving(move |has_gone| {
+            if let (true, Some(app)) = (has_gone, app.upgrade()) {
+                app.quit_after(composers);
+            }
+        });
     }
 
     fn show_about(&self) {
