@@ -21,6 +21,10 @@ fmt:
 install:
     sh install.sh
 
+# Remove what install put in place; `just uninstall --purge` removes your data too.
+uninstall *args:
+    sh uninstall.sh {{args}}
+
 # Regenerate the translation template, po/rustle.pot, from the sources.
 pot:
     sh po/update-pot.sh

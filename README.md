@@ -117,6 +117,11 @@ To install for every user on the machine instead:
 sudo PREFIX=/usr sh install.sh
 ```
 
+To uninstall, run `sh uninstall.sh` from the checkout. Add `--purge` to also remove
+your mail cache, settings and saved data, or use `sudo PREFIX=/usr sh uninstall.sh` for
+a system-wide install. Your accounts stay on the desktop for other apps to use. To
+remove the ones you added in Rustle as well, delete them in **Manage Accounts** first.
+
 Just want to try it out? Run it straight from the checkout, no install needed:
 
 ```sh
