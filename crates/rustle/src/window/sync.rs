@@ -16,23 +16,17 @@ use rustle_core::dates;
 use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::{Account, MessageHeader};
 use rustle_core::net::errors::{classify, linkify, Failure};
+use rustle_core::outbox;
 use rustle_core::secrets;
 use rustle_core::sounds::NotificationSound;
 use rustle_core::sync::{self, SyncResult, RECENT_LIMIT};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-/// One attempted send from the Outbox. `error` is None when it went out.
-struct OutboxResult {
-    email_id: i64,
-    subject: String,
-    raw: Vec<u8>,
-    error: Option<Failure>,
-}
-
 impl MainWindow {
     pub(super) fn drain_outbox(&self, account: &Account) {
-        let jobs: Vec<(i64, String, Vec<String>, Vec<u8>)> = {
+        let in_flight = self.in_flight();
+        let jobs: Vec<outbox::Job> = {
             let db = self.db();
             let db = db.borrow();
             let Some(outbox) = db
@@ -43,11 +37,12 @@ impl MainWindow {
                 return;
             };
             let now = dates::to_utc_iso(chrono::Utc::now());
-            let sending = self.state().sending_ids.clone();
+            // Whatever another window, or a composer, is already sending.
+            let in_flight = in_flight.borrow();
             db.emails_in_folder(outbox.id)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|mail| !sending.contains(&mail.id))
+                .filter(|mail| !in_flight.contains(mail.id))
                 .filter_map(|mail| {
                     let entry = db.outbox_entry(mail.id).ok().flatten().unwrap_or_default();
                     // Held for Undo, or for later: not yet.
@@ -61,80 +56,50 @@ impl MainWindow {
                     } else {
                         entry.recipients
                     };
-                    Some((mail.id, mail.subject, recipients, raw))
+                    Some(outbox::Job {
+                        email_id: mail.id,
+                        sent_header: outbox::sent_header(&account.email, &mail.subject, &raw),
+                        recipients,
+                        raw,
+                    })
                 })
                 .collect()
         };
         if jobs.is_empty() {
             return;
         }
-        self.state_mut()
-            .sending_ids
-            .extend(jobs.iter().map(|(id, ..)| *id));
+        for job in &jobs {
+            in_flight.borrow_mut().claim(job.email_id);
+        }
+        // Filed here rather than by the window, which may be gone by then:
+        // a message the server took and the Outbox still held would go out
+        // again. The hold keeps the app up until it is filed. Filed under
+        // the account that sent, not the open one.
+        let hold = self.application().map(|app| app.hold());
+        let db = self.db();
+        let window = self.downgrade();
+        let account_id = account.id;
         let job_account = account.clone();
         workers::run(
             move || outbox_job(&job_account, jobs),
-            glib::clone!(
-                #[weak(rename_to = window)]
-                self,
-                #[strong]
-                account,
-                move |results: Vec<OutboxResult>| window.on_outbox_drained(&account, results)
-            ),
+            move |attempts: Vec<outbox::Attempt>| {
+                let settled = outbox::settle(
+                    &db.borrow(),
+                    &mut in_flight.borrow_mut(),
+                    account_id,
+                    attempts,
+                );
+                drop(hold);
+                if let Some(window) = window.upgrade() {
+                    window.on_outbox_drained(&settled);
+                }
+            },
         );
     }
 
-    /// Back on the main thread. Files under the account that sent, not the
-    /// open one; dropping a stale one would leave the mail in the Outbox to
-    /// go out twice.
-    fn on_outbox_drained(&self, account: &Account, results: Vec<OutboxResult>) {
-        {
-            let mut state = self.state_mut();
-            for result in &results {
-                state.sending_ids.remove(&result.email_id);
-            }
-        }
-        let mut sent_count = 0u64;
-        let mut errors = Vec::new();
-        {
-            let db = self.db();
-            let db = db.borrow();
-            for result in results {
-                if let Some(error) = result.error {
-                    errors.push(error);
-                    continue;
-                }
-                let filed = db.sent_folder(account.id).and_then(|sent| {
-                    // extract_recipients keeps only the addresses.
-                    let recipient = compose::extract_recipients(&result.raw)
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default();
-                    let row = db.save_email(
-                        sent.id,
-                        &MessageHeader {
-                            sender: account.email.clone(),
-                            sender_address: account.email.clone(),
-                            recipient: recipient.clone(),
-                            recipient_address: recipient,
-                            subject: result.subject.clone(),
-                            preview: result.subject.clone(),
-                            date: dates::now_iso(),
-                            is_unread: false,
-                            ..MessageHeader::default()
-                        },
-                    )?;
-                    db.save_raw_message(row.id, &result.raw)?;
-                    db.delete_email(result.email_id)
-                });
-                match filed {
-                    Ok(()) => sent_count += 1,
-                    Err(error) => {
-                        log::error!("could not file sent message {}: {error}", result.email_id)
-                    }
-                }
-            }
-        }
+    /// Back on the main thread, with the Outbox already settled.
+    fn on_outbox_drained(&self, settled: &outbox::Settled) {
+        let sent_count = settled.sent as u64;
         if sent_count > 0 {
             self.reload_folders();
             self.refresh_emails(None);
@@ -146,11 +111,11 @@ impl MainWindow {
             ));
         }
         // Queued mail that could not be sent is still in the Outbox, so say so.
-        if let Some(first) = errors.first() {
+        if let Some(first) = settled.errors.first() {
             let message = i18n::plural(
                 "Couldn't send a queued message. {reason}",
                 "Couldn't send {n} queued messages. {reason}",
-                errors.len() as u64,
+                settled.errors.len() as u64,
                 &[("reason", &i18n::failure_message(first))],
             );
             self.show_connection_banner(
@@ -773,36 +738,33 @@ fn sync_job(
 }
 
 /// Runs on the worker thread. Failures travel back as the classified error:
-/// the mail stays in the Outbox, so the user has to be told why.
-fn outbox_job(
-    account: &Account,
-    jobs: Vec<(i64, String, Vec<String>, Vec<u8>)>,
-) -> Vec<OutboxResult> {
-    let Some(credential) = secrets::smtp_credential_for(account) else {
+/// the mail stays in the Outbox, so the user has to be told why -- no
+/// credential included, which fails every job rather than none.
+fn outbox_job(account: &Account, jobs: Vec<outbox::Job>) -> Vec<outbox::Attempt> {
+    let credential = secrets::smtp_credential_for(account);
+    if credential.is_none() {
         log::warn!(
-            "could not sign in to {}; the Outbox stays queued",
+            "could not sign in to {}; its Outbox stays queued",
             account.email
         );
-        return Vec::new();
-    };
-    jobs.into_iter()
-        .map(|(email_id, subject, recipients, raw)| {
-            let error = sync::send_message(account, &credential, &account.email, &recipients, &raw)
-                .err()
-                .map(|error| {
-                    log::error!(
-                    "could not send queued message {email_id} ({subject:?}) to {} via {}: {error}",
-                    recipients.join(", "),
-                    account.smtp_host
-                );
-                    classify(&error, &account.smtp_host)
-                });
-            OutboxResult {
-                email_id,
-                subject,
-                raw,
-                error,
-            }
+    }
+    outbox::send_all(jobs, credential, |credential, job| {
+        sync::send_message(
+            account,
+            credential,
+            &account.email,
+            &job.recipients,
+            &job.raw,
+        )
+        .map_err(|error| {
+            log::error!(
+                "could not send queued message {} ({:?}) to {} via {}: {error}",
+                job.email_id,
+                job.sent_header.subject,
+                job.recipients.join(", "),
+                account.smtp_host
+            );
+            classify(&error, &account.smtp_host)
         })
-        .collect()
+    })
 }

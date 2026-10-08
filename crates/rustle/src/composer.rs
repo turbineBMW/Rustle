@@ -3,6 +3,7 @@
 //! Closing it with something written asks whether to keep it as a draft in
 //! the account's Drafts mailbox.
 
+use crate::application::RustleApplication;
 use crate::editor::{self, ColorKind, LinkInfo, FORMAT_COMMANDS};
 use crate::i18n::{self, gettext};
 use crate::settings as keys;
@@ -21,7 +22,8 @@ use rustle_core::db::{Database, OutboxEntry};
 use rustle_core::folders;
 use rustle_core::models::NO_SUBJECT;
 use rustle_core::models::{Account, Attachment, MessageHeader};
-use rustle_core::net::errors::{classify, NetError};
+use rustle_core::net::errors::{classify, Failure, NetError};
+use rustle_core::outbox;
 use rustle_core::secrets;
 use rustle_core::sync;
 use std::cell::{Cell, RefCell};
@@ -2071,49 +2073,55 @@ impl Composer {
             return;
         }
 
+        // Sent from here, it's claimed app-wide like a drained one, so no
+        // drain sends it alongside, and it's filed the same way -- whether
+        // or not this composer is still around to hear back (an inline one
+        // goes with its window). The hold keeps the app up until then.
+        let app = gio::Application::default().and_downcast::<RustleApplication>();
+        let in_flight = app
+            .as_ref()
+            .map(RustleApplication::in_flight)
+            .unwrap_or_default();
+        let hold = app.as_ref().map(|app| app.hold());
+        in_flight.borrow_mut().claim(email_id);
+        let mut sent_header = self.local_header(&account.email, &subject);
+        sent_header.sender_address = account.email.clone();
+        sent_header.preview = subject.clone();
+        let job = outbox::Job {
+            email_id,
+            recipients,
+            raw,
+            sent_header,
+        };
         self.set_sending(true);
         let job_account = account.clone();
-        let job_raw = raw.clone();
-        let job_recipients = recipients.clone();
-        let job_subject = subject.clone();
+        let db = self.db();
+        let composer = self.downgrade();
         workers::run(
             move || {
-                let sent = send_job(&job_account, &job_subject, &job_recipients, &job_raw);
+                let attempt = send_job(&job_account, job);
                 if let Some((Some(draft_account), message_id)) = &finished_draft {
                     discard_draft_job(draft_account, message_id);
                 }
-                sent
+                attempt
             },
-            glib::clone!(
-                #[weak(rename_to = window)]
-                self,
-                move |result: Result<(), String>| match result {
-                    Ok(()) => window.on_send_done(&account, email_id, &subject, &raw),
-                    Err(message) => window.on_send_failed(&message),
+            move |attempt: outbox::Attempt| {
+                let settled = outbox::settle(
+                    &db.borrow(),
+                    &mut in_flight.borrow_mut(),
+                    account.id,
+                    vec![attempt],
+                );
+                drop(hold);
+                let Some(composer) = composer.upgrade() else {
+                    return;
+                };
+                match settled.errors.first() {
+                    Some(error) => composer.on_send_failed(&i18n::failure_message(error)),
+                    None => composer.finish(),
                 }
-            ),
+            },
         );
-    }
-
-    fn on_send_done(&self, account: &Account, email_id: i64, subject: &str, raw: &[u8]) {
-        let db = self.db();
-        let db = db.borrow();
-        let filed = db.delete_email(email_id).and_then(|_| {
-            let sent = db.sent_folder(account.id)?;
-            let mut header = self.local_header(&account.email, subject);
-            header.sender_address = account.email.clone();
-            header.preview = subject.to_string();
-            let row = db.save_email(sent.id, &header)?;
-            db.save_raw_message(row.id, raw)
-        });
-        if let Err(error) = filed {
-            log::error!(
-                "could not file the sent copy for {}: {error}",
-                account.email
-            );
-        }
-        drop(db);
-        self.finish();
     }
 
     fn on_send_failed(&self, message: &str) {
@@ -2172,27 +2180,34 @@ fn clear_box(container: &gtk::Box) {
 }
 
 /// Runs on the worker thread: network only, no widgets, no database.
-fn send_job(
-    account: &Account,
-    subject: &str,
-    recipients: &[String],
-    raw: &[u8],
-) -> Result<(), String> {
+fn send_job(account: &Account, job: outbox::Job) -> outbox::Attempt {
     let Some(credential) = secrets::smtp_credential_for(account) else {
         log::warn!("could not sign in to account {}", account.email);
-        return Err(gettext("Could not sign in to this account."));
+        return outbox::Attempt {
+            job,
+            error: Some(Failure::NoCredential),
+        };
     };
-    sync::send_message(account, &credential, &account.email, recipients, raw).map_err(
-        |error: NetError| {
-            log::error!(
-                "could not send {subject:?} to {} via {} (account {}): {error}",
-                recipients.join(", "),
-                account.smtp_host,
-                account.email
-            );
-            i18n::failure_message(&classify(&error, &account.smtp_host))
-        },
+    let error = sync::send_message(
+        account,
+        &credential,
+        &account.email,
+        &job.recipients,
+        &job.raw,
     )
+    .err()
+    .map(|error: NetError| {
+        log::error!(
+            "could not send message {} ({:?}) to {} via {} (account {}): {error}",
+            job.email_id,
+            job.sent_header.subject,
+            job.recipients.join(", "),
+            account.smtp_host,
+            account.email
+        );
+        classify(&error, &account.smtp_host)
+    });
+    outbox::Attempt { job, error }
 }
 
 /// Runs on the worker thread: file a draft on the server.

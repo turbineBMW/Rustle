@@ -80,7 +80,7 @@ impl MainWindow {
     /// Take a message back out of the Outbox and into the composer, as it
     /// was when Send was pressed. Not once it's on its way.
     pub(super) fn unsend(&self, email_id: i64) {
-        if self.state().sending_ids.contains(&email_id) {
+        if self.in_flight().borrow().contains(email_id) {
             self.toast(&gettext("It's already on its way."));
             return;
         }
