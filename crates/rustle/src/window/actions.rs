@@ -230,11 +230,6 @@ impl MainWindow {
             FlagField::Pinned => mail.is_pinned,
         };
         let value = !emails.iter().any(|email| email.with(read));
-        let keep: Vec<i64> = if emails.len() == 1 {
-            vec![emails[0].id()]
-        } else {
-            Vec::new()
-        };
         {
             let db = self.db();
             let db = db.borrow();
@@ -260,7 +255,7 @@ impl MainWindow {
                 });
             }
         }
-        self.after_flag_change(&keep);
+        self.after_flag_change();
 
         // One STORE per mailbox rather than one per message: in the unified
         // inbox a selection can span several accounts. The queue sends it,
@@ -302,10 +297,11 @@ impl MainWindow {
     }
 
     /// Update badges and the list after a flag change, keeping the
-    /// email selected so the reader doesn't reload.
-    fn after_flag_change(&self, keep: &[i64]) {
+    /// selection as it was so the reader doesn't reload. Not the flagged
+    /// emails: a notification's Mark Read flags one nobody selected.
+    fn after_flag_change(&self) {
         self.reload_folders();
-        self.refresh_emails(keep);
+        self.refresh_keeping_selection();
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.
