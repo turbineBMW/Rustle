@@ -26,6 +26,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 fn main() -> glib::ExitCode {
+    prefer_gl_renderer();
     configure_logging();
     i18n::init();
 
@@ -40,6 +41,20 @@ fn main() -> glib::ExitCode {
 
     let app = application::RustleApplication::new();
     app.run()
+}
+
+/// Draw with GTK's GL renderer unless `GSK_RENDERER` says otherwise.
+///
+/// WebKitGTK 2.54 hands its frames over as dmabufs in whatever layout the
+/// GPU likes best; on Intel Xe2/Xe3 that's a compressed (CCS) modifier the
+/// Vulkan driver won't import. GTK's default Vulkan renderer then copies
+/// every frame through a side GL context, and once that context fails to
+/// go current the reader and composer stay blank. The GL renderer imports
+/// the same buffers directly. Runs first, before anything starts a thread.
+fn prefer_gl_renderer() {
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
 }
 
 /// Log to stderr. WARNING by default so a normal run stays quiet;
