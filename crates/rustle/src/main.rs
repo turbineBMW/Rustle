@@ -26,6 +26,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 fn main() -> glib::ExitCode {
+    avoid_dmabuf_views();
     configure_logging();
     i18n::init();
 
@@ -40,6 +41,23 @@ fn main() -> glib::ExitCode {
 
     let app = application::RustleApplication::new();
     app.run()
+}
+
+/// Have WebKit hand its frames to GTK in shared memory, not dmabufs, unless
+/// `WEBKIT_DMABUF_RENDERER_FORCE_SHM` is already set.
+///
+/// WebKitGTK 2.54 picks the GPU's favourite buffer layout; on Intel Xe2/Xe3
+/// that's a compressed (CCS) modifier GTK 4.24's Vulkan renderer can't
+/// import, so it falls back to downloading every frame through a GL
+/// context. After a few minutes that context stops going current: the
+/// reader and composer go blank, and under `GSK_RENDERER=gl` GTK crashes
+/// in `gsk_gl_renderer_get_backbuffer`. Shared memory keeps GL out of the
+/// UI process at the cost of a copy per frame, which a mail view can
+/// afford. Runs first, before anything starts a thread.
+fn avoid_dmabuf_views() {
+    if std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none() {
+        std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+    }
 }
 
 /// Log to stderr. WARNING by default so a normal run stays quiet;
