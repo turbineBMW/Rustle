@@ -274,12 +274,17 @@ impl MainWindow {
     /// recycles a handful of EmailRow widgets as you scroll.
     pub(super) fn setup_email_list(&self) {
         let imp = self.imp();
+        // Deferred, never inline: this handler runs before the list view's
+        // own, and following the selection can refresh the list (opening an
+        // email marks it read). Splicing the model inside the emission
+        // leaves GTK's handler walking the old range over rows that are
+        // gone, off the end of its tiles, and it segfaults.
         self.selection().connect_selection_changed(glib::clone!(
             #[weak(rename_to = window)]
             self,
             move |_, _, _| {
                 if !window.state().is_selection_update_in_progress {
-                    window.update_reader();
+                    window.queue_reader_update();
                 }
             }
         ));

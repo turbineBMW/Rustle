@@ -83,6 +83,12 @@ po/                        rustle.pot (`just pot` regenerates it) and <lang>.po;
   `Ref` across a call that may need `state_mut()`. Bind to a local before an
   `if let`/`match`: a temporary in the scrutinee lives for the whole block. This crashed
   the first run; grep for `if let .* self.state()` before adding code.
+- **List models are never changed from inside a model signal.** A handler for
+  `selection-changed` or `items-changed` on the email or folder list must not splice
+  the stores, call `set_selection`/`unselect_all`, or anything that refreshes the list
+  (`refresh_emails`, `after_flag_change`, `reload_folders`); GTK's own list handler
+  runs after ours in the same emission and segfaults on the stale range. Defer such
+  work with an idle, as `queue_reader_update` does.
 - **Unified inbox:** `View::UnifiedInbox` shows every account's inbox. Per-account
   actions resolve the account from the email's `folder_id` via `account_for_folder`;
   nothing assumes one "current account". Moves are grouped by source folder (one

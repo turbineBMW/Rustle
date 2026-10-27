@@ -97,6 +97,31 @@ impl MainWindow {
         }));
     }
 
+    /// Follow the selection once the main loop is back in charge, so that
+    /// whatever `update_reader` does to the list (a refresh after marking the
+    /// opened email read) happens outside the `selection-changed` emission
+    /// that asked for it. Runs ahead of the next frame, and once however
+    /// many changes land before then.
+    pub(super) fn queue_reader_update(&self) {
+        if std::mem::replace(&mut self.state_mut().is_reader_update_pending, true) {
+            return;
+        }
+        glib::idle_add_local_full(
+            glib::Priority::DEFAULT,
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                #[upgrade_or]
+                glib::ControlFlow::Break,
+                move || {
+                    window.state_mut().is_reader_update_pending = false;
+                    window.update_reader();
+                    glib::ControlFlow::Break
+                }
+            ),
+        );
+    }
+
     pub(super) fn update_reader(&self) {
         // The email store only fills once a mail view is loaded, and
         // there is nothing to read before then.
