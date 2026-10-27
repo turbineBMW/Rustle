@@ -133,6 +133,9 @@ pub struct State {
     pub rendered_id: Option<i64>,
     pub is_folder_refresh_suppressed: bool,
     pub is_selection_update_in_progress: bool,
+    /// `queue_reader_update` has an idle waiting; further selection changes
+    /// before it runs are folded into it.
+    pub is_reader_update_pending: bool,
     /// A row's context menu is open on that row's widget: rebuilding the
     /// list would take the widget, and the menu, away. A refresh asked for
     /// meanwhile waits for the menu to close.
