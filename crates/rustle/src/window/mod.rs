@@ -475,6 +475,7 @@ impl MainWindow {
         ));
         let _ = imp.network.set(network);
         window.watch_for_resume();
+        window.pace_bridge_with_focus();
 
         window.build_mail_models();
         // After the models: the phone layout follows the list's selection.

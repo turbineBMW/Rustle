@@ -9,21 +9,37 @@
 //! it is already serving the port, and the built-in one stays out of its
 //! way; otherwise it runs on a thread of its own here, for as long as
 //! Rustle does.
+//!
+//! Graph has no push a local bridge can use, so the bridge polls the inbox,
+//! and the built-in one sets that pace itself rather than taking the file's:
+//! fast while the window has focus, slower in the background, and a poll
+//! outright when focus comes back, for the mail the user came to look for.
 
 use anyhow::{Context, Result};
 use graphmail_bridge::config::{AppPaths, Config};
 use graphmail_bridge::service::{self, Runtime};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+/// How often the bridge asks Graph for new inbox mail while the window has
+/// focus, and while it doesn't. The file's `inbox_poll_secs` still wins
+/// when it is faster.
+const FOCUSED_POLL: Duration = Duration::from_secs(15);
+const BACKGROUND_POLL: Duration = Duration::from_secs(60);
 
 struct Running {
     stop: tokio::sync::oneshot::Sender<()>,
     thread: JoinHandle<()>,
+    runtime: Arc<Runtime>,
 }
 
 static RUNNING: LazyLock<Mutex<Option<Running>>> = LazyLock::new(|| Mutex::new(None));
+/// The window's last reported focus, so a bridge started later begins at
+/// the right pace.
+static FOCUSED: AtomicBool = AtomicBool::new(false);
 
 /// The bridge's configuration, when it has accounts to serve.
 fn configured() -> Option<(AppPaths, Config)> {
@@ -82,8 +98,39 @@ pub fn stop() {
     }
 }
 
+/// The window gained or lost focus: poll faster while someone is looking,
+/// and check the inbox straight away when they come back to it.
+pub fn set_window_focused(is_focused: bool) {
+    let was_focused = FOCUSED.swap(is_focused, Ordering::SeqCst);
+    let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(running) = running.as_ref() else {
+        return;
+    };
+    let runtime = &running.runtime;
+    runtime.set_inbox_poll(inbox_poll(runtime.config.sync.inbox_poll_secs, is_focused));
+    if is_focused && !was_focused {
+        running.runtime.sync_now();
+    }
+}
+
+/// The inbox pace for the window's focus, never slower than the file's
+/// `inbox_poll_secs` asks.
+fn inbox_poll(file_secs: u64, is_focused: bool) -> Duration {
+    let wanted = if is_focused {
+        FOCUSED_POLL
+    } else {
+        BACKGROUND_POLL
+    };
+    wanted.min(Duration::from_secs(file_secs))
+}
+
 fn spawn(paths: AppPaths, config: Config) -> Result<Running> {
     let runtime = Runtime::load(config, &paths)?;
+    runtime.set_inbox_poll(inbox_poll(
+        runtime.config.sync.inbox_poll_secs,
+        FOCUSED.load(Ordering::SeqCst),
+    ));
+    let served = runtime.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let thread = std::thread::Builder::new()
         .name("graphmail-bridge".into())
@@ -102,7 +149,7 @@ fn spawn(paths: AppPaths, config: Config) -> Result<Running> {
             };
             tokio.block_on(async move {
                 tokio::select! {
-                    served = service::serve(runtime) => {
+                    served = service::serve(served) => {
                         if let Err(error) = served {
                             log::error!("the built-in graphmail-bridge stopped: {error:#}");
                         }
@@ -113,8 +160,15 @@ fn spawn(paths: AppPaths, config: Config) -> Result<Running> {
             // Dropping the runtime ends the bridge's sync tasks with it.
         })
         .context("could not start the bridge thread")?;
-    log::info!("started the built-in graphmail-bridge");
-    Ok(Running { stop, thread })
+    log::info!(
+        "started the built-in graphmail-bridge; polling the inbox every {}s",
+        runtime.inbox_poll().as_secs()
+    );
+    Ok(Running {
+        stop,
+        thread,
+        runtime,
+    })
 }
 
 /// One Microsoft 365 account known to GNOME Online Accounts.
@@ -211,7 +265,16 @@ fn name_for(email: &str, taken: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::name_for;
+    use super::{inbox_poll, name_for, BACKGROUND_POLL, FOCUSED_POLL};
+    use std::time::Duration;
+
+    #[test]
+    fn focus_speeds_the_poll_up_and_the_file_can_only_speed_it_further() {
+        assert_eq!(inbox_poll(60, true), FOCUSED_POLL);
+        assert_eq!(inbox_poll(60, false), BACKGROUND_POLL);
+        assert_eq!(inbox_poll(300, false), BACKGROUND_POLL);
+        assert_eq!(inbox_poll(15, false), Duration::from_secs(15));
+    }
 
     #[test]
     fn names_come_from_the_domain_and_stay_unique() {

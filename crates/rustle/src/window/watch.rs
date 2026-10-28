@@ -165,6 +165,16 @@ impl MainWindow {
         }
     }
 
+    /// Tell the built-in graphmail bridge whether the window has focus, so
+    /// it polls Microsoft Graph faster while someone is looking at the mail
+    /// and checks the inbox the moment they come back to it.
+    pub(super) fn pace_bridge_with_focus(&self) {
+        #[cfg(feature = "graph")]
+        self.connect_is_active_notify(|window| {
+            crate::bridge::set_window_focused(window.is_active());
+        });
+    }
+
     /// Listen for logind's resume. A failure here only costs the fast
     /// reconnect: the watches still notice their dead sockets at the next
     /// timeout.
