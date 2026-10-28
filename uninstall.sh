@@ -48,6 +48,7 @@ rm -f "$SHARE/metainfo/$APP_ID.metainfo.xml"
 for size in 48 64 128 256 512; do
   rm -f "$SHARE/icons/hicolor/${size}x${size}/apps/$APP_ID.png"
 done
+rm -f "$SHARE/icons/hicolor/scalable/apps/$APP_ID.svg"
 rm -f "$SHARE/icons/hicolor/symbolic/apps/$APP_ID-symbolic.svg"
 for mo in "$SHARE"/locale/*/LC_MESSAGES/rustle.mo; do
   if [ -e "$mo" ]; then rm -f "$mo"; fi
