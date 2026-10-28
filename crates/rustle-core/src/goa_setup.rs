@@ -215,14 +215,21 @@ impl Setup {
     }
 }
 
-/// Look over the session bus and PATH. Blocks on D-Bus, so run it off the
-/// main thread.
+/// Look over the session bus and PATH for everything Online Accounts
+/// needs. Blocks on D-Bus, so run it off the main thread.
 pub fn check() -> Setup {
+    check_components(&Component::required_on(Desktop::detect()))
+}
+
+/// Look for just these pieces: the bridge needs the data server and a
+/// keyring, not Online Accounts itself. Blocks on D-Bus.
+pub fn check_components(components: &[Component]) -> Setup {
     let desktop = Desktop::detect();
     let names = bus_names();
     let has_name = |name: &str| names.iter().any(|n| n == name);
-    let missing = Component::required_on(desktop)
-        .into_iter()
+    let missing = components
+        .iter()
+        .copied()
         .filter(|component| match component {
             Component::Daemon => !has_name(GOA_BUS_NAME),
             Component::DataServer => !has_name(crate::eds::BUS_NAME),

@@ -117,6 +117,8 @@ pub enum BannerSource {
     /// Queued changes keep failing to reach the server. Takes the banner
     /// only when nothing else holds it.
     Queue,
+    /// Evolution Data Server, where the accounts live, isn't installed.
+    DataServer,
 }
 
 /// Everything the window mutates. Kept in one `RefCell` behind short

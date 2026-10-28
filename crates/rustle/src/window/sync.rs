@@ -616,8 +616,14 @@ impl MainWindow {
     }
 
     pub(super) fn on_banner_retry(&self) {
-        self.state_mut().banner = None;
+        let source = self.state_mut().banner.take();
         self.imp().connection_banner.set_revealed(false);
+        if source == Some(BannerSource::DataServer) {
+            // Looks for the registry again; the banner comes back if it
+            // still isn't there.
+            self.refresh_accounts_from_eds();
+            return;
+        }
         self.give_queue_another_chance();
         if !self.state().accounts.is_empty() {
             self.sync_all(false);

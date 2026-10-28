@@ -1,9 +1,10 @@
 //! Accounts, and what the composer opens with (window/composer.rs hosts it).
 
-use super::{MainWindow, PAGE_NO_ACCOUNT};
+use super::{BannerSource, MainWindow, PAGE_NO_ACCOUNT};
 use crate::composer::Draft;
 use crate::dialogs::accounts::AccountsDialog;
 use crate::dialogs::add_account::AddAccountDialog;
+use crate::i18n::{self, gettext};
 use crate::workers;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -12,6 +13,7 @@ use gtk::glib;
 use rustle_core::address;
 use rustle_core::compose;
 use rustle_core::eds;
+use rustle_core::goa_setup::{self, Component, Setup};
 use rustle_core::mime::{self, ParsedMessage};
 use rustle_core::models::Account;
 
@@ -77,7 +79,9 @@ impl MainWindow {
     }
 
     /// Bring the accounts in line with EDS. Accounts Rustle still kept
-    /// itself are moved there first, password and all.
+    /// itself are moved there first, password and all. When the registry
+    /// can't be reached because it isn't installed, a banner says so: no
+    /// account can be added until it is.
     pub(super) fn refresh_accounts_from_eds(&self) {
         let outside = self
             .db()
@@ -86,7 +90,10 @@ impl MainWindow {
             .unwrap_or_default();
         workers::run(
             move || {
-                let mut accounts = eds::mail_accounts().map_err(|error| error.to_string())?;
+                let mut accounts = eds::mail_accounts().map_err(|error| {
+                    let setup = goa_setup::check_components(&[Component::DataServer]);
+                    (error.to_string(), setup)
+                })?;
                 for account in outside {
                     let is_in_eds = accounts.iter().any(|found| {
                         (!account.goa_id.is_empty() && found.goa_id == account.goa_id)
@@ -105,18 +112,24 @@ impl MainWindow {
                         ),
                     }
                 }
-                Ok::<_, String>(accounts)
+                Ok::<_, (String, Setup)>(accounts)
             },
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
-                move |result: Result<Vec<eds::MailAccount>, String>| {
+                move |result: Result<Vec<eds::MailAccount>, (String, Setup)>| {
                     let accounts = match result {
-                        Ok(accounts) => accounts,
-                        Err(error) => {
+                        Ok(accounts) => {
+                            window.hide_connection_banner(BannerSource::DataServer);
+                            accounts
+                        }
+                        Err((error, setup)) => {
                             log::warn!(
                                 "could not read accounts from Evolution Data Server: {error}"
                             );
+                            if !setup.is_ready() {
+                                window.show_data_server_banner(&setup);
+                            }
                             return;
                         }
                     };
@@ -148,6 +161,21 @@ impl MainWindow {
                 }
             ),
         );
+    }
+
+    /// Evolution Data Server isn't installed: nothing can be added, and
+    /// anything signed in elsewhere has nowhere to show up.
+    fn show_data_server_banner(&self, setup: &Setup) {
+        let install = setup
+            .install_command()
+            .unwrap_or_else(|| setup.packages().join(" "));
+        let title = i18n::format(
+            &gettext(
+                "Evolution Data Server isn't installed, so Rustle has nowhere to keep accounts. Install it, then check again: {command}",
+            ),
+            &[("command", &install)],
+        );
+        self.show_connection_banner(BannerSource::DataServer, &title, &gettext("Check Again"));
     }
 
     pub(super) fn on_manage_accounts(&self) {
