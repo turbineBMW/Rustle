@@ -11,6 +11,7 @@ pub const LOAD_REMOTE_IMAGES: &str = "load-remote-images";
 pub const LOAD_SENDER_AVATARS: &str = "load-sender-avatars";
 pub const READER_ZOOM: &str = "reader-zoom";
 pub const UNDO_SEND_SECONDS: &str = "undo-send-seconds";
+pub const CONFIRM_SEND_ACCOUNT: &str = "confirm-send-account";
 pub const SINGLE_KEY_SHORTCUTS: &str = "single-key-shortcuts";
 pub const GROUP_CONVERSATIONS: &str = "group-conversations";
 pub const SPELL_CHECK: &str = "spell-check";
