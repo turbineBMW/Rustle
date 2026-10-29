@@ -3,9 +3,11 @@
 //! flag toggle can update the row in place without rebuilding the list.
 
 use gtk::glib;
+use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use rustle_core::models::{Account, Email, Folder};
 use std::cell::RefCell;
+use std::sync::OnceLock;
 
 /// What one row of the folder sidebar stands for.
 #[derive(Clone, Debug)]
@@ -44,7 +46,12 @@ mod imp {
         type Type = super::EmailObject;
     }
 
-    impl ObjectImpl for EmailObject {}
+    impl ObjectImpl for EmailObject {
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
+            SIGNALS.get_or_init(|| vec![glib::subclass::Signal::builder("changed").build()])
+        }
+    }
 }
 
 glib::wrapper! {
@@ -105,6 +112,20 @@ impl EmailObject {
     pub fn update(&self, write: impl FnOnce(&mut Email)) {
         let mut borrowed = self.imp().email.borrow_mut();
         write(borrowed.as_mut().expect("set at construction"));
+    }
+
+    /// Say the email changed in place, so the row bound to it redraws
+    /// without the list being rebuilt.
+    pub fn notify_changed(&self) {
+        self.emit_by_name::<()>("changed", &[]);
+    }
+
+    pub fn connect_changed(&self, handler: impl Fn(&Self) + 'static) -> glib::SignalHandlerId {
+        self.connect_closure(
+            "changed",
+            false,
+            glib::closure_local!(move |object: Self| handler(&object)),
+        )
     }
 
     pub fn get(&self) -> Email {

@@ -4,6 +4,7 @@ use crate::account_colors;
 use crate::account_pictures;
 use crate::avatar_loader::AvatarLoader;
 use crate::i18n;
+use crate::objects::EmailObject;
 use adw::prelude::*;
 use gtk::glib;
 use gtk::pango;
@@ -32,6 +33,8 @@ mod imp {
         pub pinned: Cell<bool>,
         pub email_id: Cell<i64>,
         pub avatars: RefCell<Option<AvatarLoader>>,
+        /// The email this row is bound to, and the handler following it.
+        pub watched: RefCell<Option<(EmailObject, glib::SignalHandlerId)>>,
     }
 
     impl Default for EmailRow {
@@ -81,6 +84,7 @@ mod imp {
                 pinned: Cell::new(false),
                 email_id: Cell::new(0),
                 avatars: RefCell::new(None),
+                watched: RefCell::new(None),
             }
         }
     }
@@ -172,9 +176,7 @@ impl EmailRow {
         } else {
             imp.sender.set_label(name);
         }
-        imp.star.set_visible(email.is_starred);
-        imp.pin.set_visible(email.is_pinned);
-        imp.pinned.set(email.is_pinned);
+        self.show_flags(email);
         imp.date.set_label(&i18n::time_label(&email.date));
         imp.date_value.replace(email.date.to_string());
         imp.subject.set_label(&displayable(&email.subject));
@@ -194,12 +196,41 @@ impl EmailRow {
             }
             account_colors::tag(&imp.account_dot, Some(account.id));
         }
+    }
+
+    /// The parts of a row a flag change touches: the star, the pin and the
+    /// unread highlight.
+    fn show_flags(&self, email: &Email) {
+        let imp = self.imp();
+        imp.star.set_visible(email.is_starred);
+        imp.pin.set_visible(email.is_pinned);
+        imp.pinned.set(email.is_pinned);
         // The list's own row widget wraps this box; tag it too so the
         // highlight covers the full row, edge to edge.
         if email.is_unread {
             self.add_css_class("unread");
         } else {
             self.remove_css_class("unread");
+        }
+    }
+
+    /// Follow `email` while bound to it: a flag it changes shows on this
+    /// row at once, in place. Paired with `unwatch` when the row is unbound,
+    /// since rows are recycled.
+    pub fn watch(&self, email: &EmailObject) {
+        self.unwatch();
+        let row = self.downgrade();
+        let handler = email.connect_changed(move |email| {
+            if let Some(row) = row.upgrade() {
+                email.with(|email| row.show_flags(email));
+            }
+        });
+        self.imp().watched.replace(Some((email.clone(), handler)));
+    }
+
+    pub fn unwatch(&self) {
+        if let Some((email, handler)) = self.imp().watched.take() {
+            email.disconnect(handler);
         }
     }
 

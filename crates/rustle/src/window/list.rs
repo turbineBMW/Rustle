@@ -150,6 +150,47 @@ impl MainWindow {
         }
     }
 
+    /// With the Unread filter on, take the read emails out of the list one
+    /// row at a time rather than rebuilding it -- all but the selected
+    /// ones, so the mail being read stays until the selection moves on.
+    /// Only ever called outside a model signal (see `setup_email_list`).
+    pub(super) fn prune_read_rows(&self) {
+        if !self.imp().unread_button.is_active() {
+            return;
+        }
+        {
+            let mut state = self.state_mut();
+            if state.is_row_menu_open {
+                state.is_refresh_deferred = true;
+                return;
+            }
+        }
+        let keep: HashSet<i64> = self.selected_ids().into_iter().collect();
+        let sections = self.email_sections();
+        let mut section = sections.n_items();
+        while section > 0 {
+            section -= 1;
+            let Some(store) = sections.item(section).and_downcast::<gio::ListStore>() else {
+                continue;
+            };
+            let mut position = store.n_items();
+            while position > 0 {
+                position -= 1;
+                let is_done = store
+                    .item(position)
+                    .and_downcast::<EmailObject>()
+                    .is_some_and(|email| email.with(|c| !c.is_unread && !keep.contains(&c.id)));
+                if is_done {
+                    store.remove(position);
+                }
+            }
+            if store.n_items() == 0 {
+                sections.remove(section);
+            }
+        }
+        self.show_list_or_placeholder();
+    }
+
     /// The email whose row has the keyboard focus, if one has.
     fn focused_email_id(&self) -> Option<i64> {
         let focus = GtkWindowExt::focus(self)?;
@@ -355,8 +396,18 @@ impl MainWindow {
                     None
                 };
                 email.with(|c| row.bind(c, is_outgoing, account.as_ref()));
+                row.watch(&email);
             }
         ));
+        factory.connect_unbind(|_, item| {
+            let row = item
+                .downcast_ref::<gtk::ListItem>()
+                .and_then(|item| item.child())
+                .and_downcast::<EmailRow>();
+            if let Some(row) = row {
+                row.unwatch();
+            }
+        });
         imp.email_list.set_factory(Some(&factory));
 
         // Sections are days (see `day_sections`); each gets a sticky header

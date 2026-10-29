@@ -130,6 +130,8 @@ impl MainWindow {
         }
         // Something else to read: an inline composer makes way for it.
         self.on_selection_moved();
+        // With the Unread filter on, what was read and left behind goes.
+        self.prune_read_rows();
         let imp = self.imp();
         let selected = self.selected_emails();
         self.update_move_menu();
