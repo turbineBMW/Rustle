@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use webkit::prelude::*;
 
 const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
-<html>
+<html class="__SCHEME__">
 <head>
 <meta charset="utf-8">
 <style>
@@ -39,11 +39,12 @@ const EDITOR_PAGE: &str = r#"<!DOCTYPE html>
     color: #5e5c64;
   }
   .signature { color: #5e5c64; }
-  @media (prefers-color-scheme: dark) {
-    body { color: #f6f5f4; }
-    blockquote { border-left-color: #5e5c64; color: #c0bfbc; }
-    .signature { color: #c0bfbc; }
-  }
+  /* Not prefers-color-scheme: WebKit answers that from the desktop's GTK
+     theme, which an Omarchy light theme leaves dark while libadwaita is
+     forced light -- white ink on the light card. See `follow_scheme`. */
+  .dark body { color: #f6f5f4; }
+  .dark blockquote { border-left-color: #5e5c64; color: #c0bfbc; }
+  .dark .signature { color: #c0bfbc; }
 </style>
 <script>
   // Lives in <head>: a script placed after </body> is hoisted into the
@@ -884,13 +885,49 @@ pub fn build_webview(body_html: &str, on_message: impl Fn(&str) + 'static) -> we
         .replace("__FAMILY__", &family)
         .replace("__SIZE__", &size)
         .replace("__ACCENT__", &accent::accent_hex())
+        .replace(
+            "__SCHEME__",
+            scheme_class(adw::StyleManager::default().is_dark()),
+        )
         .replace("__BODY__", body_html)
         .replace(
             "__COMMANDS__",
             &serde_json::to_string(&commands).unwrap_or_else(|_| "[]".into()),
         );
     webview.load_html(&page, None);
+    follow_scheme(&webview);
     webview
+}
+
+fn scheme_class(dark: bool) -> &'static str {
+    if dark {
+        "dark"
+    } else {
+        ""
+    }
+}
+
+/// Flip the page's ink with libadwaita's dark/light, which the transparent
+/// page shows through to; an open draft is not reloaded for it.
+fn follow_scheme(webview: &webkit::WebView) {
+    let manager = adw::StyleManager::default();
+    let handler = manager.connect_dark_notify(glib::clone!(
+        #[weak]
+        webview,
+        move |manager| {
+            let script = format!(
+                "document.documentElement.className = {}",
+                json(scheme_class(manager.is_dark()))
+            );
+            webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+        }
+    ));
+    let handler = std::cell::Cell::new(Some(handler));
+    webview.connect_destroy(move |_| {
+        if let Some(handler) = handler.take() {
+            adw::StyleManager::default().disconnect(handler);
+        }
+    });
 }
 
 /// Keep WebKit's spell checker in step with the `spell-check` key. It is a
