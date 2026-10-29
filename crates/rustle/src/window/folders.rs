@@ -10,7 +10,7 @@ use gtk::gio;
 use gtk::glib;
 use rustle_core::folders::{self, FolderRole};
 use rustle_core::models::{Account, Folder};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 impl MainWindow {
@@ -205,6 +205,24 @@ impl MainWindow {
             .iter()
             .map(|folder| self.unread_badge(folder))
             .sum()
+    }
+
+    /// Redo the badges of `folder_ids` and of the unified inbox after their
+    /// unread counts changed, leaving the rest of the sidebar alone.
+    pub(super) fn refresh_unread_badges(&self, folder_ids: &HashSet<i64>) {
+        for folder_id in folder_ids {
+            let row = self.state().folder_rows.get(folder_id).cloned();
+            let Some(row) = row else {
+                continue;
+            };
+            if let Some((_, folder)) = self.account_for_folder(*folder_id) {
+                row.set_badge(self.unread_badge(&folder));
+            }
+        }
+        let unified_row = self.state().unified_row.clone();
+        if let Some(row) = unified_row {
+            row.set_badge(self.unified_badge());
+        }
     }
 
     /// Select the unified inbox with several accounts, or the one account's

@@ -1027,7 +1027,9 @@ impl Database {
     fn sort_emails(mut emails: Vec<Email>) -> Vec<Email> {
         // Sent time is comparable across accounts and defines the day sections.
         // Arrival order breaks ties; the local ID makes the ordering stable.
-        emails.sort_by_key(|email| {
+        // Cached: the key parses the date, and a unified inbox sorts tens of
+        // thousands of rows on every refresh.
+        emails.sort_by_cached_key(|email| {
             std::cmp::Reverse((
                 email.is_pinned,
                 crate::dates::sort_key(&email.date),

@@ -3,6 +3,7 @@
 use super::{MainWindow, MAIL_ACTIONS, REPLY_FORWARD_ACTIONS};
 use crate::i18n::gettext;
 use crate::objects::EmailObject;
+use crate::settings as keys;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::gdk;
@@ -16,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 /// A window method bound to an action name.
 type ActionHandler = fn(&MainWindow);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum FlagField {
     Unread,
     Starred,
@@ -269,7 +270,7 @@ impl MainWindow {
                 });
             }
         }
-        self.after_flag_change();
+        self.after_flag_change(emails, field);
 
         // One STORE per mailbox rather than one per message: in the unified
         // inbox a selection can span several accounts. The queue sends it,
@@ -310,12 +311,32 @@ impl MainWindow {
         }
     }
 
-    /// Update badges and the list after a flag change, keeping the
-    /// selection as it was so the reader doesn't reload. Not the flagged
-    /// emails: a notification's Mark Read flags one nobody selected.
-    fn after_flag_change(&self) {
-        self.reload_folders();
-        self.refresh_keeping_selection();
+    /// Show a flag change: on the rows in place, and on the unread badges
+    /// of the folders it touched. The list isn't rebuilt -- a unified inbox
+    /// runs to tens of thousands of rows, and rebuilding it on every opened
+    /// message froze the window and lost its scroll position. The two
+    /// changes that do reorder or regroup rows still rebuild: pinning, which
+    /// moves a message to the top, and a flag on a grouped conversation,
+    /// whose row stands for the rest of its thread.
+    fn after_flag_change(&self, emails: &[EmailObject], field: FlagField) {
+        let is_grouped = self.settings().boolean(keys::GROUP_CONVERSATIONS)
+            && emails.iter().any(|email| email.with(|c| c.thread_size > 1));
+        if field == FlagField::Pinned || is_grouped {
+            self.reload_folders();
+            self.refresh_keeping_selection();
+            return;
+        }
+        for email in emails {
+            email.notify_changed();
+        }
+        if field == FlagField::Unread {
+            let folder_ids: HashSet<i64> = emails
+                .iter()
+                .map(|email| email.with(|c| c.folder_id))
+                .collect();
+            self.refresh_unread_badges(&folder_ids);
+            self.prune_read_rows();
+        }
     }
 
     /// Select an unselected right-clicked row, then pop up its actions menu.

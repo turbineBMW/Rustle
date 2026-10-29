@@ -151,7 +151,15 @@ impl MainWindow {
         }
         self.update_queue_status();
 
-        let is_changed = !replay.outcomes.is_empty() || replay.interrupted.is_some();
+        // A flag the server took was shown when it was queued; a move, or
+        // anything refused, leaves the list and badges to catch up.
+        let is_changed = replay.interrupted.is_some()
+            || replay.outcomes.iter().any(|(id, outcome)| {
+                !matches!(
+                    (op(*id).map(|op| &op.change), outcome),
+                    (Some(Change::Flag { .. }), Outcome::Done(_))
+                )
+            });
         if is_changed {
             self.reload_folders();
             self.refresh_keeping_selection();

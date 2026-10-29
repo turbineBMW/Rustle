@@ -179,7 +179,7 @@ impl FolderRow {
         )));
     }
 
-    fn set_badge(&self, unread_count: i64) {
+    pub fn set_badge(&self, unread_count: i64) {
         let badge = &self.imp().badge;
         // The row may have been an account's, with a pending-changes tooltip.
         badge.set_tooltip_text(None);
