@@ -517,7 +517,7 @@ impl Composer {
                     match at {
                         Some(at) if at > Local::now() => {
                             window.imp().scheduled_for.set(Some(at));
-                            window.on_send_clicked();
+                            window.on_send_requested();
                         }
                         _ => window.toast(&gettext("Pick a time that hasn't passed yet.")),
                     }

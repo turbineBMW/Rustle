@@ -216,6 +216,7 @@ enum FromItem {
     Row,
 }
 
+mod from_check;
 mod tools;
 pub use tools::QueuedSend;
 
@@ -491,7 +492,7 @@ impl Composer {
         imp.send_button.connect_clicked(glib::clone!(
             #[weak]
             window,
-            move |_| window.on_send_clicked()
+            move |_| window.on_send_requested()
         ));
         imp.attach_button.connect_clicked(glib::clone!(
             #[weak]

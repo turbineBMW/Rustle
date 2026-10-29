@@ -32,6 +32,11 @@
 			<summary>Undo Send</summary>
 			<description>How many seconds a sent message waits in the Outbox, so it can be taken back. 0 sends at once.</description>
 		</key>
+		<key name="confirm-send-account" type="b">
+			<default>true</default>
+			<summary>Confirm the sending account</summary>
+			<description>Before a new message is sent, ask which account it goes out from. Replies are not asked about; they go from the account the original arrived in.</description>
+		</key>
 		<key name="reader-zoom" type="d">
 			<range min="0.5" max="3.0"/>
 			<default>1.0</default>

@@ -43,6 +43,11 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
         };
       }
 
+      Adw.SwitchRow confirm_from_row {
+        title: _("Confirm Sending Account");
+        subtitle: _("Ask which account a new message goes out from before sending it");
+      }
+
       Adw.SwitchRow background_row {
         title: _("Run in Background");
         subtitle: _("Keep checking for mail after the window is closed");

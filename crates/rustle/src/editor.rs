@@ -982,6 +982,13 @@ pub fn exec(webview: &webkit::WebView, command: &str, argument: Option<&str>) {
     webview.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
 }
 
+/// Call `on_done` once the scripts already sent to the editor have run and
+/// what they posted back has arrived: scripts run in order, and their
+/// messages travel the same connection as this one's answer, ahead of it.
+pub fn after_pending(webview: &webkit::WebView, on_done: impl FnOnce() + 'static) {
+    webview.evaluate_javascript("0", None, None, gio::Cancellable::NONE, move |_| on_done());
+}
+
 /// The HTML of the part of the draft the user wrote (see `rustleOwnHtml`).
 pub fn own_html(webview: &webkit::WebView, on_done: impl FnOnce(String) + 'static) {
     webview.evaluate_javascript(
