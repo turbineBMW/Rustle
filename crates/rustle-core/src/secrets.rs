@@ -1,6 +1,7 @@
 //! How an account signs in. Accounts live in Evolution Data Server: an
 //! OAuth one gets a fresh token from the registry for every connection, a
-//! password one reads the keyring entry EDS keeps for the account's source.
+//! password one reads the keyring entry EDS keeps for the account's source,
+//! or asks Online Accounts when the account is one of its IMAP/SMTP ones.
 //! IMAP and SMTP sign in separately, since EDS keeps them apart.
 //!
 //! Called from worker threads: everything here blocks on IPC, and a token
@@ -88,14 +89,24 @@ fn find(attributes: &HashMap<&str, &str>) -> Result<Option<String>> {
 
 /// The password EDS keeps for a source.
 fn source_password(uid: &str) -> Result<Option<String>> {
+    remembered(uid, || {
+        if keeper::available() {
+            keeper::lookup(uid)
+        } else {
+            find(&HashMap::from([("e-source-uid", uid)]))
+        }
+    })
+}
+
+/// The password for a source, read once with `lookup` and then kept.
+fn remembered<E>(
+    uid: &str,
+    lookup: impl FnOnce() -> std::result::Result<Option<String>, E>,
+) -> std::result::Result<Option<String>, E> {
     if let Some(password) = lock(&PASSWORDS).as_ref().and_then(|p| p.get(uid)) {
         return Ok(Some(password.clone()));
     }
-    let password = if keeper::available() {
-        keeper::lookup(uid)?
-    } else {
-        find(&HashMap::from([("e-source-uid", uid)]))?
-    };
+    let password = lookup()?;
     if let Some(password) = &password {
         lock(&PASSWORDS)
             .get_or_insert_with(HashMap::new)
@@ -195,6 +206,9 @@ pub fn forget_password(account: &Account) {
         ] {
             passwords.remove(uid.as_str());
         }
+        for id in GOA_PASSWORD_IDS {
+            passwords.remove(&goa_cache_key(&account.goa_id, id));
+        }
     }
 }
 
@@ -208,6 +222,7 @@ pub fn credential_for(account: &Account) -> Option<Credential> {
         &account.eds_uid,
         &account.imap_user,
         account.imap_auth,
+        false,
     )
 }
 
@@ -221,6 +236,7 @@ pub fn smtp_credential_for(account: &Account) -> Option<Credential> {
         &account.eds_smtp_uid,
         &account.smtp_user,
         account.smtp_auth,
+        true,
     )
 }
 
@@ -246,10 +262,16 @@ fn unlinked_credential(account: &Account, is_smtp: bool) -> Option<Credential> {
         .into_iter()
         .find(|found| found.goa_id == account.goa_id)?;
     let server = if is_smtp { &found.smtp } else { &found.imap };
-    credential(account, &server.uid, &server.user, server.auth)
+    credential(account, &server.uid, &server.user, server.auth, is_smtp)
 }
 
-fn credential(account: &Account, uid: &str, user: &str, auth: Auth) -> Option<Credential> {
+fn credential(
+    account: &Account,
+    uid: &str,
+    user: &str,
+    auth: Auth,
+    is_smtp: bool,
+) -> Option<Credential> {
     let user = if user.is_empty() {
         account.email.clone()
     } else {
@@ -273,6 +295,26 @@ fn credential(account: &Account, uid: &str, user: &str, auth: Auth) -> Option<Cr
                 None
             }
         },
+        // An IMAP/SMTP account set up in Online Accounts keeps its passwords
+        // there, and EDS files no copy.
+        Auth::Password if !account.goa_id.is_empty() => {
+            let id = GOA_PASSWORD_IDS[usize::from(is_smtp)];
+            let key = goa_cache_key(&account.goa_id, id);
+            match remembered(&key, || goa_password(&account.goa_id, id)) {
+                Ok(Some(password)) => Some(Credential::password(user, password)),
+                Ok(None) => {
+                    warn!("Online Accounts has no {id} for account {}", account.email);
+                    None
+                }
+                Err(error) => {
+                    warn!(
+                        "could not get the {id} for account {} from Online Accounts: {error}",
+                        account.email
+                    );
+                    None
+                }
+            }
+        }
         // EDS keeps a password with the source that asked for it, or once
         // for a whole account at the top of its tree.
         Auth::Password => {
@@ -296,6 +338,37 @@ fn credential(account: &Account, uid: &str, user: &str, auth: Auth) -> Option<Cr
             None
         }
     }
+}
+
+/// The passwords an Online Accounts IMAP/SMTP account keeps: IMAP, then SMTP.
+const GOA_PASSWORD_IDS: [&str; 2] = ["imap-password", "smtp-password"];
+
+/// Where a password from Online Accounts is remembered: by its account and
+/// id, since the EDS source it reached us through may not be linked yet.
+fn goa_cache_key(account_id: &str, id: &str) -> String {
+    format!("goa:{account_id}:{id}")
+}
+
+/// A password Online Accounts keeps for one of its accounts (`id` is
+/// `imap-password` or `smtp-password`), asked for the way EDS asks.
+fn goa_password(account_id: &str, id: &str) -> std::result::Result<Option<String>, glib::Error> {
+    use crate::net::NET_TIMEOUT;
+    use gio::prelude::*;
+
+    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
+    let reply = bus.call_sync(
+        Some("org.gnome.OnlineAccounts"),
+        &format!("/org/gnome/OnlineAccounts/Accounts/{account_id}"),
+        "org.gnome.OnlineAccounts.PasswordBased",
+        "GetPassword",
+        Some(&(id,).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        NET_TIMEOUT.as_millis() as i32,
+        gio::Cancellable::NONE,
+    )?;
+    let password = reply.child_value(0).str().unwrap_or("").to_string();
+    Ok(Some(password).filter(|password| !password.is_empty()))
 }
 
 /// omarchy-mobile's keeper of EDS's passwords, for sandboxed apps: the
