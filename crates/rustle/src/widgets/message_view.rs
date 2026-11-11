@@ -58,6 +58,9 @@ const SMALL_GUTTER: i32 = 6;
 const EDGE: i32 = 24;
 const AVATAR_SIZE: i32 = 40;
 const ATTACHMENT_WIDTH: i32 = 260;
+const BUSY_SPINNER_SIZE: i32 = 32;
+/// How long a message may take before the pane says it's loading.
+const BUSY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 thread_local! {
     // An unrelated WebView costs its own web process: ~300 MB and up to
@@ -103,7 +106,7 @@ struct Inner {
     on_rendered: Option<RenderedCallback>,
     should_load_remote_images: bool,
     is_released: bool,
-    placeholder: Option<gtk::Label>,
+    placeholder: Option<gtk::Box>,
     webview: Option<webkit::WebView>,
     text_label: Option<gtk::Label>,
     /// The reader's zoom: the WebKit zoom level, or the text's scale.
@@ -265,11 +268,7 @@ impl MessageView {
     fn load(&self) {
         let (email, handlers) = {
             let mut inner = self.inner.borrow_mut();
-            let placeholder = gtk::Label::builder()
-                .label(gettext("Loading…"))
-                .margin_top(GUTTER)
-                .css_classes(["dim-label"])
-                .build();
+            let placeholder = busy_placeholder(&gettext("Loading…"));
             self.body.append(&placeholder);
             inner.placeholder = Some(placeholder);
             (inner.email.clone(), inner.handlers.clone())
@@ -317,11 +316,7 @@ impl MessageView {
     /// Decrypt on a worker (gpg may wait for a passphrase), then show what
     /// was inside -- held in memory only; the stored copy stays encrypted.
     fn decrypt_then_render(&self, raw: Vec<u8>) {
-        let placeholder = gtk::Label::builder()
-            .label(gettext("Decrypting…"))
-            .margin_top(GUTTER)
-            .css_classes(["dim-label"])
-            .build();
+        let placeholder = busy_placeholder(&gettext("Decrypting…"));
         self.body.append(&placeholder);
         self.inner.borrow_mut().placeholder = Some(placeholder);
         let job = raw.clone();
@@ -858,6 +853,42 @@ impl MessageView {
         inner.raw = None;
         inner.parsed = None;
     }
+}
+
+/// What fills the body while the message is on its way: a spinner over
+/// `text`, in the middle of the pane where the message will be. The header
+/// above it is already filled in, so without this a slow fetch looks like
+/// an empty message. It appears after a moment, not at once: a message
+/// that arrives straight away never flashes it.
+fn busy_placeholder(text: &str) -> gtk::Box {
+    let placeholder = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(GUTTER)
+        .vexpand(true)
+        .valign(gtk::Align::Center)
+        .halign(gtk::Align::Center)
+        .opacity(0.0)
+        .build();
+    placeholder.append(
+        &adw::Spinner::builder()
+            .width_request(BUSY_SPINNER_SIZE)
+            .height_request(BUSY_SPINNER_SIZE)
+            .halign(gtk::Align::Center)
+            .build(),
+    );
+    placeholder.append(
+        &gtk::Label::builder()
+            .label(text)
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    let shown = placeholder.downgrade();
+    glib::timeout_add_local_once(BUSY_DELAY, move || {
+        if let Some(placeholder) = shown.upgrade() {
+            placeholder.set_opacity(1.0);
+        }
+    });
+    placeholder
 }
 
 /// What OpenPGP found, and whether it's a warning: (text, is_warning).
