@@ -17,16 +17,24 @@ use rustle_core::net::errors::{classify, Failure};
 use rustle_core::secrets;
 use rustle_core::sync::{self, BackfillFolder, BackfillResult, BACKFILL_LIMIT};
 use std::collections::{HashSet, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Breathing room between batches, so the server and the main loop see a
 /// steady trickle rather than a flood.
 const BATCH_PAUSE: Duration = Duration::from_millis(500);
 
+/// How long a finished sweep stands. Until then a sync only sends the sweep
+/// back to the folder it just found short; walking every folder of the
+/// account after every poll, to learn again that nothing is missing, cost a
+/// SELECT and a full UID SEARCH apiece.
+const FULL_SWEEP_EVERY: Duration = Duration::from_secs(30 * 60);
+
 /// One account's sweep: the folders still to finish, front one in progress.
 #[derive(Debug, Default)]
 pub struct Backfill {
     queue: VecDeque<i64>,
+    /// Sent after one folder only: finishing says nothing of the rest.
+    is_partial: bool,
 }
 
 impl Backfill {
@@ -53,6 +61,7 @@ impl MainWindow {
     /// The preference flipped: start every account, or let the running
     /// sweeps find their entry gone when their batch returns.
     pub(super) fn start_all_backfills(&self) {
+        self.state_mut().backfill_finished.clear();
         if !self.downloads_all_mail() {
             self.state_mut().backfills.clear();
             return;
@@ -64,12 +73,33 @@ impl MainWindow {
     }
 
     /// Begin a sweep of the account unless one is already running. `first`
-    /// is the folder to fill before the inbox: the one the user is looking at.
+    /// is the folder to fill before the inbox: the one the user is looking
+    /// at, or one a sync just found short. Soon after a sweep that found
+    /// everything complete, `first` is the only folder swept.
     pub(super) fn start_backfill(&self, account: &Account, first: Option<i64>) {
         if !self.downloads_all_mail() || !self.state().is_online || self.imp().is_closing.get() {
             return;
         }
         if self.state().backfills.contains_key(&account.id) {
+            return;
+        }
+        let is_fresh = self
+            .state()
+            .backfill_finished
+            .get(&account.id)
+            .is_some_and(|at| at.elapsed() < FULL_SWEEP_EVERY);
+        if is_fresh {
+            let Some(first) = first else {
+                return;
+            };
+            self.state_mut().backfills.insert(
+                account.id,
+                Backfill {
+                    queue: VecDeque::from([first]),
+                    is_partial: true,
+                },
+            );
+            self.run_backfill_batch(account);
             return;
         }
         let folders = self
@@ -101,9 +131,13 @@ impl MainWindow {
         if queue.is_empty() {
             return;
         }
-        self.state_mut()
-            .backfills
-            .insert(account.id, Backfill { queue });
+        self.state_mut().backfills.insert(
+            account.id,
+            Backfill {
+                queue,
+                is_partial: false,
+            },
+        );
         self.run_backfill_batch(account);
     }
 
@@ -188,7 +222,7 @@ impl MainWindow {
             }
             if let Some(target) = target {
                 fetched_folder = Some(target.id);
-                self.guard_fetched(&db, target.id, &mut result.messages);
+                self.guard_fetched(&db, target.id, &mut result.messages, &mut Vec::new());
                 for message in &result.messages {
                     match db.save_incoming_email(target.id, message) {
                         Ok(_) => saved += 1,
@@ -242,8 +276,13 @@ impl MainWindow {
             .get(&account.id)
             .is_none_or(|sweep| sweep.queue.is_empty());
         if finished {
-            self.state_mut().backfills.remove(&account.id);
-            log::info!("every folder of {} is downloaded", account.email);
+            let sweep = self.state_mut().backfills.remove(&account.id);
+            if sweep.is_some_and(|sweep| !sweep.is_partial) {
+                self.state_mut()
+                    .backfill_finished
+                    .insert(account.id, Instant::now());
+                log::info!("every folder of {} is downloaded", account.email);
+            }
             return;
         }
         if !self.downloads_all_mail() || !self.state().is_online || self.imp().is_closing.get() {

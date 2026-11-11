@@ -3,7 +3,7 @@
 use super::auth::{Credential, Mechanism};
 use super::errors::NetError;
 use super::{is_loopback, NET_TIMEOUT};
-use crate::models::Security;
+use crate::models::{MessageFlags, Security};
 use ::imap::extensions::idle::WaitOutcome;
 use ::imap::types::{Flag, UnsolicitedResponse};
 use ::imap::Session;
@@ -498,20 +498,38 @@ impl ImapSession {
         Ok(destination_uid)
     }
 
-    /// Fetch UID + flags + a few headers for a window of `limit` messages,
-    /// `offset` messages back from the newest. offset=0 is the newest page.
-    pub fn fetch_recent_headers(
+    /// UID + flags for a window of `limit` messages, `offset` messages back
+    /// from the newest (offset=0 is the newest page): what a sync asks
+    /// first, so that only mail it has never seen costs a header fetch.
+    /// The bool is whether the message is marked \Deleted.
+    pub fn fetch_recent_flags(
         &mut self,
         exists: u32,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<FetchedHeader>> {
+    ) -> Result<Vec<(MessageFlags, bool)>> {
         if exists == 0 || offset >= exists {
             return Ok(Vec::new());
         }
         let end = exists - offset;
         let start = end.saturating_sub(limit - 1).max(1); // exists=1000,limit=50,offset=50 -> 901:950
-        self.fetch_header_set(&format!("{start}:{end}"), false)
+        let fetches =
+            self.command(|session| session.fetch(format!("{start}:{end}"), "(UID FLAGS)"))?;
+        Ok(fetches
+            .iter()
+            .filter_map(|fetch| {
+                let flags = fetch.flags();
+                Some((
+                    MessageFlags {
+                        uid: fetch.uid?.to_string(),
+                        is_unread: !flags.contains(&Flag::Seen),
+                        is_starred: flags.contains(&Flag::Flagged),
+                        is_pinned: flags.iter().any(is_pinned_flag),
+                    },
+                    flags.contains(&Flag::Deleted),
+                ))
+            })
+            .collect())
     }
 
     /// Fetch UID + flags + a few headers for an explicit UID set

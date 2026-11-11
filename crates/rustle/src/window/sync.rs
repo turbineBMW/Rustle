@@ -4,6 +4,7 @@ use super::{BannerSource, MainWindow, PAGE_EMPTY, PAGE_LOADING};
 use crate::application::RustleApplication;
 use crate::config::APP_ID;
 use crate::i18n::{self, gettext};
+use crate::objects::EmailObject;
 use crate::settings as keys;
 use crate::sound;
 use crate::workers;
@@ -19,7 +20,7 @@ use rustle_core::net::errors::{classify, linkify, Failure};
 use rustle_core::outbox;
 use rustle_core::secrets;
 use rustle_core::sounds::NotificationSound;
-use rustle_core::sync::{self, SyncResult, RECENT_LIMIT};
+use rustle_core::sync::{self, KnownMail, SyncResult, RECENT_LIMIT};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -147,8 +148,9 @@ impl MainWindow {
         }
         let job_account = account.clone();
         let job_folder = folder_name.map(str::to_string);
+        let known = self.known_mail(account, folder_name);
         workers::run(
-            move || sync_job(&job_account, job_folder.as_deref(), offset),
+            move || sync_job(&job_account, job_folder.as_deref(), offset, &known),
             glib::clone!(
                 #[weak(rename_to = window)]
                 self,
@@ -160,6 +162,28 @@ impl MainWindow {
                 }
             ),
         );
+    }
+
+    /// What the database holds of the mailbox a sync is about to fetch (the
+    /// account's inbox when `folder_name` is None), so the sync asks only
+    /// for the flags of that mail and the headers of the rest.
+    fn known_mail(&self, account: &Account, folder_name: Option<&str>) -> KnownMail {
+        let db = self.db();
+        let db = db.borrow();
+        let folder = match folder_name {
+            Some(name) => name.to_string(),
+            None => {
+                let stored = db.folders_for_account(account.id).unwrap_or_default();
+                folders::inbox_name(stored.iter().map(|folder| folder.name.as_str()))
+            }
+        };
+        let uids = db
+            .folder_by_name(account.id, &folder)
+            .ok()
+            .flatten()
+            .and_then(|stored| db.uids_in_folder(stored.id).ok())
+            .unwrap_or_default();
+        KnownMail { folder, uids }
     }
 
     /// Send and fetch for every account. The open folder is the one folder
@@ -232,6 +256,10 @@ impl MainWindow {
         let mut new_messages: Vec<MessageHeader> = Vec::new();
         let mut arrived: Vec<MessageHeader> = Vec::new();
         let target_id;
+        // What this sync did to the folder's rows: how many it added or took
+        // away, and which it only re-flagged (with whether the pin moved).
+        let mut list_changes = 0usize;
+        let mut reflagged: Vec<(i64, bool)> = Vec::new();
         {
             let db = self.db();
             let mut db = db.borrow_mut();
@@ -293,8 +321,11 @@ impl MainWindow {
             // Rules act on mail arriving in an inbox -- not on a first
             // sync's backlog, which only arrives in the database.
             let takes_rules = folders::role_for_folder(&target.name) == FolderRole::Inbox
-                && !db.uids_in_folder(target.id).unwrap_or_default().is_empty();
-            self.guard_fetched(&db, target.id, &mut result.messages);
+                && db.has_server_emails(target.id).unwrap_or(false);
+            self.guard_fetched(&db, target.id, &mut result.messages, &mut result.flags);
+            // Every header fetched is of mail the database didn't hold (or
+            // a local copy it now adopts): either way the list has to follow.
+            list_changes += result.messages.len();
             for message in &result.messages {
                 match db.save_incoming_email(target.id, message) {
                     Ok(true) => {
@@ -313,16 +344,22 @@ impl MainWindow {
                     ),
                 }
             }
+            match db.apply_server_flags(target.id, &result.flags) {
+                Ok(changed) => reflagged = changed,
+                Err(error) => log::error!("could not store the flags of {}: {error}", target.name),
+            }
             if let Some(all_uids) = &result.all_uids {
-                if let Err(error) = db.prune_stale_emails(target.id, all_uids) {
-                    log::error!("could not prune {}: {error}", target.name);
+                match db.prune_stale_emails(target.id, all_uids) {
+                    Ok(removed) => list_changes += removed,
+                    Err(error) => log::error!("could not prune {}: {error}", target.name),
                 }
             }
-            if let Err(error) = db.delete_server_emails(target.id, &result.deleted_uids) {
-                log::error!("could not drop deleted mail from {}: {error}", target.name);
+            match db.delete_server_emails(target.id, &result.deleted_uids) {
+                Ok(removed) => list_changes += removed,
+                Err(error) => {
+                    log::error!("could not drop deleted mail from {}: {error}", target.name)
+                }
             }
-            // From every fetched header, not just the newly added ones, so an
-            // existing install fills its contacts on the next sync.
             let addresses: Vec<(String, String)> = result
                 .messages
                 .iter()
@@ -363,17 +400,78 @@ impl MainWindow {
         let handled = self.apply_rules(account, target_id, &arrived);
         new_messages.retain(|message| !handled.contains(&message.uid));
 
+        let shape = self.state().folder_shape.clone();
         self.reload_folders();
-        self.refresh_emails(&keep);
+        let is_shape_changed = shape != self.state().folder_shape;
+        // The list is rebuilt only when this sync changed what's in it: a
+        // unified inbox runs to tens of thousands of rows, and most syncs
+        // (a poll, the echo of a flag we set ourselves) change none of
+        // them. Flags alone are shown on the rows in place -- except a pin,
+        // which moves its row, and a flag on a grouped conversation, whose
+        // row stands for the rest of its thread.
+        let is_on_show = self.current_folder_ids().contains(&target_id);
+        let regroups = reflagged.iter().any(|(_, is_pin)| *is_pin)
+            || (!reflagged.is_empty() && self.settings().boolean(keys::GROUP_CONVERSATIONS));
+        let rebuilds = is_shape_changed || (is_on_show && (list_changes > 0 || regroups));
+        log::debug!(
+            "synced {} of {}: {} fetched in full, {list_changes} row(s) added or removed, \
+             {} re-flagged; the list is {}",
+            result.folder,
+            account.email,
+            result.messages.len(),
+            reflagged.len(),
+            if rebuilds { "rebuilt" } else { "left as it is" }
+        );
+        if rebuilds {
+            self.refresh_emails(&keep);
+        } else {
+            if is_on_show && !reflagged.is_empty() {
+                self.show_server_flags(target_id, &reflagged);
+            }
+            self.show_list_or_placeholder();
+        }
         self.hide_connection_banner(BannerSource::Sync);
         // A stuck queue keeps its banner through a sync that went fine.
         self.update_queue_status();
         self.notify_arrivals(account.id, &new_messages, target_id, &arrived_elsewhere);
         if result.offset == 0 {
             // The newest page is in; the rest of the account follows in the
-            // background, starting with the folder just opened.
-            self.start_backfill(account, Some(target_id));
+            // background, starting with the folder just opened -- if it is
+            // short of what the server holds.
+            let held = self.db().borrow().server_email_count(target_id);
+            let is_short = match (&result.all_uids, held) {
+                (Some(all_uids), Ok(held)) => all_uids.len() > held,
+                _ => true,
+            };
+            self.start_backfill(account, is_short.then_some(target_id));
         }
+    }
+
+    /// Flags the server changed on mail that's listed: update those rows
+    /// where they are, as a flag set here would be (`after_flag_change`).
+    fn show_server_flags(&self, folder_id: i64, reflagged: &[(i64, bool)]) {
+        let ids: HashSet<i64> = reflagged.iter().map(|(id, _)| *id).collect();
+        let model = self.email_model();
+        let listed: Vec<EmailObject> = (0..model.n_items())
+            .filter_map(|position| model.item(position).and_downcast::<EmailObject>())
+            .filter(|email| ids.contains(&email.id()))
+            .collect();
+        for email in &listed {
+            let stored = self.db().borrow().email(email.id());
+            let Ok(Some(stored)) = stored else {
+                continue;
+            };
+            email.update(|mail| {
+                mail.is_unread = stored.is_unread;
+                mail.is_starred = stored.is_starred;
+                mail.is_pinned = stored.is_pinned;
+            });
+            email.notify_changed();
+        }
+        self.refresh_unread_badges(&HashSet::from([folder_id]));
+        self.prune_read_rows();
+        // The action buttons follow the selection's flags.
+        self.update_reader();
     }
 
     /// The app icon, set explicitly so notification daemons that don't
@@ -727,12 +825,21 @@ fn sync_job(
     account: &Account,
     folder_name: Option<&str>,
     offset: u32,
+    known: &KnownMail,
 ) -> Result<SyncResult, Failure> {
     let Some(credential) = secrets::credential_for(account) else {
         log::warn!("could not sign in to account {}", account.email);
         return Err(Failure::NoCredential);
     };
-    sync::fetch_mailbox(account, &credential, folder_name, RECENT_LIMIT, offset).map_err(|error| {
+    sync::fetch_mailbox(
+        account,
+        &credential,
+        folder_name,
+        RECENT_LIMIT,
+        offset,
+        known,
+    )
+    .map_err(|error| {
         log::error!(
             "sync failed for {} on {} (folder {}, offset {offset}): {error}",
             account.email,

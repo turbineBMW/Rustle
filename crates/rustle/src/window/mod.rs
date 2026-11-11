@@ -165,6 +165,8 @@ pub struct State {
     /// has yet to finish, first one being fetched. An account with no entry
     /// has no sweep running.
     pub backfills: HashMap<i64, backfill::Backfill>,
+    /// When each account's sweep last found every folder complete.
+    pub backfill_finished: HashMap<i64, Instant>,
     /// Unread counts the server last reported for the folders we don't fetch.
     pub remote_unread_counts: HashMap<i64, u32>,
     /// The rows currently on screen, so badges refresh without a rebuild.

@@ -422,6 +422,16 @@ pub struct MessageHeader {
     pub addresses: Vec<(String, String)>,
 }
 
+/// The flags of a message the database already holds, as the server has
+/// them now: all a sync needs to ask about mail it has seen before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageFlags {
+    pub uid: String,
+    pub is_unread: bool,
+    pub is_starred: bool,
+    pub is_pinned: bool,
+}
+
 /// A closing tag or a `<br>` is markup; a lone `<` in "Me <me@example.com>"
 /// is not.
 fn looks_like_html(text: &str) -> bool {

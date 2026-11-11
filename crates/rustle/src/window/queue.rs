@@ -8,7 +8,7 @@ use super::{BannerSource, MainWindow};
 use crate::i18n::{self, gettext};
 use crate::workers;
 use rustle_core::db::Database;
-use rustle_core::models::{Account, MessageHeader};
+use rustle_core::models::{Account, MessageFlags, MessageHeader};
 use rustle_core::net::errors::Failure;
 use rustle_core::queue::{self, Change, Outcome, PendingOp, Replay};
 use rustle_core::secrets;
@@ -320,25 +320,32 @@ impl MainWindow {
         }
     }
 
-    /// Bring a page fetched from `folder_id` in line with what's still
-    /// queued or in its undo window, so a sync that lands first doesn't put
-    /// moved mail back or flip a flag the user just changed.
+    /// Bring a page fetched from `folder_id` -- the headers of its new mail
+    /// and the flags of the rest -- in line with what's still queued or in
+    /// its undo window, so a sync that lands first doesn't put moved mail
+    /// back or flip a flag the user just changed.
     pub(super) fn guard_fetched(
         &self,
         db: &Database,
         folder_id: i64,
         headers: &mut Vec<MessageHeader>,
+        flags: &mut Vec<MessageFlags>,
     ) {
         match db.pending_ops_for_folder(folder_id) {
-            Ok(ops) => queue::overlay(folder_id, &ops, headers),
+            Ok(ops) => {
+                queue::overlay(folder_id, &ops, headers);
+                queue::overlay_flags(folder_id, &ops, flags);
+            }
             Err(error) => log::error!("could not read the queued changes of a folder: {error}"),
         }
         let state = self.state();
-        headers.retain(|header| {
-            !state
+        let is_moving = |uid: &String| {
+            state
                 .move_tombstones
-                .contains_key(&(folder_id, header.uid.clone()))
-        });
+                .contains_key(&(folder_id, uid.clone()))
+        };
+        headers.retain(|header| !is_moving(&header.uid));
+        flags.retain(|message| !is_moving(&message.uid));
     }
 }
 

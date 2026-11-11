@@ -5,7 +5,7 @@ use crate::assistant::SearchFilter;
 use crate::eds;
 use crate::folders;
 use crate::models::{
-    is_hex_color, Account, Auth, Email, Folder, MessageHeader, NewAccount, Security,
+    is_hex_color, Account, Auth, Email, Folder, MessageFlags, MessageHeader, NewAccount, Security,
 };
 use crate::queue::{Change, PendingOp};
 use crate::rules::Rule;
@@ -867,30 +867,96 @@ impl Database {
             .optional()
     }
 
+    /// Whether the folder holds any mail the server gave us.
+    pub fn has_server_emails(&self, folder_id: i64) -> Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM emails
+                WHERE folder_id = ?1 AND server_id IS NOT NULL AND server_id != '')",
+            [folder_id],
+            |row| row.get(0),
+        )
+    }
+
+    /// How many of the folder's emails the server gave us.
+    pub fn server_email_count(&self, folder_id: i64) -> Result<usize> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM emails
+             WHERE folder_id = ?1 AND server_id IS NOT NULL AND server_id != ''",
+            [folder_id],
+            |row| row.get::<_, i64>(0).map(|count| count.max(0) as usize),
+        )
+    }
+
+    /// Bring the flags of mail already stored in line with the server's.
+    /// Returns the ids of the emails that changed, each with whether its
+    /// pin did (a pin moves the row), so the list can follow in place.
+    pub fn apply_server_flags(
+        &mut self,
+        folder_id: i64,
+        flags: &[MessageFlags],
+    ) -> Result<Vec<(i64, bool)>> {
+        let transaction = self.conn.transaction()?;
+        let mut changed = Vec::new();
+        {
+            let mut current = transaction.prepare(
+                "SELECT id, unread, starred, pinned FROM emails
+                 WHERE folder_id = ?1 AND server_id = ?2",
+            )?;
+            let mut update = transaction.prepare(
+                "UPDATE emails SET unread = ?1, starred = ?2, pinned = ?3 WHERE id = ?4",
+            )?;
+            for message in flags {
+                let row: Option<(i64, bool, bool, bool)> = current
+                    .query_row(params![folder_id, message.uid], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })
+                    .optional()?;
+                let Some((id, is_unread, is_starred, is_pinned)) = row else {
+                    continue;
+                };
+                if (is_unread, is_starred, is_pinned)
+                    == (message.is_unread, message.is_starred, message.is_pinned)
+                {
+                    continue;
+                }
+                update.execute(params![
+                    message.is_unread as i64,
+                    message.is_starred as i64,
+                    message.is_pinned as i64,
+                    id
+                ])?;
+                changed.push((id, is_pinned != message.is_pinned));
+            }
+        }
+        transaction.commit()?;
+        Ok(changed)
+    }
+
     /// Remove server-backed emails no longer present in the authoritative set.
+    /// The two sets are compared here rather than in SQL: a poll runs this
+    /// on every sync, nearly always to find nothing gone.
     pub fn prune_stale_emails(
         &mut self,
         folder_id: i64,
         active_uids: &HashSet<String>,
     ) -> Result<usize> {
+        let stale: Vec<String> = self
+            .uids_in_folder(folder_id)?
+            .into_iter()
+            .filter(|uid| !active_uids.contains(uid))
+            .collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
         let transaction = self.conn.transaction()?;
-        transaction.execute_batch("CREATE TEMP TABLE prune_active_uids (uid TEXT PRIMARY KEY)")?;
-        let removed = (|| {
-            {
-                let mut insert =
-                    transaction.prepare("INSERT INTO prune_active_uids (uid) VALUES (?1)")?;
-                for uid in active_uids {
-                    insert.execute([uid])?;
-                }
+        let mut removed = 0;
+        {
+            let mut delete = transaction
+                .prepare("DELETE FROM emails WHERE folder_id = ?1 AND server_id = ?2")?;
+            for uid in &stale {
+                removed += delete.execute(params![folder_id, uid])?;
             }
-            transaction.execute(
-                "DELETE FROM emails WHERE folder_id = ?1 AND server_id IS NOT NULL AND server_id != ''
-                 AND NOT EXISTS (SELECT 1 FROM prune_active_uids WHERE prune_active_uids.uid = emails.server_id)",
-                [folder_id],
-            )
-        })();
-        transaction.execute_batch("DROP TABLE prune_active_uids")?;
-        let removed = removed?;
+        }
         transaction.commit()?;
         Ok(removed)
     }
@@ -2367,6 +2433,51 @@ mod tests {
             db.uids_in_folder(inbox_one.id).unwrap(),
             HashSet::from(["2".to_string()])
         );
+    }
+
+    #[test]
+    fn server_flags_update_only_the_rows_that_differ() {
+        let mut db = Database::open_in_memory().unwrap();
+        let account = db.save_account(&account()).unwrap();
+        let inbox = db
+            .get_or_create_folder(account.id, "INBOX", "mail-unread-symbolic")
+            .unwrap();
+        assert!(!db.has_server_emails(inbox.id).unwrap());
+        for uid in ["1", "2", "3"] {
+            db.save_incoming_email(inbox.id, &header(uid, uid, "2026-01-01T00:00:00Z", "Ann"))
+                .unwrap();
+        }
+        assert!(db.has_server_emails(inbox.id).unwrap());
+        assert_eq!(db.server_email_count(inbox.id).unwrap(), 3);
+        let flags = |uid: &str, is_unread: bool, is_pinned: bool| MessageFlags {
+            uid: uid.into(),
+            is_unread,
+            is_starred: false,
+            is_pinned,
+        };
+        let changed = db
+            .apply_server_flags(
+                inbox.id,
+                &[
+                    flags("1", true, false),
+                    flags("2", false, false),
+                    flags("3", true, true),
+                    // Not stored: nothing to update.
+                    flags("9", false, false),
+                ],
+            )
+            .unwrap();
+        let emails = db.emails_in_folder(inbox.id).unwrap();
+        let id = |uid: &str| {
+            emails
+                .iter()
+                .find(|email| email.server_id.as_deref() == Some(uid))
+                .unwrap()
+                .id
+        };
+        assert_eq!(changed, vec![(id("2"), false), (id("3"), true)]);
+        assert_eq!(db.unread_count_in_folder(inbox.id).unwrap(), 2);
+        assert!(db.email(id("3")).unwrap().unwrap().is_pinned);
     }
 
     #[test]
