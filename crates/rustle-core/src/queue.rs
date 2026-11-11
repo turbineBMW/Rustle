@@ -4,7 +4,7 @@
 //! the server with stays queued for the next attempt -- offline, a restart,
 //! a dropped connection all leave the change waiting rather than lost.
 
-use crate::models::{Account, MessageHeader};
+use crate::models::{Account, MessageFlags, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::{classify, Failure, NetError};
 use crate::net::imap::{ImapSession, FLAG_FLAGGED, FLAG_PINNED, FLAG_SEEN};
@@ -253,6 +253,33 @@ pub fn overlay(folder_id: i64, ops: &[PendingOp], headers: &mut Vec<MessageHeade
     headers.retain(|header| !leaving.contains(header.uid.as_str()));
 }
 
+/// `overlay` for the flags of mail already held: a queued flag wins over the
+/// server's, and a message queued to move away is left alone.
+pub fn overlay_flags(folder_id: i64, ops: &[PendingOp], flags: &mut Vec<MessageFlags>) {
+    let mut leaving: HashSet<&str> = HashSet::new();
+    for op in ops.iter().filter(|op| op.folder_id == folder_id) {
+        match &op.change {
+            Change::Move { uids, .. } => leaving.extend(uids.iter().map(String::as_str)),
+            Change::Flag { uids, flag, add } => {
+                let uids: HashSet<&str> = uids.iter().map(String::as_str).collect();
+                for message in flags.iter_mut() {
+                    if !uids.contains(message.uid.as_str()) {
+                        continue;
+                    }
+                    if flag.eq_ignore_ascii_case(FLAG_SEEN) {
+                        message.is_unread = !add;
+                    } else if flag.eq_ignore_ascii_case(FLAG_FLAGGED) {
+                        message.is_starred = *add;
+                    } else if flag.eq_ignore_ascii_case(FLAG_PINNED) {
+                        message.is_pinned = *add;
+                    }
+                }
+            }
+        }
+    }
+    flags.retain(|message| !leaving.contains(message.uid.as_str()));
+}
+
 /// The UIDs queued to leave `folder_id`, which a sync must not re-add.
 pub fn leaving_uids(folder_id: i64, ops: &[PendingOp]) -> HashSet<String> {
     ops.iter()
@@ -347,5 +374,18 @@ mod tests {
         assert!(headers[2].is_unread && !headers[2].is_pinned);
         assert_eq!(leaving_uids(7, &ops), HashSet::from(["3".to_string()]));
         assert!(leaving_uids(9, &ops).is_empty());
+
+        let held = |uid: &str| MessageFlags {
+            uid: uid.into(),
+            is_unread: true,
+            ..MessageFlags::default()
+        };
+        let mut flags = vec![held("1"), held("2"), held("3"), held("4")];
+        overlay_flags(7, &ops, &mut flags);
+        let uids: Vec<&str> = flags.iter().map(|f| f.uid.as_str()).collect();
+        assert_eq!(uids, ["1", "2", "4"]);
+        assert!(!flags[0].is_unread && !flags[1].is_unread);
+        assert!(!flags[1].is_starred, "the later op wins");
+        assert!(flags[2].is_unread && !flags[2].is_pinned);
     }
 }

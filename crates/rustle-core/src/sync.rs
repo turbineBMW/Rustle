@@ -5,7 +5,7 @@ use crate::address;
 use crate::dates;
 use crate::folders::{self, FolderRole};
 use crate::models::NO_SUBJECT;
-use crate::models::{Account, MessageHeader};
+use crate::models::{Account, MessageFlags, MessageHeader};
 use crate::net::auth::Credential;
 use crate::net::errors::NetError;
 use crate::net::imap::{
@@ -35,7 +35,10 @@ pub const UNSUBSCRIBE_USER_AGENT: &str = "Rustle";
 #[derive(Clone, Debug, Default)]
 pub struct SyncResult {
     pub folders: Vec<MailboxInfo>,
+    /// The window's messages the database didn't hold, headers and all.
     pub messages: Vec<MessageHeader>,
+    /// The flags of the window's messages it did (see `KnownMail`).
+    pub flags: Vec<MessageFlags>,
     pub folder: String,
     /// Total messages in the selected mailbox.
     pub exists: u32,
@@ -165,14 +168,29 @@ pub(crate) fn release(account: &Account, credential: &Credential, session: ImapS
     pool::checkin(account, credential, session);
 }
 
-/// Connect, log in, and return the folder list + recent headers of one
+/// What the database already holds of one mailbox: its name and the UIDs
+/// stored for it. A sync fetches only the flags of these and the headers of
+/// everything else. Named, because the job works out its own target (the
+/// inbox, from the server's list): UIDs from any other mailbox are ignored
+/// rather than mistaken for this one's.
+#[derive(Clone, Debug, Default)]
+pub struct KnownMail {
+    pub folder: String,
+    pub uids: HashSet<String>,
+}
+
+/// Connect, log in, and return the folder list + the recent messages of one
 /// mailbox (the inbox when `folder` is None). `offset` pages backwards.
+/// Mail the caller already holds (`known`) comes back as flags alone:
+/// re-reading the headers and text of the same fifty messages on every poll
+/// is most of what a sync used to cost, here and on the server.
 pub fn fetch_mailbox(
     account: &Account,
     credential: &Credential,
     folder: Option<&str>,
     limit: u32,
     offset: u32,
+    known: &KnownMail,
 ) -> Result<SyncResult> {
     let mut session = open_imap(account, credential)?;
     let mailboxes = session.list_folders()?;
@@ -186,19 +204,29 @@ pub fn fetch_mailbox(
     } else {
         None
     };
-    let raw = session.fetch_recent_headers(exists, limit, offset)?;
+    let window = session.fetch_recent_flags(exists, limit, offset)?;
+    let fetched = window.len() as u32;
+    let is_known = |uid: &str| known.folder == target && known.uids.contains(uid);
+    let (flags, new_uids, mut deleted_uids) = split_window(window, is_known);
+    let raw = if new_uids.is_empty() {
+        Vec::new()
+    } else {
+        session.fetch_headers_by_uid(&uid_set(&new_uids))?
+    };
     let unread_counts = if offset == 0 {
         unread_counts(&mut session, &mailboxes, &target)
     } else {
         HashMap::new()
     };
     release(account, credential, session);
-    let fetched = raw.len() as u32;
-    let (messages, deleted_uids) = split_deleted(raw);
+    // Marked \Deleted between the two fetches.
+    let (messages, late) = split_deleted(raw);
+    deleted_uids.extend(late);
 
     Ok(SyncResult {
         folders: mailboxes,
         messages,
+        flags,
         folder: target,
         exists,
         offset,
@@ -207,6 +235,27 @@ pub fn fetch_mailbox(
         all_uids,
         unread_counts,
     })
+}
+
+/// Sort a window of (flags, is_deleted) into the flags of the mail already
+/// held, the UIDs still to fetch in full, and the UIDs marked \Deleted.
+fn split_window(
+    window: Vec<(MessageFlags, bool)>,
+    is_known: impl Fn(&str) -> bool,
+) -> (Vec<MessageFlags>, Vec<u32>, Vec<String>) {
+    let mut flags = Vec::new();
+    let mut new_uids = Vec::new();
+    let mut deleted = Vec::new();
+    for (message, is_deleted) in window {
+        if is_deleted {
+            deleted.push(message.uid);
+        } else if is_known(&message.uid) {
+            flags.push(message);
+        } else if let Ok(uid) = message.uid.parse() {
+            new_uids.push(uid);
+        }
+    }
+    (flags, new_uids, deleted)
 }
 
 /// Server unread counts for the role folders this sync didn't fetch. A
@@ -606,6 +655,27 @@ mod tests {
 
     fn uids(values: &[&str]) -> HashSet<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn a_window_splits_into_known_flags_new_uids_and_deleted() {
+        let flags = |uid: &str, is_unread: bool| MessageFlags {
+            uid: uid.into(),
+            is_unread,
+            ..MessageFlags::default()
+        };
+        let window = vec![
+            (flags("5", true), false),
+            (flags("6", false), false),
+            (flags("7", true), true),
+            (flags("8", true), false),
+        ];
+        let known = uids(&["5", "7", "8"]);
+        let (held, new_uids, deleted) = split_window(window, |uid| known.contains(uid));
+        assert_eq!(held, vec![flags("5", true), flags("8", true)]);
+        assert_eq!(new_uids, vec![6]);
+        // Deleted wins over known: the row for it goes.
+        assert_eq!(deleted, vec!["7".to_string()]);
     }
 
     #[test]
