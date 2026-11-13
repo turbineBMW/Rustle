@@ -53,12 +53,14 @@
 }
 
 /* Sticky day headers (Today / Yesterday / Wednesday, August 26th): opaque so
-   rows scroll under them, a shade lighter than the list behind. The hairline
+   rows scroll under them, a shade lighter than the list behind. With a
+   see-through sidebar they fade with the list, or they'd be solid stripes
+   across it; rows then show faintly under the pinned one. The hairline
    is the rows' own; `--border-color` would follow the label's dimmed text
    colour and come out fainter. */
 .email-list > header,
 .sticky-day {
-  background: color-mix(in srgb, var(--sidebar-bg-color), white 10%);
+  background: alpha(color-mix(in srgb, var(--sidebar-bg-color), white 10%), var(--rustle-sidebar-opacity));
   box-shadow:
     inset 0 -1px color-mix(in srgb, var(--sidebar-fg-color) var(--border-opacity), transparent),
     inset -1px 0 var(--sidebar-border-color);
@@ -119,9 +121,10 @@ avatar.account-avatar {
 }
 
 /* The collapsed folder sidebar: a strip of icons in the sidebar's colours,
-   its first button level with the header bars' buttons. */
+   its first button level with the header bars' buttons. It fades with the
+   sidebar it stands in for (below). */
 .folder-rail {
-  background-color: var(--sidebar-bg-color);
+  background-color: alpha(var(--sidebar-bg-color), var(--rustle-sidebar-opacity));
   color: var(--sidebar-fg-color);
   box-shadow: inset -1px 0 var(--sidebar-border-color);
   padding: 7px 6px;
@@ -129,6 +132,53 @@ avatar.account-avatar {
 
 .folder-rail:dir(rtl) {
   box-shadow: inset 1px 0 var(--sidebar-border-color);
+}
+
+/* Sidebar opacity: --rustle-sidebar-opacity (a number from 0 to 1; alpha()
+   rejects a percentage and the background would vanish) fades the folder
+   sidebar's background, and the message list's, never their text. An
+   Omarchy theme sets it in its rustle.css. The selectors are held to the
+   two main splits, so the reader and the composer's assistant panel keep
+   their backgrounds. Floating over the mail in a narrow window (.collapsed,
+   set in window/mod.rs) the folders stay opaque, or the list would show
+   through the folder names; a collapsed message split has no panes, so its
+   pages stay opaque too (below). */
+:root {
+  --rustle-sidebar-opacity: 1;
+}
+
+overlay-split-view.folder-split:not(.collapsed) > .sidebar-pane {
+  background-color: alpha(var(--sidebar-bg-color), var(--rustle-sidebar-opacity));
+}
+
+overlay-split-view.folder-split:not(.collapsed) > .sidebar-pane:backdrop {
+  background-color: alpha(var(--sidebar-backdrop-color), var(--rustle-sidebar-opacity));
+}
+
+/* The message list is a nested pane, which libadwaita paints in the
+   secondary sidebar colour. */
+navigation-split-view.message-split > .sidebar-pane {
+  background-color: alpha(var(--secondary-sidebar-bg-color), var(--rustle-sidebar-opacity));
+}
+
+navigation-split-view.message-split > .sidebar-pane:backdrop {
+  background-color: alpha(var(--secondary-sidebar-backdrop-color), var(--rustle-sidebar-opacity));
+}
+
+/* Below 1, omarchy.rs gives the main window this class, which clears the
+   window background so the desktop shows through the sidebars. Everything
+   else that stood on that background is repainted with it: the welcome page,
+   the reader pane (its header bar, empty pages and inline composer have no
+   background of their own), and both pages of a collapsed message split.
+   The banner, pop-overs, dialogs and toasts paint their own. */
+window.rustle-transparent {
+  background-color: transparent;
+}
+
+window.rustle-transparent .window-surface,
+window.rustle-transparent navigation-split-view.message-split > .content-pane,
+window.rustle-transparent navigation-split-view.message-split > navigation-view > navigation-view-page {
+  background-color: var(--window-bg-color);
 }
 
 /* The account heading in the sidebar wears the same colour. */

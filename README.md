@@ -147,9 +147,17 @@ colours, accent and light/dark style of your current theme and keeps them in ste
 you switch themes. Rustle reads the palette from
 `~/.local/state/omarchy/current/theme/colors.toml`.
 
-A theme can take full control by shipping its own `rustle.css` (plain GTK CSS setting
-libadwaita's colour variables). Put it in the theme's directory, or generate it from a
-`~/.config/omarchy/themed/rustle.css.tpl` template.
+A theme can add its own `rustle.css` (plain GTK CSS setting libadwaita's colour
+variables). Put it in the theme's directory, or generate it from a
+`~/.config/omarchy/themed/rustle.css.tpl` template. It is layered over the palette, so
+it only needs what it changes. For example, see-through folder and message lists for every
+theme (a number from 0 to 1, not a percentage; it fades the background, not the
+text):
+
+```css
+/* ~/.config/omarchy/themed/rustle.css.tpl */
+:root { --rustle-sidebar-opacity: 0.8; }
+```
 
 Turn the option off and Rustle goes back to your system accent and style.
 
