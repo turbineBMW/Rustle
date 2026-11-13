@@ -425,6 +425,20 @@ impl MainWindow {
         );
         imp.outer_split
             .set_show_sidebar(settings.boolean(keys::SHOW_FOLDER_SIDEBAR));
+        // A see-through folder sidebar stays opaque while it floats over the
+        // mail (style.css), and the window behind it is cleared or not to
+        // match the Omarchy theme.
+        let mark_collapsed = |split: &adw::OverlaySplitView| {
+            if split.is_collapsed() {
+                split.add_css_class("collapsed");
+            } else {
+                split.remove_css_class("collapsed");
+            }
+        };
+        mark_collapsed(&imp.outer_split);
+        imp.outer_split
+            .connect_collapsed_notify(move |split| mark_collapsed(split));
+        crate::omarchy::sync_transparency(&window);
 
         let _ = imp.avatars.set(AvatarLoader::new(settings.clone()));
         settings.connect_changed(

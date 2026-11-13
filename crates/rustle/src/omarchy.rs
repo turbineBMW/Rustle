@@ -6,7 +6,13 @@
 //! to match the theme's mode, and the accent is handed to `accent` for the
 //! WebKit views. Turning the setting off empties the provider and hands the
 //! colour scheme back to the system, so nothing here is sticky.
+//!
+//! A theme that makes the folder sidebar see-through (its rustle.css lowers
+//! `--rustle-sidebar-opacity`) also needs the main window's own background
+//! out of the way, which CSS alone can't decide: [`sync_transparency`] gives
+//! the window the `rustle-transparent` class that clears it (style.css).
 
+use crate::window::MainWindow;
 use crate::{accent, settings as keys};
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -17,6 +23,23 @@ use std::time::Duration;
 
 /// One theme switch is a burst of file events; reload once it settles.
 const SETTLE: Duration = Duration::from_millis(120);
+
+thread_local! {
+    /// The followed theme's sidebar opacity; 1, style.css's default, when
+    /// there is no theme or it doesn't set one.
+    static SIDEBAR_OPACITY: Cell<f32> = const { Cell::new(1.0) };
+}
+
+/// Clear `window`'s background while the folder sidebar is see-through, and
+/// put it back once it isn't. For main windows only: the class also repaints
+/// the parts of the main window that stood on that background.
+pub fn sync_transparency(window: &impl IsA<gtk::Widget>) {
+    if SIDEBAR_OPACITY.get() < 1.0 {
+        window.add_css_class("rustle-transparent");
+    } else {
+        window.remove_css_class("rustle-transparent");
+    }
+}
 
 /// Owns the file monitor, so it has to outlive the windows: the application
 /// keeps it.
@@ -83,6 +106,17 @@ impl Inner {
             .flatten();
         self.provider
             .load_from_string(theme.as_ref().map_or("", |theme| theme.css.as_str()));
+        SIDEBAR_OPACITY.set(
+            theme
+                .as_ref()
+                .and_then(|theme| theme.sidebar_opacity)
+                .unwrap_or(1.0),
+        );
+        for window in gtk::Window::list_toplevels() {
+            if window.is::<MainWindow>() {
+                sync_transparency(&window);
+            }
+        }
 
         // The reader and composer re-render on a dark/light flip already, so
         // only an accent change within the same scheme needs announcing.

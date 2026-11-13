@@ -21,6 +21,8 @@ template $RustleMainWindow: Adw.ApplicationWindow {
     StackPage {
       name: "no-account";
       child: Adw.ToolbarView {
+        styles ["window-surface"]
+
         [top]
         Adw.HeaderBar {}
 
@@ -46,6 +48,9 @@ template $RustleMainWindow: Adw.ApplicationWindow {
         // px, not the default sp: the drag gesture reports pixel offsets.
         // The widths themselves are pinned from GSettings in window/mod.rs.
         sidebar-width-unit: px;
+
+        // The see-through sidebar (style.css) is held to this split.
+        styles ["folder-split"]
 
         sidebar: Gtk.Overlay {
           [overlay]
@@ -130,6 +135,10 @@ template $RustleMainWindow: Adw.ApplicationWindow {
           Adw.NavigationSplitView inner_split {
             hexpand: true;
             sidebar-width-unit: px;
+
+            // Its message list fades with the folders; the reader stays
+            // opaque even when the window is not (style.css).
+            styles ["message-split"]
 
             sidebar: Adw.NavigationPage {
               title: _("Messages");
