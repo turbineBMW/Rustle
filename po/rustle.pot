@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Rustle\n"
 "Report-Msgid-Bugs-To: https://github.com/turbineBMW/Rustle/issues\n"
-"POT-Creation-Date: 2026-11-17 11:20-0500\n"
+"POT-Creation-Date: 2026-11-17 11:30-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -22,7 +22,7 @@ msgstr ""
 msgid "Start in the background without showing a window"
 msgstr ""
 
-#: crates/rustle/src/application.rs:381
+#: crates/rustle/src/application.rs:380
 msgid "translator-credits"
 msgstr ""
 
@@ -1693,7 +1693,7 @@ msgid "Folders"
 msgstr ""
 
 #: crates/rustle/ui/main-window.blp:76
-msgid "Hide Folders (F9)"
+msgid "Hide Folders ([)"
 msgstr ""
 
 #: crates/rustle/ui/main-window.blp:84 crates/rustle/ui/main-window.blp:120
@@ -1701,7 +1701,7 @@ msgid "Main Menu"
 msgstr ""
 
 #: crates/rustle/ui/main-window.blp:112
-msgid "Show Folders (F9)"
+msgid "Show Folders ([)"
 msgstr ""
 
 #: crates/rustle/ui/main-window.blp:160
