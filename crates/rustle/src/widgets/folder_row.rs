@@ -3,8 +3,8 @@
 //! an account with a picture shows it in place of the icon.
 
 use crate::account_pictures;
-use crate::i18n::{self, gettext};
-use crate::objects::SidebarItem;
+use crate::i18n;
+use crate::objects::{SidebarItem, Unified};
 use adw::prelude::*;
 use gtk::glib;
 use gtk::subclass::prelude::*;
@@ -116,12 +116,12 @@ impl FolderRow {
         self.set_badge(unread_count);
     }
 
-    pub fn bind_unified_inbox(&self, unread_count: i64) {
+    pub fn bind_unified(&self, which: Unified, unread_count: i64) {
         let imp = self.imp();
-        imp.icon.set_icon_name(Some("mail-inbox-symbolic"));
+        imp.icon.set_icon_name(Some(which.icon_name()));
         crate::account_colors::tag(&imp.icon, None);
         self.show_picture(None);
-        imp.name.set_label(&gettext("All Inboxes"));
+        imp.name.set_label(&which.label());
         imp.name.remove_css_class("heading");
         imp.expandable.replace(None);
         self.set_syncing(false);

@@ -1,8 +1,8 @@
 //! The folder sidebar: a tree of every account's mailboxes, with the
-//! unified inbox on top.
+//! unified inbox and unified sent mail on top.
 
 use super::{MainWindow, View, FOLDER_SYNC_COOLDOWN_SECS};
-use crate::objects::{SidebarItem, SidebarKind};
+use crate::objects::{SidebarItem, SidebarKind, Unified};
 use crate::widgets::folder_row::FolderRow;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -53,12 +53,12 @@ impl MainWindow {
     }
 
     /// Two kinds of branch: an account row holds its top-level mailboxes, a
-    /// folder row holds its subfolders. The unified inbox has none.
+    /// folder row holds its subfolders. The unified rows have none.
     fn folder_children(&self, item: &glib::Object) -> Option<gio::ListModel> {
         let item = item.downcast_ref::<SidebarItem>()?;
         let state = self.state();
         let children = match item.kind() {
-            SidebarKind::UnifiedInbox => return None,
+            SidebarKind::Unified(_) => return None,
             SidebarKind::Account(account) => state.account_roots.get(&account.id)?,
             SidebarKind::Folder(folder) => state.folder_children.get(&folder.id)?,
         };
@@ -126,6 +126,15 @@ impl MainWindow {
             }
         ));
         imp.folder_list.set_factory(Some(&factory));
+
+        // The collapsed sidebar's own way into the unified views.
+        for which in Unified::ALL {
+            self.rail_button(which).connect_clicked(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_| window.select_unified(which)
+            ));
+        }
     }
 
     /// bind: fill an existing widget from its item. Runs on every scroll, so
@@ -143,10 +152,15 @@ impl MainWindow {
         };
 
         match entry.kind() {
-            SidebarKind::UnifiedInbox => {
+            SidebarKind::Unified(Unified::Inbox) => {
                 item.set_selectable(true);
-                row.bind_unified_inbox(self.unified_badge());
+                row.bind_unified(Unified::Inbox, self.unified_badge());
                 self.state_mut().unified_row = Some(row);
+            }
+            // Sent mail is never unread, so it has no badge to keep current.
+            SidebarKind::Unified(Unified::Sent) => {
+                item.set_selectable(true);
+                row.bind_unified(Unified::Sent, 0);
             }
             // An account row is a heading over its folders, not somewhere to click.
             SidebarKind::Account(account) => {
@@ -169,7 +183,8 @@ impl MainWindow {
         if let Some((_, entry)) = FolderRow::item_of(item) {
             let mut state = self.state_mut();
             match entry.kind() {
-                SidebarKind::UnifiedInbox => state.unified_row = None,
+                SidebarKind::Unified(Unified::Inbox) => state.unified_row = None,
+                SidebarKind::Unified(Unified::Sent) => {}
                 SidebarKind::Account(account) => {
                     state.account_rows.remove(&account.id);
                 }
@@ -231,11 +246,7 @@ impl MainWindow {
         let account_count = self.state().accounts.len();
         let mut target: Option<u32> = None;
         if account_count > 1 {
-            target = self
-                .sidebar_positions()
-                .into_iter()
-                .find(|(_, item)| item.is_unified_inbox())
-                .map(|(p, _)| p);
+            target = self.unified_position(Unified::Inbox);
         }
         if target.is_none() {
             for (position, item) in self.sidebar_positions() {
@@ -278,6 +289,45 @@ impl MainWindow {
             .collect()
     }
 
+    fn unified_position(&self, which: Unified) -> Option<u32> {
+        self.sidebar_positions()
+            .into_iter()
+            .find(|(_, item)| item.unified() == Some(which))
+            .map(|(position, _)| position)
+    }
+
+    fn rail_button(&self, which: Unified) -> &gtk::ToggleButton {
+        let imp = self.imp();
+        match which {
+            Unified::Inbox => &imp.rail_inbox,
+            Unified::Sent => &imp.rail_sent,
+        }
+    }
+
+    /// Open a unified view from the rail, which stays as it is.
+    fn select_unified(&self, which: Unified) {
+        if let Some(position) = self.unified_position(which) {
+            self.imp()
+                .folder_selection
+                .get()
+                .expect("built")
+                .set_selected(position);
+        }
+        // The click toggled the button, whether or not the view changed.
+        self.sync_rail_buttons();
+    }
+
+    /// Press the rail button of the unified view on show, if one is.
+    fn sync_rail_buttons(&self) {
+        let shown = match self.state().view {
+            Some(View::Unified(which)) => Some(which),
+            _ => None,
+        };
+        for which in Unified::ALL {
+            self.rail_button(which).set_active(shown == Some(which));
+        }
+    }
+
     fn on_folder_selected(&self) {
         let selection = self.imp().folder_selection.get().expect("built");
         let Some(item) = selection
@@ -291,7 +341,7 @@ impl MainWindow {
         let new_view = match item.kind() {
             // SingleSelection autoselects row 0 when it is an account heading.
             SidebarKind::Account(_) => return,
-            SidebarKind::UnifiedInbox => View::UnifiedInbox,
+            SidebarKind::Unified(which) => View::Unified(which),
             SidebarKind::Folder(folder) => View::Folder(folder),
         };
         // A collapsed sidebar floats over the list it just changed.
@@ -300,6 +350,7 @@ impl MainWindow {
             split.set_show_sidebar(false);
         }
         let previous = self.state_mut().view.replace(new_view.clone());
+        self.sync_rail_buttons();
         self.update_move_menu();
         self.update_archive_button();
         self.sync_folder_watcher();
@@ -313,7 +364,7 @@ impl MainWindow {
         // synced moments ago is left alone.
         let changed = match (&previous, &new_view) {
             (None, _) => true,
-            (Some(View::UnifiedInbox), View::UnifiedInbox) => false,
+            (Some(View::Unified(a)), View::Unified(b)) => a != b,
             (Some(View::Folder(a)), View::Folder(b)) => a.id != b.id,
             _ => true,
         };
@@ -360,7 +411,7 @@ impl MainWindow {
         );
         crate::account_colors::apply(&accounts);
         self.avatars().set_accounts(&accounts);
-        // The unified inbox marks each email with its account's picture.
+        // A unified view marks each email with its account's picture.
         let pictures_changed = {
             let state = self.state();
             accounts.iter().any(|a| {
@@ -427,7 +478,7 @@ impl MainWindow {
         let view_is_gone = match view {
             None => true,
             Some(View::Folder(folder)) => !live_ids.contains(&folder.id),
-            Some(View::UnifiedInbox) => false,
+            Some(View::Unified(_)) => false,
         };
         if view_is_gone {
             self.state_mut().view = None;
@@ -466,7 +517,7 @@ impl MainWindow {
         }
         let unified_row = self.state().unified_row.clone();
         if let Some(row) = unified_row {
-            row.bind_unified_inbox(self.unified_badge());
+            row.bind_unified(Unified::Inbox, self.unified_badge());
         }
         if pictures_changed && self.is_unified_view() {
             self.refresh_keeping_selection();
@@ -489,7 +540,9 @@ impl MainWindow {
         let root_store = self.imp().folder_root_store.get().expect("built");
         root_store.remove_all();
         if !accounts.is_empty() {
-            root_store.append(&SidebarItem::new(SidebarKind::UnifiedInbox));
+            for which in Unified::ALL {
+                root_store.append(&SidebarItem::new(SidebarKind::Unified(which)));
+            }
         }
         for account in accounts {
             root_store.append(&SidebarItem::new(SidebarKind::Account(Box::new(
@@ -498,12 +551,8 @@ impl MainWindow {
         }
         match keep {
             Some(View::Folder(folder)) => self.select_folder_by_id(folder.id),
-            Some(View::UnifiedInbox) => {
-                if let Some((position, _)) = self
-                    .sidebar_positions()
-                    .into_iter()
-                    .find(|(_, item)| item.is_unified_inbox())
-                {
+            Some(View::Unified(which)) => {
+                if let Some(position) = self.unified_position(which) {
                     self.imp()
                         .folder_selection
                         .get()

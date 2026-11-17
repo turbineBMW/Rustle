@@ -2,18 +2,54 @@
 //! and `gtk::TreeListModel` only hold GObjects. Each wraps a `RefCell` so a
 //! flag toggle can update the row in place without rebuilding the list.
 
+use crate::i18n::gettext;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
+use rustle_core::folders::FolderRole;
 use rustle_core::models::{Account, Email, Folder};
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+/// A folder every account has, shown merged: one row above the accounts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unified {
+    Inbox,
+    Sent,
+}
+
+impl Unified {
+    /// In the order the sidebar and its collapsed rail list them.
+    pub const ALL: [Self; 2] = [Self::Inbox, Self::Sent];
+
+    /// The role of the folder it takes from each account.
+    pub fn role(self) -> FolderRole {
+        match self {
+            Self::Inbox => FolderRole::Inbox,
+            Self::Sent => FolderRole::Sent,
+        }
+    }
+
+    pub fn icon_name(self) -> &'static str {
+        match self {
+            Self::Inbox => "mail-inbox-symbolic",
+            Self::Sent => "mail-send-symbolic",
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Inbox => gettext("All Inboxes"),
+            Self::Sent => gettext("All Sent"),
+        }
+    }
+}
+
 /// What one row of the folder sidebar stands for.
 #[derive(Clone, Debug)]
 pub enum SidebarKind {
-    /// Every account's inbox, merged.
-    UnifiedInbox,
+    /// Every account's inbox, or its sent mail, merged.
+    Unified(Unified),
     /// A heading over an account's folders; not selectable.
     Account(Box<Account>),
     Folder(Folder),
@@ -87,8 +123,11 @@ impl SidebarItem {
         }
     }
 
-    pub fn is_unified_inbox(&self) -> bool {
-        matches!(self.kind(), SidebarKind::UnifiedInbox)
+    pub fn unified(&self) -> Option<Unified> {
+        match self.kind() {
+            SidebarKind::Unified(which) => Some(which),
+            _ => None,
+        }
     }
 }
 

@@ -73,7 +73,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
               [start]
               Gtk.ToggleButton {
                 icon-name: "sidebar-show-symbolic";
-                tooltip-text: _("Hide Folders");
+                tooltip-text: _("Hide Folders (F9)");
                 action-name: "win.toggle-sidebar";
               }
 
@@ -109,7 +109,7 @@ template $RustleMainWindow: Adw.ApplicationWindow {
 
               Gtk.ToggleButton {
                 icon-name: "sidebar-show-symbolic";
-                tooltip-text: _("Show Folders");
+                tooltip-text: _("Show Folders (F9)");
                 action-name: "win.toggle-sidebar";
 
                 styles ["flat"]
@@ -119,6 +119,22 @@ template $RustleMainWindow: Adw.ApplicationWindow {
                 icon-name: "open-menu-symbolic";
                 tooltip-text: _("Main Menu");
                 menu-model: primary_menu;
+
+                styles ["flat"]
+              }
+
+              Gtk.Separator {}
+
+              Gtk.ToggleButton rail_inbox {
+                icon-name: "mail-inbox-symbolic";
+                tooltip-text: _("All Inboxes");
+
+                styles ["flat"]
+              }
+
+              Gtk.ToggleButton rail_sent {
+                icon-name: "mail-send-symbolic";
+                tooltip-text: _("All Sent");
 
                 styles ["flat"]
               }

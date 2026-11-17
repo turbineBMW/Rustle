@@ -10,7 +10,6 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::{gdk, gio};
 use rustle_core::dates;
-use rustle_core::folders;
 use rustle_core::models::Email;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -385,9 +384,7 @@ impl MainWindow {
                 ) else {
                     return;
                 };
-                let is_outgoing = window
-                    .current_folder()
-                    .is_some_and(|folder| folders::is_outgoing_folder(&folder.name));
+                let is_outgoing = window.is_outgoing_view();
                 let account = if window.is_unified_view() {
                     window
                         .account_for_folder(email.with(|c| c.folder_id))

@@ -25,7 +25,7 @@ mod watch;
 
 use crate::application::RustleApplication;
 use crate::avatar_loader::AvatarLoader;
-use crate::objects::{EmailObject, SidebarItem};
+use crate::objects::{EmailObject, SidebarItem, Unified};
 use crate::settings as keys;
 use crate::widgets::folder_row::FolderRow;
 use crate::widgets::message_view::{self, Handlers, MessageView};
@@ -35,6 +35,7 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use rustle_core::db::Database;
+use rustle_core::folders::FolderRole;
 use rustle_core::models::{Account, Folder};
 use rustle_core::outbox::InFlight;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -90,8 +91,8 @@ const PAGE_COMPOSER: &str = "composer";
 /// What the email list is showing.
 #[derive(Clone, Debug)]
 pub enum View {
-    /// Every account's inbox at once.
-    UnifiedInbox,
+    /// Every account's inbox, or its sent mail, at once.
+    Unified(Unified),
     Folder(Folder),
 }
 
@@ -304,6 +305,10 @@ mod imp {
         pub inner_split: TemplateChild<adw::NavigationSplitView>,
         #[template_child]
         pub account_rail: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub rail_inbox: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub rail_sent: TemplateChild<gtk::ToggleButton>,
         // The phone layout (window/phone.rs) rearranges these.
         #[template_child]
         pub folder_header: TemplateChild<adw::HeaderBar>,
@@ -615,13 +620,13 @@ impl MainWindow {
         Some((account, folder))
     }
 
-    /// The folders the list is showing: one, or every account's inbox.
+    /// The folders the list is showing: one, or the same one of every account.
     pub(super) fn current_folders(&self) -> Vec<Folder> {
         let view = self.state().view.clone();
         match view {
             None => Vec::new(),
             Some(View::Folder(folder)) => vec![folder],
-            Some(View::UnifiedInbox) => self.inbox_folders(),
+            Some(View::Unified(which)) => self.folders_with_role(which.role()),
         }
     }
 
@@ -632,7 +637,7 @@ impl MainWindow {
             .collect()
     }
 
-    /// The single open folder, or None in the unified inbox.
+    /// The single open folder, or None in a unified view.
     pub(super) fn current_folder(&self) -> Option<Folder> {
         let view = self.state().view.clone();
         match view {
@@ -641,12 +646,27 @@ impl MainWindow {
         }
     }
 
+    /// Whether the list is of mail the user wrote, so its rows name who a
+    /// message went to. Read off the view alone: rows ask on every bind.
+    pub(super) fn is_outgoing_view(&self) -> bool {
+        match &self.state().view {
+            None => false,
+            Some(View::Folder(folder)) => rustle_core::folders::is_outgoing_folder(&folder.name),
+            Some(View::Unified(which)) => which.role() == FolderRole::Sent,
+        }
+    }
+
     pub(super) fn is_unified_view(&self) -> bool {
-        matches!(self.state().view, Some(View::UnifiedInbox))
+        matches!(self.state().view, Some(View::Unified(_)))
     }
 
     /// Each account's inbox, as far as the database knows them.
     pub(super) fn inbox_folders(&self) -> Vec<Folder> {
+        self.folders_with_role(FolderRole::Inbox)
+    }
+
+    /// Each account's folder for `role`, skipping the accounts without one.
+    fn folders_with_role(&self, role: FolderRole) -> Vec<Folder> {
         let account_ids: Vec<i64> = {
             let state = self.state();
             let mut ids: Vec<i64> = state.accounts.keys().copied().collect();
@@ -661,7 +681,7 @@ impl MainWindow {
                 let folders = db.folders_for_account(account_id).ok()?;
                 let name = rustle_core::folders::mailbox_with_role(
                     folders.iter().map(|f| f.name.as_str()),
-                    rustle_core::folders::FolderRole::Inbox,
+                    role,
                 )?;
                 folders.iter().find(|f| f.name == name).cloned()
             })
