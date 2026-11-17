@@ -316,7 +316,6 @@ impl RustleApplication {
             ("win.forward", &["<control><shift>f"]),
             ("win.refresh", &["F5"]),
             ("win.search", &["<control>f"]),
-            ("win.toggle-sidebar", &["F9"]),
             ("win.print", &["<control><shift>p"]),
             ("win.save-message", &["<control><shift>s"]),
             ("win.show-source", &["<control>u"]),

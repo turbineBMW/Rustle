@@ -2,7 +2,8 @@
 //! walk the list, e archives, # deletes, r/a/f reply, reply all and forward,
 //! s stars, c composes, / searches, Shift+I and Shift+U mark read and
 //! unread. They stand down whenever a key would be typing: in the search
-//! box, a dialog's entry, or the composer.
+//! box, a dialog's entry, or the composer. One key needs no turning on:
+//! [ shows and hides the folders.
 
 use super::MainWindow;
 use crate::settings as keys;
@@ -27,15 +28,21 @@ impl MainWindow {
         let held = gdk::ModifierType::CONTROL_MASK
             | gdk::ModifierType::ALT_MASK
             | gdk::ModifierType::SUPER_MASK;
-        if !self.settings().boolean(keys::SINGLE_KEY_SHORTCUTS)
-            || modifiers.intersects(held)
-            || self.is_typing()
-        {
+        if modifiers.intersects(held) || self.is_typing() {
             return glib::Propagation::Proceed;
         }
         let Some(name) = key.to_unicode() else {
             return glib::Propagation::Proceed;
         };
+        // Not an accelerator, which would fire in the middle of typing, and
+        // not behind the setting: it is the only key the folders have.
+        if name == '[' {
+            let _ = WidgetExt::activate_action(self, "win.toggle-sidebar", None);
+            return glib::Propagation::Stop;
+        }
+        if !self.settings().boolean(keys::SINGLE_KEY_SHORTCUTS) {
+            return glib::Propagation::Proceed;
+        }
         let action = match name {
             'j' => return self.step_selection(1),
             'k' => return self.step_selection(-1),
