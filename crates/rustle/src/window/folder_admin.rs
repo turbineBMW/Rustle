@@ -39,7 +39,7 @@ impl MainWindow {
                 };
                 (account, Some(folder))
             }
-            SidebarKind::UnifiedInbox => return,
+            SidebarKind::Unified(_) => return,
         };
         let menu = gio::Menu::new();
         let group = gio::SimpleActionGroup::new();
