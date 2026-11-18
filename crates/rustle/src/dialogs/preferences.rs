@@ -73,6 +73,12 @@ mod imp {
         pub appearance_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub omarchy_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub transparent_sidebar_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub sidebar_opacity_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub sidebar_opacity_scale: TemplateChild<gtk::Scale>,
         pub settings: RefCell<Option<gio::Settings>>,
         pub autostart_subscription: Cell<Option<gio::SignalSubscriptionId>>,
         pub is_settling: Cell<bool>,
@@ -158,9 +164,10 @@ impl PreferencesDialog {
 
         dialog.setup_assistant(settings);
 
-        // Only offered where there is an Omarchy theme to follow; the key
-        // is inert everywhere else. `omarchy.rs` reacts to the change.
-        imp.appearance_group.set_visible(omarchy::detected());
+        // Following the theme is only offered where there is an Omarchy
+        // theme to follow; the key is inert everywhere else. The sidebar
+        // rows apply anywhere. `omarchy.rs` reacts to all three.
+        imp.omarchy_row.set_visible(omarchy::detected());
         imp.omarchy_row.set_subtitle(&match omarchy::theme_name() {
             Some(name) => i18n::format(
                 &gettext("Take colours from the desktop theme, currently {theme}"),
@@ -170,6 +177,30 @@ impl PreferencesDialog {
         });
         settings
             .bind(keys::FOLLOW_OMARCHY_THEME, &*imp.omarchy_row, "active")
+            .build();
+        settings
+            .bind(
+                keys::TRANSPARENT_SIDEBAR,
+                &*imp.transparent_sidebar_row,
+                "active",
+            )
+            .build();
+        settings
+            .bind(
+                keys::TRANSPARENT_SIDEBAR,
+                &*imp.sidebar_opacity_row,
+                "sensitive",
+            )
+            .get()
+            .build();
+        imp.sidebar_opacity_scale
+            .set_format_value_func(|_, value| format!("{}%", (value * 100.0).round()));
+        settings
+            .bind(
+                keys::SIDEBAR_OPACITY,
+                &imp.sidebar_opacity_scale.adjustment(),
+                "value",
+            )
             .build();
 
         let intervals = sync_intervals();

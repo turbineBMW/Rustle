@@ -150,16 +150,18 @@ you switch themes. Rustle reads the palette from
 A theme can add its own `rustle.css` (plain GTK CSS setting libadwaita's colour
 variables). Put it in the theme's directory, or generate it from a
 `~/.config/omarchy/themed/rustle.css.tpl` template. It is layered over the palette, so
-it only needs what it changes. For example, see-through folder and message lists for every
-theme (a number from 0 to 1, not a percentage; it fades the background, not the
-text):
-
-```css
-/* ~/.config/omarchy/themed/rustle.css.tpl */
-:root { --rustle-sidebar-opacity: 0.8; }
-```
+it only needs what it changes.
 
 Turn the option off and Rustle goes back to your system accent and style.
+
+## Transparent sidebar
+
+**Preferences → Appearance → Transparent Sidebar** makes the folder sidebar and the
+message list see-through, so the desktop shows behind them; **Sidebar Opacity** sets
+how much. Only their backgrounds fade, never the text, and the reader stays solid.
+This is Rustle's own setting, so it works without Omarchy and no theme changes it.
+(Themes used to set `--rustle-sidebar-opacity`; the first launch with this setting
+carries a followed theme's value over.)
 
 ## For developers
 

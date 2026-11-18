@@ -136,8 +136,8 @@ avatar.account-avatar {
 
 /* Sidebar opacity: --rustle-sidebar-opacity (a number from 0 to 1; alpha()
    rejects a percentage and the background would vanish) fades the folder
-   sidebar's background, and the message list's, never their text. An
-   Omarchy theme sets it in its rustle.css. The selectors are held to the
+   sidebar's background, and the message list's, never their text.
+   Preferences sets it (omarchy.rs states it above the theme). The selectors are held to the
    two main splits, so the reader and the composer's assistant panel keep
    their backgrounds. Floating over the mail in a narrow window (.collapsed,
    set in window/mod.rs) the folders stay opaque, or the list would show

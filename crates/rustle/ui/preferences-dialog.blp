@@ -88,9 +88,35 @@ template $RustlePreferencesDialog: Adw.PreferencesDialog {
       Adw.SwitchRow omarchy_row {
         title: _("Follow Omarchy Theme");
       }
+
+      Adw.SwitchRow transparent_sidebar_row {
+        title: _("Transparent Sidebar");
+        subtitle: _("Show the desktop behind the folders and message list");
+      }
+
+      Adw.ActionRow sidebar_opacity_row {
+        title: _("Sidebar Opacity");
+        activatable-widget: sidebar_opacity_scale;
+
+        [suffix]
+        Scale sidebar_opacity_scale {
+          valign: center;
+          hexpand: true;
+          width-request: 160;
+          draw-value: true;
+          value-pos: left;
+          digits: 2;
+
+          adjustment: Adjustment {
+            lower: 0;
+            upper: 1;
+            step-increment: 0.05;
+            page-increment: 0.1;
+          };
+        }
+      }
     }
 
-    // Not under Appearance: that group only shows where Omarchy is installed.
     Adw.PreferencesGroup {
       title: _("Message List");
 

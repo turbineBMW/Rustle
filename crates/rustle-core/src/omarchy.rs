@@ -12,7 +12,9 @@
 //! `~/.config/omarchy/themed/rustle.css.tpl` template. It is appended after
 //! everything derived here, so whatever it states wins and whatever it leaves
 //! out keeps the palette's value: a file can restate every variable, or carry
-//! a single line such as `:root { --rustle-sidebar-opacity: 0.8; }`.
+//! a single line such as `:root { --accent-bg-color: #e8894a; }`. (A theme's
+//! `--rustle-sidebar-opacity` is now only read once, to carry it into the
+//! app's own Transparent Sidebar setting.)
 //!
 //! The resolution cascade below mirrors `omarchy-theme-color` so Rustle and
 //! the rest of the desktop read an identical palette out of the same file,
@@ -57,13 +59,14 @@ pub struct Theme {
     /// reader adapts dark mail to. `None` for a light theme.
     pub reader: Option<(String, String)>,
     /// [`SIDEBAR_OPACITY`] as the theme states it, `None` when it doesn't.
-    /// The CSS applies it on its own; the GTK layer needs it as a number to
-    /// clear the window background behind a see-through sidebar.
+    /// Only read once, to carry a theme's old value into the app's
+    /// Transparent Sidebar setting; the app states the opacity itself.
     pub sidebar_opacity: Option<f32>,
 }
 
 /// How opaque the folder sidebar's background is: a number from 0 to 1.
-/// style.css defaults it to 1; a theme's `rustle.css` may lower it.
+/// style.css defaults it to 1; the app's sidebar setting states it above
+/// any theme.
 pub const SIDEBAR_OPACITY: &str = "--rustle-sidebar-opacity";
 
 /// Resolve the active theme into CSS, or `None` when omarchy isn't installed
