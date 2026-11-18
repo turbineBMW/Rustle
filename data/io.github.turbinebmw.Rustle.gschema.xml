@@ -81,6 +81,22 @@
 			<summary>Follow the Omarchy theme</summary>
 			<description>Take the window colours, accent and light/dark style from the active Omarchy desktop theme, and follow every theme switch live. Has no effect where Omarchy isn't installed.</description>
 		</key>
+		<key name="transparent-sidebar" type="b">
+			<default>false</default>
+			<summary>Transparent sidebar</summary>
+			<description>Fade the background of the folder sidebar and the message list (never their text) to “sidebar-opacity”, so the desktop shows through.</description>
+		</key>
+		<key name="sidebar-opacity" type="d">
+			<range min="0" max="1"/>
+			<default>0.8</default>
+			<summary>Sidebar opacity</summary>
+			<description>How opaque the transparent sidebar is, from 0 (clear) to 1 (solid).</description>
+		</key>
+		<key name="theme-sidebar-opacity-adopted" type="b">
+			<default>false</default>
+			<summary>Whether the theme’s old sidebar opacity was carried over</summary>
+			<description>Before the transparent sidebar was a setting, an Omarchy theme’s rustle.css set --rustle-sidebar-opacity. The first launch with the setting copies a followed theme’s value into it once and sets this, so the theme has no say afterwards.</description>
+		</key>
 		<key name="run-in-background" type="b">
 			<default>false</default>
 			<summary>Keep running in the background</summary>

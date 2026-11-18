@@ -7,10 +7,17 @@
 //! WebKit views. Turning the setting off empties the provider and hands the
 //! colour scheme back to the system, so nothing here is sticky.
 //!
-//! A theme that makes the folder sidebar see-through (its rustle.css lowers
-//! `--rustle-sidebar-opacity`) also needs the main window's own background
-//! out of the way, which CSS alone can't decide: [`sync_transparency`] gives
-//! the window the `rustle-transparent` class that clears it (style.css).
+//! The see-through sidebar is Rustle's own setting, not the theme's:
+//! *Preferences → Appearance → Transparent Sidebar* and *Sidebar Opacity*
+//! (`transparent-sidebar`, `sidebar-opacity`). The opacity goes into a
+//! provider above the theme's, so a theme's rustle.css can't change it. A
+//! see-through sidebar also needs the main window's own background out of
+//! the way, which CSS alone can't decide: [`sync_transparency`] gives the
+//! window the `rustle-transparent` class that clears it (style.css).
+//!
+//! Themes used to set `--rustle-sidebar-opacity` themselves. The first launch
+//! with the setting carries a followed theme's value over, once
+//! ([`adopt_theme_opacity`]), so nothing changes on screen.
 
 use crate::window::MainWindow;
 use crate::{accent, settings as keys};
@@ -25,8 +32,8 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_millis(120);
 
 thread_local! {
-    /// The followed theme's sidebar opacity; 1, style.css's default, when
-    /// there is no theme or it doesn't set one.
+    /// The sidebar opacity in force: 1, style.css's default, while the
+    /// setting is off.
     static SIDEBAR_OPACITY: Cell<f32> = const { Cell::new(1.0) };
 }
 
@@ -50,7 +57,39 @@ pub struct OmarchyTheme {
 struct Inner {
     settings: gio::Settings,
     provider: gtk::CssProvider,
+    /// `--rustle-sidebar-opacity`, above `provider`.
+    sidebar: gtk::CssProvider,
     monitor: RefCell<Option<gio::FileMonitor>>,
+}
+
+/// The opacity the settings ask for: 1 when the sidebar isn't transparent.
+fn sidebar_opacity(transparent: bool, opacity: f64) -> f32 {
+    if transparent {
+        opacity.clamp(0.0, 1.0) as f32
+    } else {
+        1.0
+    }
+}
+
+/// Carry a followed theme's old `--rustle-sidebar-opacity` into the setting,
+/// the first time only.
+fn adopt_theme_opacity(settings: &gio::Settings) {
+    if settings.boolean(keys::THEME_SIDEBAR_OPACITY_ADOPTED) {
+        return;
+    }
+    let theme = settings
+        .boolean(keys::FOLLOW_OMARCHY_THEME)
+        .then(|| omarchy::load(&glib::home_dir()))
+        .flatten();
+    if let Some(opacity) = theme.and_then(|t| t.sidebar_opacity).filter(|o| *o < 1.0) {
+        let _ = settings.set_boolean(keys::TRANSPARENT_SIDEBAR, true);
+        // Two places, as the slider shows it: 0.8f32 is 0.800000011920929 widened.
+        let _ = settings.set_double(
+            keys::SIDEBAR_OPACITY,
+            (f64::from(opacity) * 100.0).round() / 100.0,
+        );
+    }
+    let _ = settings.set_boolean(keys::THEME_SIDEBAR_OPACITY_ADOPTED, true);
 }
 
 pub fn detected() -> bool {
@@ -65,11 +104,18 @@ impl OmarchyTheme {
     /// Call once, after `accent::install_fallback`: the provider has to
     /// outrank the fallback's `--accent-*` variables.
     pub fn install(display: &gtk::gdk::Display, settings: &gio::Settings) -> Self {
+        adopt_theme_opacity(settings);
         let inner = Rc::new(Inner {
             settings: settings.clone(),
             provider: gtk::CssProvider::new(),
+            sidebar: gtk::CssProvider::new(),
             monitor: RefCell::new(None),
         });
+        gtk::style_context_add_provider_for_display(
+            display,
+            &inner.sidebar,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 3,
+        );
         gtk::style_context_add_provider_for_display(
             display,
             &inner.provider,
@@ -89,13 +135,43 @@ impl OmarchyTheme {
                 move |_, _| inner.reload()
             ),
         );
+        for key in [keys::TRANSPARENT_SIDEBAR, keys::SIDEBAR_OPACITY] {
+            settings.connect_changed(
+                Some(key),
+                glib::clone!(
+                    #[weak]
+                    inner,
+                    move |_, _| inner.apply_sidebar()
+                ),
+            );
+        }
         inner.watch();
         inner.reload();
+        inner.apply_sidebar();
         Self { _inner: inner }
     }
 }
 
 impl Inner {
+    /// State the sidebar opacity the settings ask for, and clear or restore
+    /// each main window's background to match.
+    fn apply_sidebar(&self) {
+        let opacity = sidebar_opacity(
+            self.settings.boolean(keys::TRANSPARENT_SIDEBAR),
+            self.settings.double(keys::SIDEBAR_OPACITY),
+        );
+        SIDEBAR_OPACITY.set(opacity);
+        self.sidebar.load_from_string(&format!(
+            ":root {{ {}: {opacity:.2}; }}",
+            omarchy::SIDEBAR_OPACITY
+        ));
+        for window in gtk::Window::list_toplevels() {
+            if window.is::<MainWindow>() {
+                sync_transparency(&window);
+            }
+        }
+    }
+
     /// Re-read the active theme into the provider. A theme that is missing,
     /// unreadable, or not being followed leaves the provider empty.
     fn reload(&self) {
@@ -106,17 +182,6 @@ impl Inner {
             .flatten();
         self.provider
             .load_from_string(theme.as_ref().map_or("", |theme| theme.css.as_str()));
-        SIDEBAR_OPACITY.set(
-            theme
-                .as_ref()
-                .and_then(|theme| theme.sidebar_opacity)
-                .unwrap_or(1.0),
-        );
-        for window in gtk::Window::list_toplevels() {
-            if window.is::<MainWindow>() {
-                sync_transparency(&window);
-            }
-        }
 
         // The reader and composer re-render on a dark/light flip already, so
         // only an accent change within the same scheme needs announcing.
@@ -177,5 +242,17 @@ impl Inner {
             }
         ));
         self.monitor.replace(Some(monitor));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sidebar_opacity;
+
+    #[test]
+    fn the_sidebar_is_only_see_through_while_the_setting_is_on() {
+        assert_eq!(sidebar_opacity(true, 0.8), 0.8);
+        assert_eq!(sidebar_opacity(false, 0.3), 1.0);
+        assert_eq!(sidebar_opacity(true, 1.5), 1.0);
     }
 }
